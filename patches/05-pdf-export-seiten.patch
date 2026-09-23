@@ -1,0 +1,229 @@
+From 1da44df8a9667073cbaff3fb7cd7d1ce881b44f7 Mon Sep 17 00:00:00 2001
+From: claude <a@b>
+Date: Wed, 23 Sep 2026 15:15:59 +0000
+Subject: [PATCH] Export one page per imported PDF page; highlighter test
+ follows Rnote's layer order
+
+---
+ .../java/io/github/kjly/brna/MainActivity.kt  |  1 +
+ .../kjly/brna/export/DocumentExporter.kt      |  7 +-
+ .../github/kjly/brna/export/ExportLayout.kt   | 75 ++++++++++++++++++-
+ .../io/github/kjly/brna/export/ExportPrefs.kt |  8 +-
+ .../kjly/brna/ui/components/ExportSheet.kt    | 10 +++
+ .../kjly/brna/export/ExportLayoutTest.kt      | 41 ++++++++++
+ .../brna/storage/RnoteNativeRoundTripTest.kt  |  4 +-
+ 7 files changed, 142 insertions(+), 4 deletions(-)
+
+diff --git a/app/src/main/java/io/github/kjly/brna/MainActivity.kt b/app/src/main/java/io/github/kjly/brna/MainActivity.kt
+index 72c91bd..76c4b6e 100644
+--- a/app/src/main/java/io/github/kjly/brna/MainActivity.kt
++++ b/app/src/main/java/io/github/kjly/brna/MainActivity.kt
+@@ -774,2 +774,3 @@ class MainActivity : ComponentActivity() {
+                             hasSelection = selectedStrokes.isNotEmpty(),
++                            hasImportedPages = DocumentExporter.hasImportedPages(exportDocument),
+                             onPrefsChanged = { exportPrefs = it },
+diff --git a/app/src/main/java/io/github/kjly/brna/export/DocumentExporter.kt b/app/src/main/java/io/github/kjly/brna/export/DocumentExporter.kt
+index 8c71abf..8e8e348 100644
+--- a/app/src/main/java/io/github/kjly/brna/export/DocumentExporter.kt
++++ b/app/src/main/java/io/github/kjly/brna/export/DocumentExporter.kt
+@@ -28,5 +28,10 @@ object DocumentExporter {
+         ExportLayout.pageRects(
+-            document.paperStyle, document.strokes, prefs.pageOrder, document.nativeElements
++            document.paperStyle, document.strokes, prefs.pageOrder, document.nativeElements,
++            followImportedPages = prefs.pagesFromImportedPdf
+         )
+ 
++    /** Whether the document has imported PDF pages, which [ExportPrefs.pagesFromImportedPdf] follows. */
++    fun hasImportedPages(document: NoteDocument): Boolean =
++        document.nativeElements.any { it is io.github.kjly.brna.model.NativeVectorImageElement }
++
+     /** The suggested file name for a single-file export, extension included. */
+diff --git a/app/src/main/java/io/github/kjly/brna/export/ExportLayout.kt b/app/src/main/java/io/github/kjly/brna/export/ExportLayout.kt
+index 51dc7c9..4c6a1b0 100644
+--- a/app/src/main/java/io/github/kjly/brna/export/ExportLayout.kt
++++ b/app/src/main/java/io/github/kjly/brna/export/ExportLayout.kt
+@@ -6,2 +6,3 @@ import io.github.kjly.brna.model.NativeBrushStroke
+ import io.github.kjly.brna.model.NativeCanvasElement
++import io.github.kjly.brna.model.NativeVectorImageElement
+ import io.github.kjly.brna.model.PaperStyle
+@@ -84,4 +85,9 @@ object ExportLayout {
+         order: SplitOrder = SplitOrder.ROW_MAJOR,
+-        nativeElements: List<NativeCanvasElement> = emptyList()
++        nativeElements: List<NativeCanvasElement> = emptyList(),
++        /** Cut along imported PDF pages instead of the format grid; see [importedPageRects]. */
++        followImportedPages: Boolean = false
+     ): List<Rect> {
++        if (followImportedPages) {
++            importedPageRects(strokes, nativeElements, order)?.let { return it }
++        }
+         if (!hasPages(paperStyle)) return emptyList()
+@@ -123,2 +129,69 @@ object ExportLayout {
+ 
++    /** Room left around ink that widens an imported page, so it isn't cut at the edge. */
++    private const val IMPORTED_PAGE_MARGIN_PX = 24f
++
++    /**
++     * One page per imported PDF page, or null when the document has none.
++     *
++     * A PDF imported larger than the document format straddles several format pages, so
++     * cutting along the format grid slices every worksheet into pieces. Here each imported
++     * page is a page of its own, widened to take in the notes written beside it: anything
++     * whose vertical centre lies level with the page belongs to it, and anything level with
++     * no page goes to the nearest one.
++     */
++    fun importedPageRects(
++        strokes: List<Stroke>,
++        nativeElements: List<NativeCanvasElement>,
++        order: SplitOrder = SplitOrder.ROW_MAJOR
++    ): List<Rect>? {
++        val imported = nativeElements.filterIsInstance<NativeVectorImageElement>()
++        if (imported.isEmpty()) return null
++
++        // Reading order: top to bottom, then left to right.
++        val bases = imported
++            .map { Rect(it.minX, it.minY, it.maxX, it.maxY) }
++            .sortedWith(compareBy<Rect>({ it.top }, { it.left }))
++        val lefts = bases.map { it.left }.toFloatArray()
++        val tops = bases.map { it.top }.toFloatArray()
++        val rights = bases.map { it.right }.toFloatArray()
++        val bottoms = bases.map { it.bottom }.toFloatArray()
++
++        fun include(minX: Float, minY: Float, maxX: Float, maxY: Float) {
++            val cy = (minY + maxY) / 2f
++            var best = -1
++            var bestDistance = Float.MAX_VALUE
++            for (i in bases.indices) {
++                val b = bases[i]
++                val distance = when {
++                    cy < b.top -> b.top - cy
++                    cy > b.bottom -> cy - b.bottom
++                    else -> 0f
++                }
++                if (distance < bestDistance) { bestDistance = distance; best = i }
++            }
++            if (best < 0) return
++            val m = IMPORTED_PAGE_MARGIN_PX
++            if (minX - m < lefts[best]) lefts[best] = minX - m
++            if (minY - m < tops[best]) tops[best] = minY - m
++            if (maxX + m > rights[best]) rights[best] = maxX + m
++            if (maxY + m > bottoms[best]) bottoms[best] = maxY + m
++        }
++
++        for (stroke in strokes) {
++            if (stroke.points.isEmpty()) continue
++            val half = stroke.strokeWidth / 2f
++            include(
++                stroke.points.minOf { it.x } - half, stroke.points.minOf { it.y } - half,
++                stroke.points.maxOf { it.x } + half, stroke.points.maxOf { it.y } + half
++            )
++        }
++        for (el in nativeElements) {
++            if (el is NativeBrushStroke || el is NativeVectorImageElement) continue
++            include(el.minX, el.minY, el.maxX, el.maxY)
++        }
++
++        val pages = bases.indices.map { Rect(lefts[it], tops[it], rights[it], bottoms[it]) }
++        return if (order.isReversed) pages.reversed() else pages
++    }
++
+     /**
+diff --git a/app/src/main/java/io/github/kjly/brna/export/ExportPrefs.kt b/app/src/main/java/io/github/kjly/brna/export/ExportPrefs.kt
+index daacef8..c8d5be1 100644
+--- a/app/src/main/java/io/github/kjly/brna/export/ExportPrefs.kt
++++ b/app/src/main/java/io/github/kjly/brna/export/ExportPrefs.kt
+@@ -62,3 +62,9 @@ data class ExportPrefs(
+     /** Blank means every page. Otherwise a 1-based list like "1-3, 5". */
+-    val pageRange: String = ""
++    val pageRange: String = "",
++    /**
++     * For a document with imported PDF pages: one exported page per imported page (with
++     * the notes beside it) instead of cutting along the format grid, which slices a PDF
++     * imported larger than the format into pieces. No counterpart in Rnote.
++     */
++    val pagesFromImportedPdf: Boolean = true
+ ) {
+diff --git a/app/src/main/java/io/github/kjly/brna/ui/components/ExportSheet.kt b/app/src/main/java/io/github/kjly/brna/ui/components/ExportSheet.kt
+index 477187c..26285b1 100644
+--- a/app/src/main/java/io/github/kjly/brna/ui/components/ExportSheet.kt
++++ b/app/src/main/java/io/github/kjly/brna/ui/components/ExportSheet.kt
+@@ -53,2 +53,4 @@ fun ExportSheet(
+     hasSelection: Boolean,
++    /** Shows the "pages follow the imported PDF" switch. */
++    hasImportedPages: Boolean = false,
+     onPrefsChanged: (ExportPrefs) -> Unit,
+@@ -164,2 +166,10 @@ fun ExportSheet(
+                 )
++                if (hasImportedPages && prefs.scope != ExportScope.SELECTION) {
++                    ExportSwitchRow(
++                        label = "Pages follow imported PDF",
++                        checked = prefs.pagesFromImportedPdf,
++                        onCheckedChange = { onPrefsChanged(prefs.copy(pagesFromImportedPdf = it)) },
++                        onSurface = onSurface, accent = accent, isDark = isDark
++                    )
++                }
+ 
+diff --git a/app/src/test/java/io/github/kjly/brna/export/ExportLayoutTest.kt b/app/src/test/java/io/github/kjly/brna/export/ExportLayoutTest.kt
+index 16913f2..fde131e 100644
+--- a/app/src/test/java/io/github/kjly/brna/export/ExportLayoutTest.kt
++++ b/app/src/test/java/io/github/kjly/brna/export/ExportLayoutTest.kt
+@@ -4,2 +4,3 @@ import androidx.compose.ui.graphics.Color
+ import io.github.kjly.brna.model.LayoutMode
++import io.github.kjly.brna.model.NativeVectorImageElement
+ import io.github.kjly.brna.model.PageSize
+@@ -105,2 +106,42 @@ class ExportLayoutTest {
+ 
++    /** An imported page covering left..right × top..bottom, as Rnote places one. */
++    private fun importedPage(left: Float, top: Float, right: Float, bottom: Float): NativeVectorImageElement {
++        val hx = (right - left) / 2f
++        val hy = (bottom - top) / 2f
++        return NativeVectorImageElement(
++            "<svg/>", 2 * hx, 2 * hy, hx, hy,
++            floatArrayOf(1f, 0f, 0f, 1f, left + hx, top + hy), "document",
++            left, top, right, bottom
++        )
++    }
++
++    @Test
++    fun `imported PDF pages become the export pages, widened for the notes beside them`() {
++        val pages = ExportLayout.pageRects(
++            paper(LayoutMode.SEMI_INFINITE),
++            // A note to the right of the second page, level with it.
++            listOf(dot(700f, 1500f)),
++            nativeElements = listOf(
++                importedPage(0f, 1000f, 500f, 2000f),
++                importedPage(0f, 0f, 500f, 1000f)
++            ),
++            followImportedPages = true
++        )
++        assertEquals(2, pages.size)
++        // Reading order, whatever order the file listed them in.
++        assertEquals(0f, pages[0].top, 0f)
++        assertEquals(500f, pages[0].right, 0f)
++        assertEquals(1000f, pages[1].top, 0f)
++        assertEquals(724f, pages[1].right, 0f)
++    }
++
++    @Test
++    fun `without imported pages the format grid is used as before`() {
++        val grid = ExportLayout.pageRects(paper(LayoutMode.INFINITE), listOf(dot(150f, 250f)))
++        val following = ExportLayout.pageRects(
++            paper(LayoutMode.INFINITE), listOf(dot(150f, 250f)), followImportedPages = true
++        )
++        assertEquals(grid, following)
++    }
++
+     @Test
+diff --git a/app/src/test/java/io/github/kjly/brna/storage/RnoteNativeRoundTripTest.kt b/app/src/test/java/io/github/kjly/brna/storage/RnoteNativeRoundTripTest.kt
+index db3497c..6e79235 100644
+--- a/app/src/test/java/io/github/kjly/brna/storage/RnoteNativeRoundTripTest.kt
++++ b/app/src/test/java/io/github/kjly/brna/storage/RnoteNativeRoundTripTest.kt
+@@ -204,3 +204,5 @@ class RnoteNativeRoundTripTest {
+         val flags = parsed.elements.map { (it as NativeBrushStroke).isHighlighter }
+-        assertEquals(listOf(false, true), flags)
++        // Both survive with their layer; Rnote draws the highlighter layer beneath the
++        // ink (`Ord for StrokeLayer`), so in draw order the highlighter comes first.
++        assertEquals(listOf(true, false), flags)
+     }
+-- 
+2.43.0
+

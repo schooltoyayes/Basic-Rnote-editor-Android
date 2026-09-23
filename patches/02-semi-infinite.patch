@@ -1,0 +1,103 @@
+From 754ba739a08200cab994c0e6ce793d3db19d3108 Mon Sep 17 00:00:00 2001
+From: claude <a@b>
+Date: Wed, 23 Sep 2026 14:35:54 +0000
+Subject: [PATCH] Keep Rnote's semi-infinite layout as its own mode
+
+---
+ .../java/io/github/kjly/brna/export/ExportLayout.kt |  4 +++-
+ .../java/io/github/kjly/brna/model/LayoutMode.kt    | 12 ++++++++----
+ .../kjly/brna/storage/RnoteNativeSerializer.kt      |  7 +++++++
+ .../kjly/brna/ui/canvas/PaperBackgroundRenderer.kt  | 13 ++++++++++++-
+ .../io/github/kjly/brna/model/LayoutModeTest.kt     | 10 ++++++++--
+ 5 files changed, 38 insertions(+), 8 deletions(-)
+
+diff --git a/app/src/main/java/io/github/kjly/brna/export/ExportLayout.kt b/app/src/main/java/io/github/kjly/brna/export/ExportLayout.kt
+index 098df33..9636319 100644
+--- a/app/src/main/java/io/github/kjly/brna/export/ExportLayout.kt
++++ b/app/src/main/java/io/github/kjly/brna/export/ExportLayout.kt
+@@ -90,3 +90,5 @@ object ExportLayout {
+             LayoutMode.CONTINUOUS_VERTICAL -> { cols = listOf(0); rows = (firstRow..lastRow).toList() }
+-            LayoutMode.INFINITE -> { cols = (firstCol..lastCol).toList(); rows = (firstRow..lastRow).toList() }
++            // Semi Infinite keeps the origin-inclusive span too: ink drawn left of or above
++            // the origin is still in the file, so its pages are still exported.
++            LayoutMode.SEMI_INFINITE, LayoutMode.INFINITE -> { cols = (firstCol..lastCol).toList(); rows = (firstRow..lastRow).toList() }
+         }
+diff --git a/app/src/main/java/io/github/kjly/brna/model/LayoutMode.kt b/app/src/main/java/io/github/kjly/brna/model/LayoutMode.kt
+index 56a31aa..9119736 100644
+--- a/app/src/main/java/io/github/kjly/brna/model/LayoutMode.kt
++++ b/app/src/main/java/io/github/kjly/brna/model/LayoutMode.kt
+@@ -9,2 +9,4 @@ enum class LayoutMode(val displayName: String, val apiName: String) {
+     CONTINUOUS_VERTICAL("Continuous Vertical", "continuous_vertical"),
++    /** Unbounded towards positive x/y only; the origin page is the top-left corner. */
++    SEMI_INFINITE("Semi Infinite", "semi_infinite"),
+     INFINITE("Infinite", "infinite");
+@@ -22,6 +24,8 @@ enum class LayoutMode(val displayName: String, val apiName: String) {
+             "fixed_size" -> FIXED_SIZE
+-            "continuous_vertical" -> CONTINUOUS_VERTICAL
+-            // Rnote's SemiInfinite grows only towards positive x/y; of the three modes
+-            // here, unbounded is much closer than a single fixed page.
+-            "infinite", "semi_infinite" -> INFINITE
++            // "endless_vertical" is the name older Rnote versions wrote for it.
++            "continuous_vertical", "endless_vertical" -> CONTINUOUS_VERTICAL
++            // Its own mode, so a desktop note saved here keeps its layout instead of
++            // quietly turning into an Infinite one.
++            "semi_infinite" -> SEMI_INFINITE
++            "infinite" -> INFINITE
+             else -> DEFAULT
+diff --git a/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeSerializer.kt b/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeSerializer.kt
+index 845841a..31daa09 100644
+--- a/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeSerializer.kt
++++ b/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeSerializer.kt
+@@ -117,2 +117,9 @@ object RnoteNativeSerializer {
+ 
++            // Anchored at the origin like Rnote's `resize_doc_semi_infinite_layout`: the
++            // extent only ever reaches out to the right and down.
++            LayoutMode.SEMI_INFINITE -> if (ink != null) {
++                if (ink.maxX > maxX) maxX = ink.maxX
++                if (ink.maxY > maxY) maxY = ink.maxY
++            }
++
+             // No bounds to respect, so it is the page widened to cover everything.
+diff --git a/app/src/main/java/io/github/kjly/brna/ui/canvas/PaperBackgroundRenderer.kt b/app/src/main/java/io/github/kjly/brna/ui/canvas/PaperBackgroundRenderer.kt
+index 8ae25cf..73db36e 100644
+--- a/app/src/main/java/io/github/kjly/brna/ui/canvas/PaperBackgroundRenderer.kt
++++ b/app/src/main/java/io/github/kjly/brna/ui/canvas/PaperBackgroundRenderer.kt
+@@ -127,2 +127,10 @@ object PaperBackgroundRenderer {
+                 }
++                io.github.kjly.brna.model.LayoutMode.SEMI_INFINITE -> {
++                    // Pages only to the right of and below the origin page.
++                    val cStart = firstCol.coerceAtLeast(0)
++                    val rStart = firstRow.coerceAtLeast(0)
++                    val colCount = (lastCol - cStart).coerceIn(0, 30)
++                    val rowCount = (lastRow - rStart).coerceIn(0, 30)
++                    (cStart..(cStart + colCount)) to (rStart..(rStart + rowCount))
++                }
+                 io.github.kjly.brna.model.LayoutMode.INFINITE -> {
+@@ -210,3 +218,6 @@ object PaperBackgroundRenderer {
+         val docTop = panOffset.y
+-        val docRight = paperStyle.effectivePageWidthPx * zoomLevel + panOffset.x
++        val isSemiInfinite = paperStyle.layoutMode == io.github.kjly.brna.model.LayoutMode.SEMI_INFINITE
++        // Semi Infinite grows right and down without end: only left of and above the
++        // origin is outside the document.
++        val docRight = if (isSemiInfinite) screenW else paperStyle.effectivePageWidthPx * zoomLevel + panOffset.x
+         // Continuous Vertical grows downwards without end, so it has no bottom edge to
+diff --git a/app/src/test/java/io/github/kjly/brna/model/LayoutModeTest.kt b/app/src/test/java/io/github/kjly/brna/model/LayoutModeTest.kt
+index 49bbacd..f4a3fce 100644
+--- a/app/src/test/java/io/github/kjly/brna/model/LayoutModeTest.kt
++++ b/app/src/test/java/io/github/kjly/brna/model/LayoutModeTest.kt
+@@ -19,2 +19,3 @@ class LayoutModeTest {
+         assertEquals("continuous_vertical", LayoutMode.CONTINUOUS_VERTICAL.apiName)
++        assertEquals("semi_infinite", LayoutMode.SEMI_INFINITE.apiName)
+         assertEquals("infinite", LayoutMode.INFINITE.apiName)
+@@ -33,4 +34,9 @@ class LayoutModeTest {
+     @Test
+-    fun `Rnote's semi-infinite layout maps to the unbounded mode`() {
+-        assertSame(LayoutMode.INFINITE, LayoutMode.fromApiName("semi_infinite"))
++    fun `Rnote's semi-infinite layout keeps its own mode`() {
++        assertSame(LayoutMode.SEMI_INFINITE, LayoutMode.fromApiName("semi_infinite"))
++    }
++
++    @Test
++    fun `older Rnote's endless_vertical name reads as continuous vertical`() {
++        assertSame(LayoutMode.CONTINUOUS_VERTICAL, LayoutMode.fromApiName("endless_vertical"))
+     }

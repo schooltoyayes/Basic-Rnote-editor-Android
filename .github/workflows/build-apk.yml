@@ -51,7 +51,7 @@ jobs:
       - name: APK bauen
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+          ./gradlew --no-daemon assembleRelease
 
       - name: Unit-Tests (blockieren die APK nicht)
         continue-on-error: true
@@ -60,7 +60,7 @@ jobs:
       - name: APK umbenennen
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/*.apk dist/basic-rnote.apk
+          cp app/build/outputs/apk/release/*.apk dist/basic-rnote.apk
 
       - name: APK als Workflow-Artefakt hochladen
         uses: actions/upload-artifact@v4

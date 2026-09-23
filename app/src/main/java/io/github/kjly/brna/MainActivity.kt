@@ -1190,10 +1190,11 @@ class MainActivity : ComponentActivity() {
                             },
                             nativeElements = documentNativeElements,
                             selectedNatives = selectedNatives,
-                            onAddShape = { shape ->
+                            onAddShapes = { shapes ->
+                                // One undo step for all the lines of a grid or a coordinate system.
                                 undoStack.add(snapshot())
                                 redoStack.clear()
-                                documentNativeElements = documentNativeElements + shape
+                                documentNativeElements = documentNativeElements + shapes
                                 isModified = true
                             },
                             onEraseNatives = { erased ->
@@ -1369,6 +1370,9 @@ class MainActivity : ComponentActivity() {
                             onPaste = pasteClipboard,
                             onLockAspectRatioToggled = {
                                 toolConfig = toolConfig.copy(lockAspectRatio = !toolConfig.lockAspectRatio)
+                            },
+                            onSnapAnglesToggled = {
+                                toolConfig = toolConfig.copy(snapAngles = !toolConfig.snapAngles)
                             },
                             modifier = Modifier
                                 .align(Alignment.CenterStart)

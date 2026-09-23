@@ -22,8 +22,12 @@ enum class ToolType(val isImplemented: Boolean = true) {
  */
 enum class EraserMode { TRASH, SPLIT }
 
-/** The shapes the Shaper draws — the basic ones from desktop Rnote's shape picker. */
-enum class ShapeKind { LINE, ARROW, RECTANGLE, ELLIPSE }
+/**
+ * The shapes the Shaper draws, from desktop Rnote's shape picker. The last four are
+ * built from several lines, as Rnote builds them (see storage.ShapeBuilders); GRID takes
+ * two drags there too, the first for one cell and the second for how far to repeat it.
+ */
+enum class ShapeKind { LINE, ARROW, RECTANGLE, ELLIPSE, COORD_SYSTEM_2D, COORD_SYSTEM_3D, QUADRANT, GRID }
 
 /**
  * Desktop Rnote's brush styles. MARKER reproduces what BRNA used to call the
@@ -76,6 +80,8 @@ data class ToolConfig(
     /** The Shaper's current shape and width; Rnote's shaper defaults to a 2.0 line. */
     val shapeKind: ShapeKind = ShapeKind.LINE,
     val shaperWidth: Float = 2f,
+    /** Turns lines and arrows to the nearest 15°: level, upright and the set-square angles. */
+    val snapAngles: Boolean = false,
     val eraserMode: EraserMode = EraserMode.TRASH,
     /** The selector's "Lock Aspect Ratio": scale the selection uniformly. Off in Rnote by default. */
     val lockAspectRatio: Boolean = false,

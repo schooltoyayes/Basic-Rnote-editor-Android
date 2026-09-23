@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Architecture
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
@@ -28,6 +29,8 @@ import androidx.compose.material.icons.filled.Highlight
 import androidx.compose.material.icons.filled.HorizontalRule
 import androidx.compose.material.icons.filled.NorthEast
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -87,7 +90,8 @@ fun PenConfigStrip(
     onCopySelection: () -> Unit = {},
     onCutSelection: () -> Unit = {},
     onPaste: () -> Unit = {},
-    onLockAspectRatioToggled: () -> Unit = {}
+    onLockAspectRatioToggled: () -> Unit = {},
+    onSnapAnglesToggled: () -> Unit = {}
 ) {
     Surface(
         modifier = modifier.width(60.dp),
@@ -108,7 +112,7 @@ fun PenConfigStrip(
                     canPaste, onCopySelection, onCutSelection, onPaste,
                     toolConfig.lockAspectRatio, onLockAspectRatioToggled
                 )
-                ToolType.SHAPER -> ShaperConfigPage(toolConfig, onShapeKindSelected, onSizeChanged)
+                ToolType.SHAPER -> ShaperConfigPage(toolConfig, onShapeKindSelected, onSnapAnglesToggled, onSizeChanged)
                 ToolType.TYPEWRITER -> TypewriterConfigPage(toolConfig, onSizeChanged)
                 ToolType.TOOLS -> ToolsConfigPage()
             }
@@ -144,6 +148,7 @@ private fun BrushConfigPage(
 private fun ShaperConfigPage(
     toolConfig: ToolConfig,
     onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit,
+    onSnapAnglesToggled: () -> Unit,
     onSizeChanged: (Float) -> Unit
 ) {
     val kind = toolConfig.shapeKind
@@ -159,10 +164,56 @@ private fun ShaperConfigPage(
     StripIconToggle(Icons.Default.RadioButtonUnchecked, "Ellipse", kind == io.github.kjly.brna.model.ShapeKind.ELLIPSE, true) {
         onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.ELLIPSE)
     }
+    LineShapesMenu(kind, onShapeKindSelected)
+    StripDivider()
+    StripIconToggle(
+        Icons.Default.Architecture, "Snap Lines to 15°", toolConfig.snapAngles, true, onClick = onSnapAnglesToggled
+    )
     StripDivider()
     // Rnote's shaper shares the brush's 2 / 6 / 12 width presets.
     val presets = BrushSizePreset.entries.map { it to it.brushSolidPx }
     StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = 64f, onSizeChanged)
+}
+
+/** The shapes Rnote builds from lines, in the order and under the names its shape menu uses. */
+private val LINE_SHAPES = listOf(
+    Triple(io.github.kjly.brna.model.ShapeKind.COORD_SYSTEM_2D, GeneratedIcons.ShapeCoordSystem2D, "Coordinate System"),
+    Triple(io.github.kjly.brna.model.ShapeKind.COORD_SYSTEM_3D, GeneratedIcons.ShapeCoordSystem3D, "3D Coordinate System"),
+    Triple(io.github.kjly.brna.model.ShapeKind.QUADRANT, GeneratedIcons.ShapeQuadrant, "Single Quadrant Coordinate System"),
+    Triple(io.github.kjly.brna.model.ShapeKind.GRID, GeneratedIcons.ShapeGrid, "Grid")
+)
+
+/**
+ * One button for the shapes built from lines, showing whichever of them is chosen, and a
+ * menu to pick one: four more toggles would not fit the strip on a tablet held sideways.
+ */
+@Composable
+private fun LineShapesMenu(
+    kind: io.github.kjly.brna.model.ShapeKind,
+    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit
+) {
+    var open by remember { mutableStateOf(false) }
+    val chosen = LINE_SHAPES.firstOrNull { it.first == kind }
+    Box {
+        StripIconToggle(
+            chosen?.second ?: GeneratedIcons.ShapeCoordSystem2D,
+            chosen?.third ?: "Coordinate Systems and Grid",
+            selected = chosen != null,
+            implemented = true
+        ) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            for ((shape, icon, label) in LINE_SHAPES) {
+                DropdownMenuItem(
+                    leadingIcon = { Icon(icon, null) },
+                    text = { Text(if (shape == io.github.kjly.brna.model.ShapeKind.GRID) "$label (draw a cell, then drag it out)" else label) },
+                    onClick = {
+                        open = false
+                        onShapeKindSelected(shape)
+                    }
+                )
+            }
+        }
+    }
 }
 
 // ── Eraser ───────────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.NativeStrokePoint
 import io.github.kjly.brna.model.PressureCurve
 import io.github.kjly.brna.model.NativeTextElement
+import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RnoteNativeDocument
@@ -242,6 +243,7 @@ object RnoteNativeParser {
                 "textstroke"  -> parseTextStroke(reader)
                 "bitmapimage" -> parseBitmapImage(reader)
                 "shapestroke" -> parseShapeStroke(reader)
+                "vectorimage" -> parseVectorImage(reader)
                 else          -> { reader.skipValue(); element }
             }
         }
@@ -469,6 +471,45 @@ object RnoteNativeParser {
         } catch (e: Exception) { null }
     }
 
+    // ── VectorImage ───────────────────────────────────────────────────────────
+
+    /**
+     * `{"svg_data": "...", "intrinsic_size": [w, h],
+     *   "rectangle": {"cuboid": {"half_extents": [hx, hy]}, "transform": {"affine": [..]}}}`
+     *
+     * This is how desktop Rnote stores an imported PDF page. It used to be skipped
+     * outright, so a PDF-based note opened empty here and a save wrote it back without
+     * its pages.
+     */
+    private fun parseVectorImage(reader: JsonReader): NativeVectorImageElement? {
+        var svg = ""
+        var iw = 0f; var ih = 0f
+        var rect: RectShape? = null
+        reader.beginObject()
+        while (reader.hasNext()) {
+            when (reader.nextName()) {
+                "svg_data"       -> svg = reader.nextString()
+                "intrinsic_size" -> { reader.beginArray(); iw = reader.nextDouble().toFloat(); ih = reader.nextDouble().toFloat(); reader.endArray() }
+                "rectangle"      -> rect = parseRectShape(reader)
+                else             -> reader.skipValue()
+            }
+        }
+        reader.endObject()
+        val r = rect ?: return null
+        if (svg.isEmpty()) return null
+        val b = boundsForShape(r)
+        return NativeVectorImageElement(
+            svgData = svg,
+            intrinsicWidth = if (iw > 0f) iw else 2f * r.halfExtentX,
+            intrinsicHeight = if (ih > 0f) ih else 2f * r.halfExtentY,
+            halfExtentX = r.halfExtentX,
+            halfExtentY = r.halfExtentY,
+            transform = r.transform,
+            layer = "image",
+            minX = b[0], minY = b[1], maxX = b[2], maxY = b[3]
+        )
+    }
+
     // ── ShapeStroke ───────────────────────────────────────────────────────────
 
     /**
@@ -669,12 +710,29 @@ object RnoteNativeParser {
 
     // ── chrono_components ─────────────────────────────────────────────────────
 
-    /** Chrono-order entry: which stroke_components slot it points to, and whether its layer is "highlighter". */
-    private data class ChronoEntry(val strokeIndex: Int, val isHighlighter: Boolean)
+    /**
+     * Chrono-order entry for one stroke_components slot.
+     *
+     * `chrono_components` is a slotmap `SecondaryMap` keyed like `stroke_components`, so
+     * the entry at position i belongs to the stroke at position i. Its `t` is *not* an
+     * index: it is a timestamp from `chrono_counter` (Rnote's `update_chrono_to_last`).
+     * The two only coincide in a file nobody ever erased or reordered anything in, which
+     * is why reading `t` as the slot scrambled or dropped strokes in real documents.
+     * Draw order is Rnote's `sort_keys_chrono`: by layer first, then by `t`.
+     */
+    private data class ChronoEntry(
+        val strokeIndex: Int,
+        val t: Long,
+        val layerRank: Long,
+        val layerName: String,
+        val isHighlighter: Boolean
+    )
 
     private fun parseChronoComponents(reader: JsonReader, out: MutableList<ChronoEntry>) {
+        var position = -1
         reader.beginArray()
         while (reader.hasNext()) {
+            position++
             // Each item: {"value": {"t": index, "layer": "highlighter" | {"user_layer": N}} | null, "version": N}
             reader.beginObject()
             while (reader.hasNext()) {
@@ -683,25 +741,36 @@ object RnoteNativeParser {
                         if (reader.peek() == JsonToken.NULL) {
                             reader.nextNull()
                         } else {
-                            var t = -1
-                            var isHighlighter = false
+                            var t = -1L
+                            var layer = LayerInfo(USER_LAYER_RANK, "user_layer")
+                            var legacyIndex = -1
                             reader.beginObject()
                             while (reader.hasNext()) {
                                 when (reader.nextName()) {
-                                    // v0.14: {"t": index, "layer": ...}
-                                    "t"     -> t = reader.nextInt()
-                                    "layer" -> isHighlighter = parseLayerIsHighlighter(reader)
+                                    // v0.14: {"t": timestamp, "layer": ...}
+                                    "t"     -> t = reader.nextLong()
+                                    "layer" -> layer = parseLayer(reader)
                                     // Old: {"stroke_key": {"index": N}}
-                                    "stroke_key" -> t = parseStrokeKey(reader)
+                                    "stroke_key" -> legacyIndex = parseStrokeKey(reader)
                                     else -> reader.skipValue()
                                 }
                             }
                             reader.endObject()
-                            if (t >= 0) out.add(ChronoEntry(t, isHighlighter))
+                            val index = if (legacyIndex >= 0) legacyIndex else position
+                            out.add(ChronoEntry(
+                                strokeIndex = index,
+                                t = if (t >= 0) t else index.toLong(),
+                                layerRank = layer.rank,
+                                layerName = layer.name,
+                                isHighlighter = layer.name == "highlighter"
+                            ))
                         }
                     }
                     // Old format without value wrapper
-                    "stroke_key" -> out.add(ChronoEntry(parseStrokeKey(reader), false))
+                    "stroke_key" -> {
+                        val index = parseStrokeKey(reader)
+                        out.add(ChronoEntry(index, index.toLong(), USER_LAYER_RANK, "user_layer", false))
+                    }
                     else -> reader.skipValue()
                 }
             }
@@ -710,20 +779,40 @@ object RnoteNativeParser {
         reader.endArray()
     }
 
-    /** `StrokeLayer` is externally tagged: unit variants (e.g. `Highlighter`) serialize as a bare
-     * string "highlighter"; tuple variants (e.g. `UserLayer(0)`) serialize as `{"user_layer": 0}`. */
-    private fun parseLayerIsHighlighter(reader: JsonReader): Boolean {
+    private class LayerInfo(val rank: Long, val name: String)
+
+    /** Rank of `UserLayer(0)`; user layer n ranks n above it. */
+    private const val USER_LAYER_RANK = 3L
+
+    /**
+     * `StrokeLayer` is externally tagged: unit variants (e.g. `Highlighter`) serialize as a
+     * bare string "highlighter"; tuple variants (e.g. `UserLayer(0)`) as `{"user_layer": 0}`.
+     * Ranked as Rnote's `Ord for StrokeLayer`: Document < Image < Highlighter < UserLayer(n).
+     */
+    private fun parseLayer(reader: JsonReader): LayerInfo {
+        fun unit(name: String) = when (name.lowercase()) {
+            "document"    -> LayerInfo(0L, "document")
+            "image"       -> LayerInfo(1L, "image")
+            "highlighter" -> LayerInfo(2L, "highlighter")
+            else          -> LayerInfo(USER_LAYER_RANK, "user_layer")
+        }
         return if (reader.peek() == JsonToken.STRING) {
-            reader.nextString().equals("highlighter", ignoreCase = true)
+            unit(reader.nextString())
         } else {
-            var highlighter = false
+            var info = LayerInfo(USER_LAYER_RANK, "user_layer")
             reader.beginObject()
             while (reader.hasNext()) {
-                if (reader.nextName().equals("highlighter", ignoreCase = true)) highlighter = true
-                reader.skipValue()
+                val name = reader.nextName()
+                if (name.equals("user_layer", ignoreCase = true) || name == "UserLayer") {
+                    val n = if (reader.peek() == JsonToken.NUMBER) reader.nextLong() else { reader.skipValue(); 0L }
+                    info = LayerInfo(USER_LAYER_RANK + n.coerceAtLeast(0L), "user_layer")
+                } else {
+                    info = unit(name)
+                    reader.skipValue()
+                }
             }
             reader.endObject()
-            highlighter
+            info
         }
     }
 
@@ -749,12 +838,27 @@ object RnoteNativeParser {
         order: List<ChronoEntry>
     ): List<NativeCanvasElement> {
         if (order.isEmpty()) return raw.filterNotNull()
-        return order.mapNotNull { entry ->
-            val el = raw.getOrNull(entry.strokeIndex) ?: return@mapNotNull null
-            if (entry.isHighlighter && el is NativeBrushStroke && !el.isHighlighter) {
-                el.copy(isHighlighter = true)
-            } else el
-        }
+        val seen = HashSet<Int>()
+        val ordered = order
+            .filter { seen.add(it.strokeIndex) }
+            .sortedWith(compareBy<ChronoEntry>({ it.layerRank }, { it.t }))
+            .mapNotNull { entry ->
+                val el = raw.getOrNull(entry.strokeIndex) ?: return@mapNotNull null
+                when {
+                    entry.isHighlighter && el is NativeBrushStroke && !el.isHighlighter ->
+                        el.copy(isHighlighter = true)
+                    el is NativeVectorImageElement && entry.layerName == "document" ->
+                        NativeVectorImageElement(
+                            el.svgData, el.intrinsicWidth, el.intrinsicHeight,
+                            el.halfExtentX, el.halfExtentY, el.transform, "document",
+                            el.minX, el.minY, el.maxX, el.maxY
+                        )
+                    else -> el
+                }
+            }
+        // A stroke with no chrono entry at all is still a stroke; Rnote would draw it too.
+        val missing = raw.indices.filter { it !in seen }.mapNotNull { raw[it] }
+        return if (missing.isEmpty()) ordered else ordered + missing
     }
 
     // ── Shared helpers ────────────────────────────────────────────────────────

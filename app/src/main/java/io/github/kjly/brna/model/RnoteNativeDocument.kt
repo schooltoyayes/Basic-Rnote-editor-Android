@@ -72,6 +72,26 @@ data class NativeBitmapElement(
 ) : NativeCanvasElement()
 
 /**
+ * Rnote's `VectorImage` — what desktop Rnote makes of an imported PDF page or SVG. The
+ * SVG is kept verbatim so a save writes it back untouched; it is stretched over the
+ * rectangle [-halfExtentX, halfExtentX] x [-halfExtentY, halfExtentY], which [transform]
+ * then places in the document (Rnote's `VectorImage::gen_svg`).
+ */
+class NativeVectorImageElement(
+    val svgData: String,
+    val intrinsicWidth: Float,
+    val intrinsicHeight: Float,
+    val halfExtentX: Float,
+    val halfExtentY: Float,
+    /** Column-major 2D affine, as [NativeTextElement.transform]. Centres the rectangle. */
+    val transform: FloatArray,
+    /** The chrono layer it came from: "document" for PDF pages, "image" otherwise. */
+    val layer: String,
+    override val minX: Float, override val minY: Float,
+    override val maxX: Float, override val maxY: Float
+) : NativeCanvasElement()
+
+/**
  * Geometric shape, held the way Rnote holds it (`rnote-compose/src/shapes`) rather than
  * as an axis-aligned box of our own: a rect is half-extents about a *transformed* centre,
  * an ellipse is radii about one. Storing them as a plain x/y/w/h — which is what this

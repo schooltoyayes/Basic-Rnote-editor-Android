@@ -13,6 +13,7 @@ import io.github.kjly.brna.model.NativeCanvasElement
 import io.github.kjly.brna.model.NativePatternType
 import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.NativeTextElement
+import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RnoteNativeDocument
@@ -199,7 +200,13 @@ object RnoteNativeSerializer {
 
         sb.append("""],"chrono_components":[{"value":null,"version":0}""")
         doc.elements.forEachIndexed { i, el ->
-            val layer = if (el is NativeBrushStroke && el.isHighlighter) "\"highlighter\"" else """{"user_layer":0}"""
+            val layer = when {
+                el is NativeBrushStroke && el.isHighlighter -> "\"highlighter\""
+                // PDF pages sit on Rnote's document layer, underneath everything else.
+                el is NativeVectorImageElement ->
+                    if (el.layer == "document") "\"document\"" else "\"image\""
+                else -> """{"user_layer":0}"""
+            }
             sb.append(""",{"value":{"t":${i + 1},"layer":$layer},"version":1}""")
         }
         sb.append("""],"chrono_counter":${doc.elements.size}}}}""")
@@ -251,6 +258,7 @@ object RnoteNativeSerializer {
             is NativeTextElement  -> appendTextElement(el)
             is NativeBitmapElement -> appendBitmapElement(el)
             is NativeShapeElement  -> appendShapeElement(el)
+            is NativeVectorImageElement -> appendVectorImage(el)
         }
     }
 
@@ -342,6 +350,18 @@ object RnoteNativeSerializer {
         append(",")
         append(""""bounds":{""")
         append(""""mins":[${el.minX},${el.minY}],"maxs":[${el.maxX},${el.maxY}]""")
+        append("}}}")
+    }
+
+    // ── VectorImage ───────────────────────────────────────────────────────────
+
+    /** The mirror of `parseVectorImage`; the SVG goes back exactly as it was read. */
+    private fun StringBuilder.appendVectorImage(el: NativeVectorImageElement) {
+        append("""{"vectorimage":{"svg_data":""")
+        append(jsonString(el.svgData))
+        append(""","intrinsic_size":[${el.intrinsicWidth},${el.intrinsicHeight}]""")
+        append(""","rectangle":{"cuboid":{"half_extents":[${el.halfExtentX},${el.halfExtentY}]},"transform":""")
+        appendAffine(el.transform)
         append("}}}")
     }
 

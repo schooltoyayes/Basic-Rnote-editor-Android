@@ -17,6 +17,31 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- "Open with" for .rnote files from file managers, Drive, mail and chat apps.
+                 Android knows no MIME type for .rnote, so providers hand one over as a
+                 generic binary or gzip type ... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/x-rnote" />
+                <data android:mimeType="application/rnote" />
+                <data android:mimeType="application/gzip" />
+                <data android:mimeType="application/x-gzip" />
+            </intent-filter>
+            <!-- ... and those that keep the file name in the uri are matched by it. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.rnote" />
+                <data android:pathPattern=".*\\..*\\.rnote" />
+            </intent-filter>
         </activity>
     </application>
 

@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,11 +18,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
 import io.github.kjly.brna.export.DocumentExporter
 import io.github.kjly.brna.export.ExportFormat
 import io.github.kjly.brna.export.ExportPrefs
@@ -53,6 +58,9 @@ import io.github.kjly.brna.storage.DocumentUri
 import io.github.kjly.brna.storage.FileManager
 import io.github.kjly.brna.storage.SettingsManager
 import kotlin.math.floor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import io.github.kjly.brna.ui.canvas.DrawingCanvas
 import io.github.kjly.brna.ui.components.ColorPicker
 import io.github.kjly.brna.ui.components.ExportSheet
@@ -94,6 +102,20 @@ class MainActivity : ComponentActivity() {
     /** Set when the file's own name becomes the note's title (on open, and on save-as). */
     private var onTitleAdopted: ((String) -> Unit)? = null
 
+    /**
+     * Non-null while a file is being read or written off the main thread; shown as a
+     * progress card. Reading a large .rnote (imported PDF pages are megabytes of SVG) on
+     * the main thread froze the whole UI and could trip "app isn't responding".
+     */
+    private var busyMessage by mutableStateOf<String?>(null)
+
+    /**
+     * A note that has finished loading and waits to be handed to the UI. Going through
+     * state rather than calling [onDocumentLoaded] directly matters for "Open with": that
+     * load can finish before the first composition has installed the real handler.
+     */
+    private var incomingDocument by mutableStateOf<NoteDocument?>(null)
+
     /** Opens the create-document picker in the folder the note already lives in. */
     private inner class CreateDocumentNear(mimeType: String) :
         ActivityResultContracts.CreateDocument(mimeType) {
@@ -128,24 +150,49 @@ class MainActivity : ComponentActivity() {
 
     private val openDocumentLauncher = registerForActivityResult(
         OpenDocumentNear()
-    ) { uri ->
-        uri?.let {
-            val loaded = FileManager.loadDocumentFromUri(this, it)
-            if (loaded != null) {
-                val fileName = DocumentUri.displayName(this, it)
+    ) { uri -> uri?.let { openDocument(it) } }
+
+    /**
+     * Reads [uri] off the main thread and hands the note to the UI. Shared by the Open
+     * picker and by "Open with" from other apps.
+     */
+    private fun openDocument(uri: Uri) {
+        if (busyMessage != null) return
+        busyMessage = "Opening…"
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    FileManager.loadDocumentFromUri(this@MainActivity, uri)
+                        ?.let { it to DocumentUri.displayName(this@MainActivity, uri) }
+                } catch (e: Throwable) {
+                    // OutOfMemoryError included: a file too big to hold is a failed open,
+                    // not a crash.
+                    e.printStackTrace()
+                    null
+                }
+            }
+            busyMessage = null
+            if (result != null) {
+                val (loaded, fileName) = result
                 // The file's own name wins over the title inside it: a .rnote carries no
                 // title at all, and our JSON's title is only what it was last renamed to.
                 val title = fileName?.let(DocumentUri::titleFrom) ?: loaded.document.title
                 // The bytes decide the format it saves back as. The old test was the
                 // "Imported Note" placeholder title, which said nothing about the file.
                 saveAsRnote = loaded.isNativeRnote
-                adoptDocumentUri(it)
-                onDocumentLoaded(loaded.document.copy(title = title))
-                Toast.makeText(this, "Opened: $title", Toast.LENGTH_SHORT).show()
+                adoptDocumentUri(uri)
+                incomingDocument = loaded.document.copy(title = title)
+                Toast.makeText(this@MainActivity, "Opened: $title", Toast.LENGTH_SHORT).show()
             } else {
-                Toast.makeText(this, "Could not open file", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "Could not open file", Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    /** "Open with" from a file manager, Drive, a mail or chat app. */
+    private fun handleViewIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        intent.data?.let { openDocument(it) }
     }
 
     /** This uri is now the note's home: save over it, and start the picker beside it. */
@@ -158,20 +205,35 @@ class MainActivity : ComponentActivity() {
     /** Writes back over the file the note came from. False when it has no file yet. */
     private fun saveInPlace(document: NoteDocument): Boolean {
         val target = currentDocumentUri ?: return false
-        val success = FileManager.saveDocumentToUri(this, target, document, asRnote = saveAsRnote)
-        if (success) {
-            onSaveSucceeded?.invoke()
-            Toast.makeText(this, "Saved ${document.title}", Toast.LENGTH_SHORT).show()
-        } else {
-            // The grant can be gone (file deleted, card pulled, permission revoked), so
-            // fall back to asking for a destination rather than losing the edits.
-            currentDocumentUri = null
-            Toast.makeText(
-                this, "Could not save over the file — choose a location", Toast.LENGTH_LONG
-            ).show()
-            launchSavePicker(document)
+        if (busyMessage != null) return true
+        busyMessage = "Saving…"
+        val asRnote = saveAsRnote
+        lifecycleScope.launch {
+            val success = withContext(Dispatchers.IO) { writeDocument(target, document, asRnote) }
+            busyMessage = null
+            if (success) {
+                onSaveSucceeded?.invoke()
+                Toast.makeText(this@MainActivity, "Saved ${document.title}", Toast.LENGTH_SHORT).show()
+            } else {
+                // The grant can be gone (file deleted, card pulled, permission revoked, or
+                // a read-only "Open with" grant), so fall back to asking for a destination
+                // rather than losing the edits.
+                currentDocumentUri = null
+                Toast.makeText(
+                    this@MainActivity, "Could not save over the file — choose a location", Toast.LENGTH_LONG
+                ).show()
+                launchSavePicker(document)
+            }
         }
         return true
+    }
+
+    /** Blocking write; call from [Dispatchers.IO]. False on any failure, OOM included. */
+    private fun writeDocument(uri: Uri, document: NoteDocument, asRnote: Boolean): Boolean = try {
+        FileManager.saveDocumentToUri(this, uri, document, asRnote)
+    } catch (e: Throwable) {
+        e.printStackTrace()
+        false
     }
 
     /** Asks for a destination, then saves there and adopts it. */
@@ -188,19 +250,27 @@ class MainActivity : ComponentActivity() {
     private fun finishSaveAs(uri: Uri, asRnote: Boolean) {
         val document = pendingDocumentToSave ?: return
         pendingDocumentToSave = null
-        if (!FileManager.saveDocumentToUri(this, uri, document, asRnote)) {
-            Toast.makeText(this, "Save failed", Toast.LENGTH_SHORT).show()
-            return
+        busyMessage = "Saving…"
+        lifecycleScope.launch {
+            val success = withContext(Dispatchers.IO) { writeDocument(uri, document, asRnote) }
+            busyMessage = null
+            if (!success) {
+                Toast.makeText(this@MainActivity, "Save failed", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            saveAsRnote = asRnote
+            adoptDocumentUri(uri)
+            // The picker lets the name be edited, so the note takes the name it was actually
+            // saved under — otherwise the title in the bar and the file on disk disagree.
+            DocumentUri.displayName(this@MainActivity, uri)
+                ?.let { onTitleAdopted?.invoke(DocumentUri.titleFrom(it)) }
+            onSaveSucceeded?.invoke()
+            Toast.makeText(
+                this@MainActivity,
+                if (asRnote) "Saved as .rnote" else "Saved as .json",
+                Toast.LENGTH_SHORT
+            ).show()
         }
-        saveAsRnote = asRnote
-        adoptDocumentUri(uri)
-        // The picker lets the name be edited, so the note takes the name it was actually
-        // saved under — otherwise the title in the bar and the file on disk disagree.
-        DocumentUri.displayName(this, uri)?.let { onTitleAdopted?.invoke(DocumentUri.titleFrom(it)) }
-        onSaveSucceeded?.invoke()
-        Toast.makeText(
-            this, if (asRnote) "Saved as .rnote" else "Saved as .json", Toast.LENGTH_SHORT
-        ).show()
     }
 
 
@@ -379,6 +449,16 @@ class MainActivity : ComponentActivity() {
                 documentNativeElements = doc.nativeElements
                 viewportState = ViewportState(displayScale = displayScale)
                 isModified = false
+            }
+
+            // A finished load waits in incomingDocument; hand it over once this handler
+            // exists (see incomingDocument for why it isn't called directly).
+            val pendingDocument = incomingDocument
+            LaunchedEffect(pendingDocument) {
+                if (pendingDocument != null) {
+                    onDocumentLoaded(pendingDocument)
+                    incomingDocument = null
+                }
             }
 
             // ── New document handler ──────────────────────────────────────────────
@@ -646,6 +726,21 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.align(Alignment.CenterEnd)
                             )
                         }
+
+                        // ── Progress card while a file is read or written ─────────────
+                        busyMessage?.let { message ->
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .background(Color(0xE61E1E2E), RoundedCornerShape(16.dp))
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                CircularProgressIndicator()
+                                Spacer(Modifier.height(12.dp))
+                                Text(message, color = Color.White, fontSize = 14.sp)
+                            }
+                        }
                     }
 
                     // ── Export Sheet ──────────────────────────────────────────────
@@ -743,6 +838,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        // "Open with" — only for the launch that brought the file, not when the activity
+        // is recreated with the same intent after the process was reclaimed.
+        if (savedInstanceState == null) handleViewIntent(intent)
     }
 
     override fun onStop() {

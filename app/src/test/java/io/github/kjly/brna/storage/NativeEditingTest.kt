@@ -89,6 +89,71 @@ class NativeEditingTest {
         }
     }
 
+    /** 2 × 1 pixels of premultiplied RGBA: opaque red, then half-transparent white. */
+    private val twoPixels = java.util.Base64.getEncoder().encodeToString(
+        byteArrayOf(-1, 0, 0, -1, -128, -128, -128, -128)
+    )
+
+    @Test
+    fun `a new image is written the way Rnote 0_14 writes one`() {
+        val image = NativeEditing.createImage(twoPixels, 2, 1, NativeEditing.ImagePlacement(100f, 50f, 20f))!!
+        val raw = image.raw!!.asJsonObject
+        val inner = raw.getAsJsonObject("image")
+        assertEquals(twoPixels, inner.get("data").asString)
+        assertEquals(2, inner.get("pixel_width").asInt)
+        assertEquals(1, inner.get("pixel_height").asInt)
+        assertEquals("R8g8b8a8Premultiplied", inner.get("memory_format").asString)
+        // As BitmapImage::from_image_bytes: the rectangle is the pixel grid, the scale and
+        // the position are in its transform.
+        val rect = raw.getAsJsonObject("rectangle")
+        assertEquals(1.0, rect.getAsJsonObject("cuboid").getAsJsonArray("half_extents")[0].asDouble, 1e-6)
+        assertEquals(0.5, rect.getAsJsonObject("cuboid").getAsJsonArray("half_extents")[1].asDouble, 1e-6)
+        val affine = rect.getAsJsonObject("transform").getAsJsonArray("affine")
+        assertEquals(20.0, affine[0].asDouble, 1e-6)
+        assertEquals(20.0, affine[4].asDouble, 1e-6)
+        assertEquals(120.0, affine[6].asDouble, 1e-6)
+        assertEquals(60.0, affine[7].asDouble, 1e-6)
+        // Read back as the 0.14 form, covering 40 × 20 from its top-left corner.
+        assertEquals(twoPixels, image.rgbaBase64)
+        assertEquals(100f, image.minX, 1e-3f)
+        assertEquals(50f, image.minY, 1e-3f)
+        assertEquals(140f, image.maxX, 1e-3f)
+        assertEquals(70f, image.maxY, 1e-3f)
+    }
+
+    @Test
+    fun `an image without pixels is not created`() {
+        assertNull(NativeEditing.createImage("", 0, 0, NativeEditing.ImagePlacement(0f, 0f, 1f)))
+    }
+
+    @Test
+    fun `an image that fits goes in at its own size, offset into the view`() {
+        val p = NativeEditing.placeImage(200, 100, 1000f, 2000f, 3000f, 4000f, 32f, null, clampToOrigin = true)
+        assertEquals(1032f, p.x, 1e-3f)
+        assertEquals(2032f, p.y, 1e-3f)
+        assertEquals(1f, p.scale, 1e-6f)
+    }
+
+    @Test
+    fun `a large image shrinks to fit the view and the page`() {
+        // A view of 800 × 600 with 32 kept free all round leaves 736 × 536.
+        val inView = NativeEditing.placeImage(1600, 1200, 0f, 0f, 800f, 600f, 32f, null, clampToOrigin = true)
+        assertEquals(536f / 1200f, inView.scale, 1e-6f)
+        // On a page 400 wide, its right edge is the tighter limit.
+        val onPage = NativeEditing.placeImage(1600, 1200, 0f, 0f, 800f, 600f, 32f, 400f, clampToOrigin = true)
+        assertEquals((400f - 32f) / 1600f, onPage.scale, 1e-6f)
+    }
+
+    @Test
+    fun `an image lands no further up or left than the origin, unless the layout is infinite`() {
+        val bounded = NativeEditing.placeImage(10, 10, -500f, -300f, 500f, 300f, 32f, null, clampToOrigin = true)
+        assertEquals(0f, bounded.x, 1e-3f)
+        assertEquals(0f, bounded.y, 1e-3f)
+        val infinite = NativeEditing.placeImage(10, 10, -500f, -300f, 500f, 300f, 32f, null, clampToOrigin = false)
+        assertEquals(-468f, infinite.x, 1e-3f)
+        assertEquals(-268f, infinite.y, 1e-3f)
+    }
+
     @Test
     fun `the eraser hits a rectangle's outline but not its empty inside`() {
         val rect = NativeEditing.createShape(ShapeKind.RECTANGLE, 0f, 0f, 100f, 100f, black, 2f)!!

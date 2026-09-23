@@ -9,9 +9,11 @@ import androidx.compose.material.icons.filled.FilterCenterFocus
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NoteAdd
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.SaveAs
 import androidx.compose.material.icons.filled.TouchApp
@@ -67,6 +69,12 @@ fun RnoteTopBar(
     onOpenPageSettings: () -> Unit,
     /** Desktop Rnote's "Import PDF": the pages go into the open note. */
     onImportPdf: () -> Unit = {},
+    /** A picture from the gallery into the open note. */
+    onInsertImage: () -> Unit = {},
+    /** False on a device without a camera, which hides "Take photo". */
+    canTakePhoto: Boolean = false,
+    /** A photo taken now into the open note. */
+    onTakePhoto: () -> Unit = {},
     /** The notes opened or saved last. */
     onShowRecent: () -> Unit = {},
     /** Thumbnails of every page, to jump to one. */
@@ -188,6 +196,18 @@ fun RnoteTopBar(
                         text = { Text("Import PDF…") },
                         onClick = { showOverflowMenu = false; onImportPdf() }
                     )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Default.Image, null) },
+                        text = { Text("Insert image…") },
+                        onClick = { showOverflowMenu = false; onInsertImage() }
+                    )
+                    if (canTakePhoto) {
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.PhotoCamera, null) },
+                            text = { Text("Take photo…") },
+                            onClick = { showOverflowMenu = false; onTakePhoto() }
+                        )
+                    }
                     HorizontalDivider()
                     // One entry, not one per format: scope and format are both chosen
                     // in the export sheet, the way desktop Rnote's export dialogs do it.

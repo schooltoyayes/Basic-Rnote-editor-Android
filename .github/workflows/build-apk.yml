@@ -4,13 +4,15 @@ name: APK bauen
 
 on:
   push:
-    branches: [main]
+    # claude/**: Arbeits-Branches werden nur gebaut und getestet,
+    # das Release "latest" kommt ausschließlich von main.
+    branches: [main, 'claude/**']
   workflow_dispatch:   # manuell starten: Actions -> "APK bauen" -> "Run workflow"
 
 permissions:
   contents: write      # nötig, um das Release "latest" anzulegen
 concurrency:
-  group: apk-build
+  group: apk-build-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   build:
@@ -70,6 +72,7 @@ jobs:
           path: dist/basic-rnote.apk
 
       - name: Release "latest" aktualisieren
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

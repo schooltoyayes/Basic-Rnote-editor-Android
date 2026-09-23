@@ -55,10 +55,14 @@ import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.ViewportState
 import io.github.kjly.brna.storage.DocumentUri
 import io.github.kjly.brna.storage.FileManager
+import io.github.kjly.brna.storage.Recovery
 import io.github.kjly.brna.storage.SettingsManager
 import kotlin.math.floor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import io.github.kjly.brna.ui.canvas.DrawingCanvas
 import io.github.kjly.brna.ui.components.ColorPicker
@@ -95,8 +99,31 @@ class MainActivity : ComponentActivity() {
      */
     private var pickerStartUri: Uri? = null
 
-    // Called after save so we can clear isModified
-    private var onSaveSucceeded: (() -> Unit)? = null
+    // Called after a save with what was written, so the UI can clear isModified — but only
+    // if nothing changed while the write was running.
+    private var onSaveSucceeded: ((NoteDocument) -> Unit)? = null
+
+    /**
+     * The open note when it has unsaved changes, null when there is nothing to protect.
+     * Installed by the UI, read by autosave.
+     */
+    private var unsavedDocument: (() -> NoteDocument?)? = null
+
+    /**
+     * The file's last-modified time as of our own last open or save of it. A different
+     * value at save time means somebody else wrote it in between — Toni on the laptop,
+     * through a synced Drive folder — and saving over it would silently lose their work.
+     */
+    private var knownLastModified: Long? = null
+
+    /** A save that found the file changed elsewhere, waiting for the user to decide. */
+    private var pendingConflict by mutableStateOf<NoteDocument?>(null)
+
+    /** A note recovered from the last session, waiting to be offered back. */
+    private var pendingRecovery by mutableStateOf<Recovery.Pending?>(null)
+
+    /** Set when [incomingDocument] is a recovered note, which is unsaved by definition. */
+    private var incomingIsRecovered = false
 
     /** Set when the file's own name becomes the note's title (on open, and on save-as). */
     private var onTitleAdopted: ((String) -> Unit)? = null
@@ -162,7 +189,10 @@ class MainActivity : ComponentActivity() {
             val result = withContext(Dispatchers.IO) {
                 try {
                     FileManager.loadDocumentFromUri(this@MainActivity, uri)
-                        ?.let { it to DocumentUri.displayName(this@MainActivity, uri) }
+                        ?.let {
+                            knownLastModified = DocumentUri.lastModified(this@MainActivity, uri)
+                            it to DocumentUri.displayName(this@MainActivity, uri)
+                        }
                 } catch (e: Throwable) {
                     // OutOfMemoryError included: a file too big to hold is a failed open,
                     // not a crash.
@@ -202,16 +232,21 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Writes back over the file the note came from. False when it has no file yet. */
-    private fun saveInPlace(document: NoteDocument): Boolean {
+    private fun saveInPlace(document: NoteDocument, overwriteChanges: Boolean = false): Boolean {
         val target = currentDocumentUri ?: return false
         if (busyMessage != null) return true
         busyMessage = "Saving…"
         val asRnote = saveAsRnote
         lifecycleScope.launch {
-            val success = withContext(Dispatchers.IO) { writeDocument(target, document, asRnote) }
+            if (!overwriteChanges && withContext(Dispatchers.IO) { changedElsewhere(target) }) {
+                busyMessage = null
+                pendingConflict = document
+                return@launch
+            }
+            val success = writeLock.withLock { withContext(Dispatchers.IO) { writeDocument(target, document, asRnote) } }
             busyMessage = null
             if (success) {
-                onSaveSucceeded?.invoke()
+                afterSave(target, document)
                 Toast.makeText(this@MainActivity, "Saved ${document.title}", Toast.LENGTH_SHORT).show()
             } else {
                 // The grant can be gone (file deleted, card pulled, permission revoked, or
@@ -226,6 +261,50 @@ class MainActivity : ComponentActivity() {
         }
         return true
     }
+
+    /** Blocking; call from [Dispatchers.IO]. */
+    private fun changedElsewhere(uri: Uri): Boolean {
+        val known = knownLastModified ?: return false
+        val now = DocumentUri.lastModified(this, uri) ?: return false
+        return now != known
+    }
+
+    /** Bookkeeping after any successful write of [document] to [uri]. */
+    private suspend fun afterSave(uri: Uri, document: NoteDocument) {
+        knownLastModified = withContext(Dispatchers.IO) {
+            Recovery.clear(this@MainActivity)
+            DocumentUri.lastModified(this@MainActivity, uri)
+        }
+        onSaveSucceeded?.invoke(document)
+    }
+
+    /**
+     * Rnote saves on its own every couple of minutes; this does the same. The unsaved note
+     * always goes to the private recovery copy first (fast, and it can't fail on a lost
+     * file grant), then over its own file if it has one that nobody else has changed. It
+     * never asks anything: a conflict or a failure just leaves the recovery copy and the
+     * question for the next manual save.
+     */
+    private fun autosave() {
+        val document = unsavedDocument?.invoke() ?: return
+        val target = currentDocumentUri
+        val asRnote = saveAsRnote
+        lifecycleScope.launch {
+            val wrote = withContext(Dispatchers.IO) {
+                try {
+                    Recovery.write(this@MainActivity, document, target, asRnote)
+                } catch (e: Throwable) {
+                    e.printStackTrace()
+                }
+                target != null && busyMessage == null && !changedElsewhere(target) &&
+                    writeLock.withLock { writeDocument(target, document, asRnote) }
+            }
+            if (wrote && target != null) afterSave(target, document)
+        }
+    }
+
+    /** One write to a file at a time: autosave and a manual save can otherwise overlap. */
+    private val writeLock = Mutex()
 
     /** Blocking write; call from [Dispatchers.IO]. False on any failure, OOM included. */
     private fun writeDocument(uri: Uri, document: NoteDocument, asRnote: Boolean): Boolean = try {
@@ -251,7 +330,7 @@ class MainActivity : ComponentActivity() {
         pendingDocumentToSave = null
         busyMessage = "Saving…"
         lifecycleScope.launch {
-            val success = withContext(Dispatchers.IO) { writeDocument(uri, document, asRnote) }
+            val success = writeLock.withLock { withContext(Dispatchers.IO) { writeDocument(uri, document, asRnote) } }
             busyMessage = null
             if (!success) {
                 Toast.makeText(this@MainActivity, "Save failed", Toast.LENGTH_SHORT).show()
@@ -263,7 +342,7 @@ class MainActivity : ComponentActivity() {
             // saved under — otherwise the title in the bar and the file on disk disagree.
             DocumentUri.displayName(this@MainActivity, uri)
                 ?.let { onTitleAdopted?.invoke(DocumentUri.titleFrom(it)) }
-            onSaveSucceeded?.invoke()
+            afterSave(uri, document)
             Toast.makeText(
                 this@MainActivity,
                 if (asRnote) "Saved as .rnote" else "Saved as .json",
@@ -474,6 +553,10 @@ class MainActivity : ComponentActivity() {
                 if (pendingDocument != null) {
                     onDocumentLoaded(pendingDocument)
                     incomingDocument = null
+                    if (incomingIsRecovered) {
+                        incomingIsRecovered = false
+                        isModified = true
+                    }
                 }
             }
 
@@ -497,10 +580,35 @@ class MainActivity : ComponentActivity() {
                 saveAsRnote = true
                 // No file yet, so the next Save has to ask for one.
                 currentDocumentUri = null
+                knownLastModified = null
+                // Starting over discards the old note on purpose; don't offer it back.
+                Recovery.clear(this)
             }
 
             // ── Save succeeded handler ────────────────────────────────────────────
-            onSaveSucceeded = { isModified = false }
+            onSaveSucceeded = { saved ->
+                // A save runs in the background; ink added while it ran is not in the file.
+                val unchanged = saved.strokes.size == strokes.size &&
+                    saved.strokes.indices.all { saved.strokes[it] === strokes[it] } &&
+                    saved.nativeElements === documentNativeElements &&
+                    saved.paperStyle == paperStyle && saved.title == documentTitle
+                if (unchanged) isModified = false
+            }
+            unsavedDocument = {
+                if (!isModified) null else NoteDocument(
+                    title = documentTitle,
+                    paperStyle = paperStyle,
+                    strokes = strokes.toList(),
+                    nativeElements = documentNativeElements
+                )
+            }
+            // A minute after the first unsaved change, and again after every save.
+            LaunchedEffect(isModified) {
+                if (isModified) {
+                    delay(AUTOSAVE_DELAY_MS)
+                    autosave()
+                }
+            }
             onTitleAdopted = { name -> documentTitle = name }
 
             // ── S-Pen Air Action remote shortcuts ─────────────────────────────────
@@ -789,6 +897,59 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
+                    // ── Changed elsewhere since it was opened ─────────────────────
+                    pendingConflict?.let { conflicted ->
+                        AlertDialog(
+                            onDismissRequest = { pendingConflict = null },
+                            title = { Text("File changed elsewhere") },
+                            text = {
+                                Text(
+                                    "\"${conflicted.title}\" was changed since you opened it — " +
+                                        "on another device, for example. Saving over it would " +
+                                        "lose those changes."
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    pendingConflict = null
+                                    launchSavePicker(conflicted)
+                                }) { Text("Save as copy") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = {
+                                    pendingConflict = null
+                                    saveInPlace(conflicted, overwriteChanges = true)
+                                }) { Text("Overwrite") }
+                            }
+                        )
+                    }
+
+                    // ── Recovered from the last session ───────────────────────────
+                    pendingRecovery?.let { recovered ->
+                        AlertDialog(
+                            onDismissRequest = { },
+                            title = { Text("Restore unsaved note?") },
+                            text = {
+                                Text(
+                                    "\"${recovered.document.title}\" had changes that were not " +
+                                        "saved when the app was last closed."
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    pendingRecovery = null
+                                    restoreRecovered(recovered)
+                                }) { Text("Restore") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = {
+                                    pendingRecovery = null
+                                    Recovery.clear(this@MainActivity)
+                                }) { Text("Discard") }
+                            }
+                        )
+                    }
+
                     // ── New Document Confirmation ─────────────────────────────────
                     if (showNewDocumentDialog) {
                         AlertDialog(
@@ -857,13 +1018,42 @@ class MainActivity : ComponentActivity() {
         }
         // "Open with" — only for the launch that brought the file, not when the activity
         // is recreated with the same intent after the process was reclaimed.
-        if (savedInstanceState == null) handleViewIntent(intent)
+        if (savedInstanceState == null) {
+            if (intent?.action == Intent.ACTION_VIEW) handleViewIntent(intent) else offerRecovery()
+        }
+    }
+
+    /** Looks for a note the last session didn't get to save, and offers it back. */
+    private fun offerRecovery() {
+        lifecycleScope.launch {
+            val recovered = withContext(Dispatchers.IO) { Recovery.read(this@MainActivity) }
+            if (recovered != null) pendingRecovery = recovered
+        }
+    }
+
+    private fun restoreRecovered(recovered: Recovery.Pending) {
+        saveAsRnote = recovered.saveAsRnote
+        currentDocumentUri = recovered.uri
+        recovered.uri?.let { pickerStartUri = it }
+        // Unknown: the file may have changed while the app was gone, and the recovered
+        // note would then be the one to overwrite it — so no conflict baseline is set and
+        // the next save asks nothing. Recovered work is the user's most recent anyway.
+        knownLastModified = null
+        incomingIsRecovered = true
+        incomingDocument = recovered.document
     }
 
     override fun onStop() {
         super.onStop()
-        // Nothing to do: preferences are written at the moment they are chosen (see
-        // persistSettings), and the open document's own style is not a preference.
+        // Leaving the foreground is when Android may reclaim the app without asking, so
+        // unsaved work is secured now rather than at the next timer tick. Preferences need
+        // nothing here: they are written the moment they are chosen (see persistSettings).
+        autosave()
+    }
+
+    private companion object {
+        /** How long after the first unsaved change autosave runs. Rnote's default is 120 s. */
+        const val AUTOSAVE_DELAY_MS = 60_000L
     }
 
     /**

@@ -19,7 +19,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Highlight
+import androidx.compose.material.icons.filled.HorizontalRule
+import androidx.compose.material.icons.filled.NorthEast
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -71,7 +75,8 @@ fun PenConfigStrip(
     onDuplicateSelection: () -> Unit,
     onSelectAll: () -> Unit,
     onDeselectAll: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit = {}
 ) {
     Surface(
         modifier = modifier.width(60.dp),
@@ -90,7 +95,7 @@ fun PenConfigStrip(
                 ToolType.SELECTOR -> SelectorConfigPage(
                     hasActiveSelection, onDeleteSelection, onDuplicateSelection, onSelectAll, onDeselectAll
                 )
-                ToolType.SHAPER -> StubConfigPage("Shaper")
+                ToolType.SHAPER -> ShaperConfigPage(toolConfig, onShapeKindSelected, onSizeChanged)
                 ToolType.TYPEWRITER -> StubConfigPage("Typewriter")
                 ToolType.TOOLS -> StubConfigPage("Tools")
             }
@@ -118,6 +123,33 @@ private fun BrushConfigPage(
     StripDivider()
     val presets = BrushSizePreset.entries.map { it to it.sizeForTool(ToolType.BRUSH, toolConfig.brushStyle) }
     StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = if (toolConfig.brushStyle == BrushStyle.MARKER) 128f else 64f, onSizeChanged)
+}
+
+// ── Shaper ───────────────────────────────────────────────────────────────
+
+@Composable
+private fun ShaperConfigPage(
+    toolConfig: ToolConfig,
+    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit,
+    onSizeChanged: (Float) -> Unit
+) {
+    val kind = toolConfig.shapeKind
+    StripIconToggle(Icons.Default.HorizontalRule, "Line", kind == io.github.kjly.brna.model.ShapeKind.LINE, true) {
+        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.LINE)
+    }
+    StripIconToggle(Icons.Default.NorthEast, "Arrow", kind == io.github.kjly.brna.model.ShapeKind.ARROW, true) {
+        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.ARROW)
+    }
+    StripIconToggle(Icons.Default.CropSquare, "Rectangle", kind == io.github.kjly.brna.model.ShapeKind.RECTANGLE, true) {
+        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.RECTANGLE)
+    }
+    StripIconToggle(Icons.Default.RadioButtonUnchecked, "Ellipse", kind == io.github.kjly.brna.model.ShapeKind.ELLIPSE, true) {
+        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.ELLIPSE)
+    }
+    StripDivider()
+    // Rnote's shaper shares the brush's 2 / 6 / 12 width presets.
+    val presets = BrushSizePreset.entries.map { it to it.brushSolidPx }
+    StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = 64f, onSizeChanged)
 }
 
 // ── Eraser ───────────────────────────────────────────────────────────────

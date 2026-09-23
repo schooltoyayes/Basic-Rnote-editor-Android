@@ -76,6 +76,12 @@ import io.github.kjly.brna.ui.components.PenPicker
 import io.github.kjly.brna.ui.components.RnoteTopBar
 import io.github.kjly.brna.ui.theme.BabyRnoteTheme
 
+/**
+ * One undo step: the ink and the desktop elements together, so undoing a Clear Canvas
+ * or an erased shape brings back everything it took.
+ */
+private data class DocSnapshot(val strokes: List<Stroke>, val natives: List<NativeCanvasElement>)
+
 class MainActivity : ComponentActivity() {
 
     private var performUndoAction: (() -> Unit)? = null
@@ -546,12 +552,22 @@ class MainActivity : ComponentActivity() {
 
             // ── Stroke stacks ─────────────────────────────────────────────────────
             val strokes = remember { mutableStateListOf<Stroke>() }
-            val undoStack = remember { mutableStateListOf<List<Stroke>>() }
-            val redoStack = remember { mutableStateListOf<List<Stroke>>() }
+            val undoStack = remember { mutableStateListOf<DocSnapshot>() }
+            val redoStack = remember { mutableStateListOf<DocSnapshot>() }
             val selectedStrokes = remember { mutableStateListOf<Stroke>() }
             // Non-stroke elements (text/shapes/images) preserved from an imported native file.
             // Carried through save/export so they aren't silently dropped from opened .rnote files.
             var documentNativeElements by remember { mutableStateOf<List<NativeCanvasElement>>(emptyList()) }
+            // Desktop elements (text, shapes, images) the selector holds, beside selectedStrokes.
+            val selectedNatives = remember { mutableStateListOf<NativeCanvasElement>() }
+            val snapshot = { DocSnapshot(strokes.toList(), documentNativeElements) }
+            val restore = { state: DocSnapshot ->
+                strokes.clear()
+                strokes.addAll(state.strokes)
+                documentNativeElements = state.natives
+                selectedStrokes.clear()
+                selectedNatives.clear()
+            }
 
             // ── Page indicator (2D grid position) ────────────────────────────────
             val currentPage: Int? = if (paperStyle.pageSize.isInfinite) null else {
@@ -583,6 +599,7 @@ class MainActivity : ComponentActivity() {
                 undoStack.clear()
                 redoStack.clear()
                 selectedStrokes.clear()
+                selectedNatives.clear()
                 strokes.addAll(doc.strokes)
                 // The file's format is the document's, not the user's default — so it is
                 // deliberately not persisted; the next new note starts from preferences.
@@ -619,6 +636,7 @@ class MainActivity : ComponentActivity() {
                 undoStack.clear()
                 redoStack.clear()
                 selectedStrokes.clear()
+                selectedNatives.clear()
                 documentNativeElements = emptyList()
                 documentTitle = "My Note"
                 viewportState = ViewportState(displayScale = displayScale)
@@ -674,6 +692,8 @@ class MainActivity : ComponentActivity() {
             }
             onPdfImported = { pages ->
                 // Ahead of the rest: the document layer is drawn first, under everything.
+                undoStack.add(snapshot())
+                redoStack.clear()
                 documentNativeElements = pages + documentNativeElements
                 isModified = true
                 // Bring the first imported page into view at the current zoom.
@@ -690,20 +710,16 @@ class MainActivity : ComponentActivity() {
                 // Gated on undoStack, not `strokes` — an empty canvas can still have undo
                 // history (e.g. right after Clear Canvas), and that must stay undoable.
                 if (undoStack.isNotEmpty()) {
-                    redoStack.add(strokes.toList())
-                    val previousState = undoStack.removeAt(undoStack.lastIndex)
-                    strokes.clear()
-                    strokes.addAll(previousState)
+                    redoStack.add(snapshot())
+                    restore(undoStack.removeAt(undoStack.lastIndex))
                     isModified = true
                 }
             }
 
             performRedoAction = {
                 if (redoStack.isNotEmpty()) {
-                    undoStack.add(strokes.toList())
-                    val nextState = redoStack.removeAt(redoStack.lastIndex)
-                    strokes.clear()
-                    strokes.addAll(nextState)
+                    undoStack.add(snapshot())
+                    restore(redoStack.removeAt(redoStack.lastIndex))
                     isModified = true
                 }
             }
@@ -774,10 +790,11 @@ class MainActivity : ComponentActivity() {
                             onExport = { showExportSheet = true },
                             onClearCanvas = {
                                 if (strokes.isNotEmpty() || documentNativeElements.isNotEmpty()) {
-                                    undoStack.add(strokes.toList())
+                                    undoStack.add(snapshot())
                                     redoStack.clear()
                                     strokes.clear()
                                     selectedStrokes.clear()
+                                    selectedNatives.clear()
                                     documentNativeElements = emptyList()
                                     isModified = true
                                 }
@@ -802,7 +819,7 @@ class MainActivity : ComponentActivity() {
                                 viewportState = newViewport
                             },
                             onAddStroke = { newStroke ->
-                                undoStack.add(strokes.toList())
+                                undoStack.add(snapshot())
                                 redoStack.clear()
                                 strokes.add(newStroke)
                                 isModified = true
@@ -811,7 +828,7 @@ class MainActivity : ComponentActivity() {
                                 // One snapshot for the whole eraser drag. This used to sit
                                 // in onEraseStrokes, which fires per motion event, so
                                 // rubbing out five strokes cost five undos to put back.
-                                undoStack.add(strokes.toList())
+                                undoStack.add(snapshot())
                                 redoStack.clear()
                             },
                             onEraseStrokes = { erased ->
@@ -820,7 +837,7 @@ class MainActivity : ComponentActivity() {
                                 isModified = true
                             },
                             onSelectionDragStart = {
-                                undoStack.add(strokes.toList())
+                                undoStack.add(snapshot())
                                 redoStack.clear()
                             },
                             onStrokesModified = { updatedStrokes ->
@@ -831,6 +848,25 @@ class MainActivity : ComponentActivity() {
                                 isModified = true
                             },
                             nativeElements = documentNativeElements,
+                            selectedNatives = selectedNatives,
+                            onAddShape = { shape ->
+                                undoStack.add(snapshot())
+                                redoStack.clear()
+                                documentNativeElements = documentNativeElements + shape
+                                isModified = true
+                            },
+                            onEraseNatives = { erased ->
+                                // The undo snapshot was taken by onEraseStart for the gesture.
+                                val gone = java.util.Collections.newSetFromMap(
+                                    java.util.IdentityHashMap<NativeCanvasElement, Boolean>()
+                                ).apply { addAll(erased) }
+                                documentNativeElements = documentNativeElements.filter { it !in gone }
+                                isModified = true
+                            },
+                            onNativesMoved = { moved ->
+                                documentNativeElements = documentNativeElements.map { moved[it] ?: it }
+                                isModified = true
+                            },
                         )
 
                         // Top-center: stroke color + palette (matches Rnote's colorpicker.ui)
@@ -852,22 +888,27 @@ class MainActivity : ComponentActivity() {
                         // Hidden below the width breakpoint (see isCompactWidth, top of file).
                         if (!isCompactWidth) PenConfigStrip(
                             toolConfig = toolConfig,
-                            hasActiveSelection = selectedStrokes.isNotEmpty(),
+                            hasActiveSelection = selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty(),
                             onBrushStyleSelected = { style -> toolConfig = toolConfig.copy(brushStyle = style) },
                             onSizeChanged = { newSize -> toolConfig = toolConfig.updateActiveSize(newSize) },
                             onDeleteSelection = {
-                                if (selectedStrokes.isNotEmpty()) {
-                                    undoStack.add(strokes.toList())
+                                if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
+                                    undoStack.add(snapshot())
                                     redoStack.clear()
                                     val ids = selectedStrokes.map { it.id }.toSet()
                                     strokes.removeAll { it.id in ids }
+                                    val gone = java.util.Collections.newSetFromMap(
+                                        java.util.IdentityHashMap<NativeCanvasElement, Boolean>()
+                                    ).apply { addAll(selectedNatives) }
+                                    documentNativeElements = documentNativeElements.filter { it !in gone }
                                     selectedStrokes.clear()
+                                    selectedNatives.clear()
                                     isModified = true
                                 }
                             },
                             onDuplicateSelection = {
-                                if (selectedStrokes.isNotEmpty()) {
-                                    undoStack.add(strokes.toList())
+                                if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
+                                    undoStack.add(snapshot())
                                     redoStack.clear()
                                     val offset = 20f
                                     val duplicates = selectedStrokes.map { s ->
@@ -879,14 +920,26 @@ class MainActivity : ComponentActivity() {
                                     strokes.addAll(duplicates)
                                     selectedStrokes.clear()
                                     selectedStrokes.addAll(duplicates)
+                                    val nativeCopies = selectedNatives.map {
+                                        io.github.kjly.brna.storage.NativeEditing.translate(it, offset, offset)
+                                    }
+                                    documentNativeElements = documentNativeElements + nativeCopies
+                                    selectedNatives.clear()
+                                    selectedNatives.addAll(nativeCopies)
                                     isModified = true
                                 }
                             },
                             onSelectAll = {
                                 selectedStrokes.clear()
                                 selectedStrokes.addAll(strokes)
+                                selectedNatives.clear()
+                                selectedNatives.addAll(documentNativeElements.filter { it !is NativeBrushStroke })
                             },
-                            onDeselectAll = { selectedStrokes.clear() },
+                            onDeselectAll = {
+                                selectedStrokes.clear()
+                                selectedNatives.clear()
+                            },
+                            onShapeKindSelected = { kind -> toolConfig = toolConfig.copy(shapeKind = kind) },
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 18.dp)
@@ -899,7 +952,10 @@ class MainActivity : ComponentActivity() {
                             canRedo = redoStack.isNotEmpty(),
                             onToolSelected = { newTool ->
                                 toolConfig = toolConfig.copy(activeTool = newTool)
-                                if (newTool != ToolType.SELECTOR) selectedStrokes.clear()
+                                if (newTool != ToolType.SELECTOR) {
+                                    selectedStrokes.clear()
+                                    selectedNatives.clear()
+                                }
                             },
                             onUndo = { performUndoAction?.invoke() },
                             onRedo = { performRedoAction?.invoke() },

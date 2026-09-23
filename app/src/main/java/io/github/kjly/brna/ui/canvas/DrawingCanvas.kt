@@ -36,6 +36,7 @@ import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.NativeTextElement
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PaperStyle
+import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.PressureCurve
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
@@ -44,6 +45,7 @@ import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.ViewportState
 import io.github.kjly.brna.render.NativeElementRenderer
 import io.github.kjly.brna.render.VectorImageRenderer
+import io.github.kjly.brna.storage.NativeEditing
 import io.github.kjly.brna.render.composeStrokePath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -84,20 +86,34 @@ fun DrawingCanvas(
      * (drawn over it). Brush strokes in here are ignored; [strokes] is what is drawn.
      */
     nativeElements: List<NativeCanvasElement> = emptyList(),
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** The desktop elements (text, shapes, images) the selector currently holds. */
+    selectedNatives: SnapshotStateList<NativeCanvasElement>? = null,
+    /** A shape the Shaper just finished drawing. */
+    onAddShape: (NativeShapeElement) -> Unit = {},
+    /** Shapes the eraser went over; part of the same gesture as [onEraseStrokes]. */
+    onEraseNatives: (List<NativeCanvasElement>) -> Unit = {},
+    /** Desktop elements the selector moved: old instance -> moved copy. */
+    onNativesMoved: (IdentityHashMap<NativeCanvasElement, NativeCanvasElement>) -> Unit = {}
 ) {
     val underlays = remember(nativeElements) { nativeElements.filter(NativeElementRenderer::isUnderlay) }
     val overlays = remember(nativeElements) { nativeElements.filter(NativeElementRenderer::isOverlay) }
-    val nativeRenderer = remember(nativeElements) {
-        VectorImageRenderer.clearCache()
-        NativeElementRenderer()
-    }
+    // One renderer for the canvas's lifetime: its caches are per element, and editing
+    // replaces only the elements that changed.
+    val nativeRenderer = remember { NativeElementRenderer() }
+    LaunchedEffect(overlays) { nativeRenderer.retainOnly(overlays) }
 
     // Pages and images are turned into bitmaps once, off the main thread, one at a time
     // (a PDF page can be megabytes of SVG). Until then a page shows as a blank sheet.
-    val underlayBitmaps = remember(underlays) { mutableStateMapOf<Int, android.graphics.Bitmap>() }
+    // Keyed by the image data, not the element: moving a page makes a new element around
+    // the same data, and that must not be rendered all over again.
+    val underlayBitmaps = remember { mutableStateMapOf<Any, android.graphics.Bitmap>() }
     LaunchedEffect(underlays) {
-        underlays.forEachIndexed { i, el ->
+        val wanted = underlays.mapNotNull(::imageKey).toSet()
+        (underlayBitmaps.keys - wanted).forEach { underlayBitmaps.remove(it) }
+        for (el in underlays) {
+            val key = imageKey(el) ?: continue
+            if (key in underlayBitmaps) continue
             val bitmap = withContext(Dispatchers.Default) {
                 when (el) {
                     is NativeVectorImageElement -> VectorImageRenderer.rasterize(el)
@@ -105,14 +121,14 @@ fun DrawingCanvas(
                     else -> null
                 }
             }
-            if (bitmap != null) underlayBitmaps[i] = bitmap
+            if (bitmap != null) underlayBitmaps[key] = bitmap
         }
     }
 
     // Sharper renders of the visible part of each PDF page, made once the view has come
-    // to rest at a zoom the one-off bitmap can't resolve. Keyed like underlayBitmaps.
+    // to rest at a zoom the one-off bitmap can't resolve.
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
-    val detailTiles = remember(underlays) { mutableStateMapOf<Int, VectorImageRenderer.DetailTile>() }
+    val detailTiles = remember { mutableStateMapOf<NativeCanvasElement, VectorImageRenderer.DetailTile>() }
     // underlayBitmaps.size is a key so a page whose base bitmap arrives while the view is
     // already zoomed in still gets its sharp render without waiting for the next pan.
     LaunchedEffect(underlays, viewportState, viewSize, underlayBitmaps.size) {
@@ -123,27 +139,27 @@ fun DrawingCanvas(
         val viewTop = -viewportState.panOffset.y / scale
         val viewRight = viewLeft + viewSize.width / scale
         val viewBottom = viewTop + viewSize.height / scale
-        val wanted = HashMap<Int, VectorImageRenderer.DetailTile>()
-        underlays.forEachIndexed { i, el ->
-            if (el !is NativeVectorImageElement) return@forEachIndexed
-            val base = underlayBitmaps[i] ?: return@forEachIndexed
+        val wanted = HashMap<NativeCanvasElement, VectorImageRenderer.DetailTile>()
+        underlays.forEach { el ->
+            if (el !is NativeVectorImageElement) return@forEach
+            val base = underlayBitmaps[el.svgData] ?: return@forEach
             // Device pixels per document unit the base bitmap has to offer.
             val basePxPerUnit = base.width / (el.maxX - el.minX).coerceAtLeast(1f)
-            if (scale <= basePxPerUnit * 1.25f) return@forEachIndexed
+            if (scale <= basePxPerUnit * 1.25f) return@forEach
             val l = maxOf(el.minX, viewLeft)
             val t = maxOf(el.minY, viewTop)
             val r = minOf(el.maxX, viewRight)
             val b = minOf(el.maxY, viewBottom)
-            if (r <= l || b <= t) return@forEachIndexed
-            val existing = detailTiles[i]
+            if (r <= l || b <= t) return@forEach
+            val existing = detailTiles[el]
             if (existing != null && existing.pxPerUnit == scale && existing.covers(l, t, r, b)) {
-                wanted[i] = existing
-                return@forEachIndexed
+                wanted[el] = existing
+                return@forEach
             }
             val tile = withContext(detailDispatcher) {
                 VectorImageRenderer.renderRegion(el, l, t, r, b, scale)
-            } ?: return@forEachIndexed
-            wanted[i] = tile
+            } ?: return@forEach
+            wanted[el] = tile
         }
         (detailTiles.keys - wanted.keys).forEach { detailTiles.remove(it) }
         detailTiles.putAll(wanted)
@@ -155,6 +171,10 @@ fun DrawingCanvas(
     val placeholderPaint = remember {
         android.graphics.Paint().apply { color = android.graphics.Color.WHITE }
     }
+
+    // The Shaper's drag, in canvas units; null when no shape is being drawn.
+    var shapeStart by remember { mutableStateOf<Offset?>(null) }
+    var shapeEnd by remember { mutableStateOf<Offset?>(null) }
 
     val currentPoints = remember { mutableStateListOf<InkPoint>() }
     /** Memoised stroke outlines, keyed by Stroke identity. See the draw block below. */
@@ -365,7 +385,7 @@ fun DrawingCanvas(
                         buttonEraserLatched = eraserRequestedNow
                         eraseSnapshotTaken = false
 
-                        val boundingBox = SelectionManager.calculateBoundingBox(selectedStrokes)
+                        val boundingBox = selectionBounds(selectedStrokes, selectedNatives)
                         if (activeTool == ToolType.SELECTOR && boundingBox != null) {
                             val screenBoundingBox = Rect(
                                 viewportState.canvasToScreen(boundingBox.topLeft),
@@ -378,7 +398,13 @@ fun DrawingCanvas(
                                 return@pointerInteropFilter true
                             } else {
                                 selectedStrokes.clear()
+                                selectedNatives?.clear()
                             }
+                        }
+
+                        if (activeTool == ToolType.SHAPER) {
+                            shapeStart = Offset(x, y)
+                            shapeEnd = Offset(x, y)
                         }
 
                         currentPoints.clear()
@@ -389,7 +415,7 @@ fun DrawingCanvas(
                         if (activeTool == ToolType.ERASER) {
                             eraserCursor = Offset(x, y)
                             eraserCursorDown = true
-                            eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes) {
+                            eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes, overlays, onEraseNatives) {
                                 if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
                             }
                         }
@@ -398,17 +424,36 @@ fun DrawingCanvas(
 
                     MotionEvent.ACTION_MOVE -> {
                         if (isDrawing) {
-                            if (isMovingSelection && selectedStrokes.isNotEmpty()) {
+                            val natives = selectedNatives
+                            if (isMovingSelection &&
+                                (selectedStrokes.isNotEmpty() || !natives.isNullOrEmpty())
+                            ) {
                                 if (!selectionMoveSnapshotTaken) {
                                     onSelectionDragStart()
                                     selectionMoveSnapshotTaken = true
                                 }
                                 val delta = Offset(x, y) - selectionDragStart
                                 selectionDragStart = Offset(x, y)
-                                val updated = SelectionManager.translateStrokes(selectedStrokes, delta)
-                                selectedStrokes.clear()
-                                selectedStrokes.addAll(updated)
-                                onStrokesModified(updated)
+                                if (selectedStrokes.isNotEmpty()) {
+                                    val updated = SelectionManager.translateStrokes(selectedStrokes, delta)
+                                    selectedStrokes.clear()
+                                    selectedStrokes.addAll(updated)
+                                    onStrokesModified(updated)
+                                }
+                                if (!natives.isNullOrEmpty()) {
+                                    val moved = IdentityHashMap<NativeCanvasElement, NativeCanvasElement>()
+                                    val updated = natives.map { old ->
+                                        NativeEditing.translate(old, delta.x, delta.y).also { moved[old] = it }
+                                    }
+                                    natives.clear()
+                                    natives.addAll(updated)
+                                    onNativesMoved(moved)
+                                }
+                                return@pointerInteropFilter true
+                            }
+
+                            if (activeTool == ToolType.SHAPER && shapeStart != null) {
+                                shapeEnd = Offset(x, y)
                                 return@pointerInteropFilter true
                             }
 
@@ -418,7 +463,7 @@ fun DrawingCanvas(
                             if (activeTool == ToolType.ERASER) {
                                 eraserCursor = Offset(x, y)
                                 eraserCursorDown = true
-                                eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes) {
+                                eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes, overlays, onEraseNatives) {
                                     if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
                                 }
                             }
@@ -434,6 +479,20 @@ fun DrawingCanvas(
                                 val found = SelectionManager.findStrokesInLasso(lassoPoints, strokes)
                                 selectedStrokes.clear()
                                 selectedStrokes.addAll(found)
+                                selectedNatives?.let { natives ->
+                                    val polygon = lassoPoints.map { it.x to it.y }
+                                    natives.clear()
+                                    natives.addAll(nativeElements.filter { NativeEditing.insideLasso(it, polygon) })
+                                }
+                            } else if (activeTool == ToolType.SHAPER) {
+                                val start = shapeStart
+                                val end = shapeEnd
+                                if (start != null && end != null) {
+                                    NativeEditing.createShape(
+                                        toolConfig.shapeKind, start.x, start.y, end.x, end.y,
+                                        nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth
+                                    )?.let(onAddShape)
+                                }
                             } else if (activeTool == ToolType.BRUSH && currentPoints.isNotEmpty()) {
                                 val isMarker = toolConfig.brushStyle == BrushStyle.MARKER
 
@@ -456,6 +515,8 @@ fun DrawingCanvas(
                             lassoPoints.clear()
                         }
                         isDrawing = false
+                        shapeStart = null
+                        shapeEnd = null
                         buttonEraserLatched = false
                         eraseSnapshotTaken = false
                         eraserCursorDown = false
@@ -486,8 +547,8 @@ fun DrawingCanvas(
             if (underlays.isNotEmpty()) {
                 drawIntoCanvas { canvas ->
                     val nc = canvas.nativeCanvas
-                    underlays.forEachIndexed { i, el ->
-                        val bitmap = underlayBitmaps[i]
+                    underlays.forEach { el ->
+                        val bitmap = imageKey(el)?.let { underlayBitmaps[it] }
                         when (el) {
                             is NativeVectorImageElement -> {
                                 val dst = android.graphics.RectF(
@@ -498,7 +559,7 @@ fun DrawingCanvas(
                                 if (bitmap != null) nc.drawBitmap(bitmap, null, dst, vectorPaint)
                                 else nc.drawRect(dst, placeholderPaint)
                                 nc.restore()
-                                detailTiles[i]?.let { tile ->
+                                detailTiles[el]?.let { tile ->
                                     nc.drawBitmap(
                                         tile.bitmap, null,
                                         android.graphics.RectF(tile.left, tile.top, tile.right, tile.bottom),
@@ -560,6 +621,18 @@ fun DrawingCanvas(
                 drawPath(path = path, color = toolConfig.currentActiveColor)
             }
 
+            // 3b. Shape being dragged out with the Shaper.
+            val previewStart = shapeStart
+            val previewEnd = shapeEnd
+            if (isDrawing && activeTool == ToolType.SHAPER && previewStart != null && previewEnd != null) {
+                NativeEditing.createShape(
+                    toolConfig.shapeKind, previewStart.x, previewStart.y, previewEnd.x, previewEnd.y,
+                    nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth
+                )?.let { preview ->
+                    drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, preview, cache = false) }
+                }
+            }
+
             // 4. Render lasso polygon preview
             if (isDrawing && activeTool == ToolType.SELECTOR && lassoPoints.size >= 2) {
                 val lassoPath = Path()
@@ -578,7 +651,7 @@ fun DrawingCanvas(
             }
 
             // 5. Render selection bounding box
-            val bbox = SelectionManager.calculateBoundingBox(selectedStrokes)
+            val bbox = selectionBounds(selectedStrokes, selectedNatives)
             bbox?.let { box ->
                 val inflated = box.inflate(12f / viewportState.effectiveScale)
                 drawRoundRect(
@@ -674,13 +747,38 @@ private fun eraseAt(
     eraserWidth: Float,
     strokes: List<Stroke>,
     onEraseStrokes: (List<Stroke>) -> Unit,
+    overlays: List<NativeCanvasElement>,
+    onEraseNatives: (List<NativeCanvasElement>) -> Unit,
     onFirstHit: () -> Unit
 ) {
     val bounds = EraserHitTest.eraserBounds(center, eraserWidth)
     val hit = EraserHitTest.collidingStrokes(bounds, strokes)
-    if (hit.isNotEmpty()) {
-        onFirstHit()
-        onEraseStrokes(hit)
+    // Like Rnote's trash eraser: ink and shapes go, text and images stay.
+    val hitShapes = overlays.filter {
+        it is NativeShapeElement &&
+            NativeEditing.eraserHits(it, bounds.left, bounds.top, bounds.right, bounds.bottom)
     }
+    if (hit.isNotEmpty() || hitShapes.isNotEmpty()) onFirstHit()
+    if (hit.isNotEmpty()) onEraseStrokes(hit)
+    if (hitShapes.isNotEmpty()) onEraseNatives(hitShapes)
+}
+
+/** What a page or image is rendered from; the key its bitmap is kept under. */
+private fun imageKey(el: NativeCanvasElement): Any? = when (el) {
+    is NativeVectorImageElement -> el.svgData
+    is NativeBitmapElement -> el.rgbaBase64 ?: el.pixels
+    else -> null
+}
+
+private fun nativeColorOf(c: Color) = RnoteNativeColor(c.red, c.green, c.blue, c.alpha)
+
+/** The box around everything selected, ink and desktop elements alike; null if nothing is. */
+private fun selectionBounds(strokes: List<Stroke>, natives: List<NativeCanvasElement>?): Rect? {
+    var box = SelectionManager.calculateBoundingBox(strokes)
+    natives?.forEach { el ->
+        val r = Rect(el.minX, el.minY, el.maxX, el.maxY)
+        box = box?.let { Rect(minOf(it.left, r.left), minOf(it.top, r.top), maxOf(it.right, r.right), maxOf(it.bottom, r.bottom)) } ?: r
+    }
+    return box
 }
 

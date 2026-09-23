@@ -115,6 +115,13 @@ object RnoteNativeSerializer {
             LayoutMode.CONTINUOUS_VERTICAL ->
                 maxY = maxOf(pageH, (ink?.maxY ?: 0f).coerceAtLeast(0f) + pageH)
 
+            // Anchored at the origin like Rnote's `resize_doc_semi_infinite_layout`: the
+            // extent only ever reaches out to the right and down.
+            LayoutMode.SEMI_INFINITE -> if (ink != null) {
+                if (ink.maxX > maxX) maxX = ink.maxX
+                if (ink.maxY > maxY) maxY = ink.maxY
+            }
+
             // No bounds to respect, so it is the page widened to cover everything.
             // Infinite-layout content sits at negative coordinates routinely.
             LayoutMode.INFINITE -> if (ink != null) {

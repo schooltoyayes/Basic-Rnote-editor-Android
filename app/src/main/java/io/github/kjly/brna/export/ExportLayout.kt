@@ -88,7 +88,9 @@ object ExportLayout {
         when (paperStyle.layoutMode) {
             LayoutMode.FIXED_SIZE -> { cols = listOf(0); rows = listOf(0) }
             LayoutMode.CONTINUOUS_VERTICAL -> { cols = listOf(0); rows = (firstRow..lastRow).toList() }
-            LayoutMode.INFINITE -> { cols = (firstCol..lastCol).toList(); rows = (firstRow..lastRow).toList() }
+            // Semi Infinite keeps the origin-inclusive span too: ink drawn left of or above
+            // the origin is still in the file, so its pages are still exported.
+            LayoutMode.SEMI_INFINITE, LayoutMode.INFINITE -> { cols = (firstCol..lastCol).toList(); rows = (firstRow..lastRow).toList() }
         }
 
         val cells = if (order.isRowMajor) {

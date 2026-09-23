@@ -19,35 +19,52 @@ Rust engine underneath this app instead of a Kotlin reimplementation of it. See
 
 ## Status
 
-Usable for handwriting and sketching. It's a personal project, not a finished
-product — several tools in the UI are disabled, grayed-out placeholders for parity with
-desktop Rnote's layout.
+Usable for handwriting and sketching, and for working on the same notes on a
+desktop and a tablet. It's a personal project, not a finished product — a few UI
+slots are disabled, grayed-out placeholders for parity with desktop Rnote's layout.
 
 **Working**
 
 - **Brush** with stylus pressure sensitivity, in Solid and Marker (translucent)
-  styles. Three size presets per tool plus a numeric adjuster.
-- **Eraser** (whole-stroke), **Selector** (lasso), with select all / deselect /
-  duplicate / delete, drag-to-move, and a bounding-box overlay.
+  styles. Three size presets per tool plus a numeric adjuster, and four favorite
+  slots that keep a style, color and width together.
+- **Shaper**: line, arrow, rectangle, ellipse, and — built from lines, as Rnote
+  builds them — 2D, 3D and single-quadrant coordinate systems and a grid. Lines
+  and arrows can snap to 15° steps.
+- **Typewriter**: tap to add a text box or edit one; bold, italic and other
+  ranges set on the desktop are kept through edits.
+- **Eraser**: Trash Strokes and Split Strokes modes. Like Rnote's, it erases ink
+  and shapes and leaves text and images alone.
+- **Selector** (lasso), for ink and for desktop text, shapes and images alike:
+  select all / deselect / duplicate / delete, drag-to-move, scale and rotate
+  handles with an aspect-ratio lock, and copy / cut / paste between notes.
+- **Tools**: Rnote's Vertical Space — drag down to open up room, up to close it.
 - **Stylus-aware input**: stylus-only mode by default (finger pans and zooms),
   optional finger drawing, S-Pen barrel button as a momentary eraser, S-Pen Air
   Actions mapped to undo/redo, two-finger pinch-zoom and pan.
 - **Paper**: six patterns (dots, grid, lines, isometric grid, isometric dots,
-  blank), A2–A6 / Letter / Legal / custom / infinite page sizes, three layout
-  modes (fixed page, continuous vertical, infinite 2D), custom background and
-  pattern colors, adjustable spacing and DPI, portrait/landscape, dark mode.
+  blank), A2–A6 / Letter / Legal / custom / infinite page sizes, four layout
+  modes (fixed page, continuous vertical, semi-infinite, infinite), custom
+  background and pattern colors, adjustable spacing and DPI,
+  portrait/landscape, dark mode.
 - **Files**: open and save native `.rnote` (gzipped engine-snapshot JSON) and a
-  simpler app-native `.json`. Format is auto-detected on load. Elements the app
-  can't yet edit — text, shapes, bitmaps — are preserved as passthrough rather
-  than dropped, so round-tripping a desktop file doesn't lose work.
-- **Export**: PDF, SVG, PNG, and JPEG, with page-range and split options.
+  simpler app-native `.json`, including "Open with" from file managers and cloud
+  drives. Desktop text, shapes, images and PDF pages are shown and editable, and
+  keep the JSON they were read with, so attributes the app doesn't model survive
+  a round trip. Autosave, crash recovery, a warning before overwriting a file
+  that changed elsewhere (save a copy, overwrite, or load the other version), a
+  list of recent notes, and a page overview with thumbnails.
+- **Import**: PDF pages, and pictures from the gallery or the camera, written
+  the way desktop Rnote writes its own imports.
+- **Export and share**: PDF, SVG, PNG, and JPEG, with page-range and split
+  options and one page per imported PDF page. A Share button sends the current
+  page, the selection or the whole note to another app.
 
-**UI slots with no implementation behind them** — visible but disabled: Shaper,
-Typewriter, and Tools pens; the Textured brush style; the Split Strokes eraser
-mode; the three non-polygon selector modes; separate fill color.
+**UI slots with no implementation behind them** — visible but disabled: the
+Textured brush style; the three non-polygon selector modes; separate fill color.
 
-**Not built**: layers (the stroke list is flat), selection scale/rotate handles,
-clipboard, document tabs.
+**Not built**: layers (the stroke list is flat), the Tools pen's other styles
+(Offset Camera, Zoom, Laser), document tabs.
 
 ## Screenshots
 
@@ -112,10 +129,9 @@ Especially useful:
   with an S-Pen. Stylus behaviour varies a lot between vendors, and pressure,
   hover, and barrel-button handling are all places where "works here" proves
   very little. Reports from other devices are useful even when everything works.
-- **The disabled tools.** Shaper, Typewriter, Tools, the Textured brush style,
-  the Split Strokes eraser, and selection scale/rotate handles all have UI slots
-  wired up and waiting for an implementation. Layers are a bigger lift — the
-  document model is flat today.
+- **The disabled tools.** The Textured brush style, the non-polygon selector
+  modes and a separate fill color have UI slots wired up and waiting for an
+  implementation. Layers are a bigger lift — the document model is flat today.
 - **Cross-compiling Rnote's engine for Android.** The most ambitious item on the
   list, described under [Where this is heading](#where-this-is-heading). If you
   know your way around `cargo-ndk` and JNI, I'd love the help — or just the

@@ -55,8 +55,7 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon assembleRelease
 
-      - name: Unit-Tests (blockieren die APK nicht)
-        continue-on-error: true
+      - name: Unit-Tests
         run: ./gradlew --no-daemon test
 
       - name: APK umbenennen

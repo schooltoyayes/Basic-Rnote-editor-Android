@@ -114,4 +114,112 @@ class NativeEditingTest {
         val shape = RnoteNativeParser.parseElementJson(json) as NativeShapeElement
         assertEquals(0f, shape.fillColor.a, 0f)
     }
+
+    // ── Typewriter ────────────────────────────────────────────────────────────
+
+    @Test
+    fun `new text is written the way Rnote's typewriter writes it`() {
+        val text = NativeEditing.createText("Hallo \"Welt\"\nZeile 2", 100f, 200f, 32f, black, 600f)!!
+        assertEquals("Hallo \"Welt\"\nZeile 2", text.text)
+        assertEquals(32f, text.fontSize, 0f)
+        assertEquals(100f, text.transform[4], 1e-3f)
+        assertEquals(200f, text.transform[5], 1e-3f)
+        assertEquals(100f, text.minX, 1e-3f)
+        assertEquals(200f, text.minY, 1e-3f)
+        val raw = text.raw!!.asJsonObject
+        val style = raw.getAsJsonObject("text_style")
+        assertEquals("serif", style.get("font_family").asString)
+        assertEquals(600.0, style.get("max_width").asDouble, 1e-6)
+        assertEquals(9, raw.getAsJsonObject("transform").getAsJsonArray("affine").size())
+        assertTrue(style.getAsJsonArray("ranged_text_attributes").isEmpty)
+    }
+
+    @Test
+    fun `blank text makes no text box`() {
+        assertNull(NativeEditing.createText("  \n ", 0f, 0f, 32f, black, null))
+    }
+
+    @Test
+    fun `short text is only as wide as it is, not as wide as its wrap width`() {
+        val text = NativeEditing.createText("Hi", 0f, 0f, 20f, black, 600f)!!
+        assertTrue(text.maxX < 100f)
+    }
+
+    @Test
+    fun `editing text keeps its position, style and formatting`() {
+        val json = """{"textstroke":{"text":"ab fett cd","transform":{"affine":[1.0,0.0,0.0,0.0,1.0,0.0,5.0,7.0,1.0]},""" +
+            """"text_style":{"font_family":"Cantarell","font_size":18.0,"font_weight":500,"font_style":"regular",""" +
+            """"color":{"r":1.0,"g":0.0,"b":0.0,"a":1.0},"max_width":300.0,"alignment":"center",""" +
+            """"ranged_text_attributes":[{"range":{"start":3,"end":7},"attribute":{"font_weight":700}},""" +
+            """{"range":{"start":8,"end":10},"attribute":{"underline":true}}]}}}"""
+        val original = RnoteNativeParser.parseElementJson(json) as NativeTextElement
+        val edited = NativeEditing.withText(original, "XYab fett cd")!!
+        assertEquals("XYab fett cd", edited.text)
+        assertEquals("Cantarell", edited.fontFamily)
+        assertEquals("center", edited.alignment)
+        assertEquals(5f, edited.transform[4], 1e-3f)
+        val ranges = edited.raw!!.asJsonObject.getAsJsonObject("text_style").getAsJsonArray("ranged_text_attributes")
+        assertEquals(2, ranges.size())
+        val bold = ranges[0].asJsonObject.getAsJsonObject("range")
+        assertEquals(5, bold.get("start").asInt)
+        assertEquals(9, bold.get("end").asInt)
+        // The original is left as it was: undo holds on to it.
+        assertEquals("ab fett cd", original.raw!!.asJsonObject.get("text").asString)
+    }
+
+    @Test
+    fun `typing inside a formatted range extends it, deleting it drops it`() {
+        val ranges = com.google.gson.JsonParser.parseString(
+            """[{"range":{"start":3,"end":7},"attribute":{"font_weight":700}}]"""
+        ).asJsonArray
+        val grown = NativeEditing.shiftRanges(ranges, "ab fett cd", "ab feeett cd")
+        assertEquals(9, grown[0].asJsonObject.getAsJsonObject("range").get("end").asInt)
+        assertEquals(0, NativeEditing.shiftRanges(ranges, "ab fett cd", "ab  cd").size())
+    }
+
+    @Test
+    fun `ranges count UTF-8 bytes, as Rust does`() {
+        // "text" starts at byte 4 of "abc text" and at byte 5 of "äbc text": ä is two bytes.
+        val shifted = NativeEditing.shiftRanges(
+            com.google.gson.JsonParser.parseString("""[{"range":{"start":4,"end":8},"attribute":{"underline":true}}]""").asJsonArray,
+            "abc text", "äbc text"
+        )
+        assertEquals(5, shifted[0].asJsonObject.getAsJsonObject("range").get("start").asInt)
+        assertEquals(9, shifted[0].asJsonObject.getAsJsonObject("range").get("end").asInt)
+    }
+
+    @Test
+    fun `emptying a text box removes it`() {
+        val text = NativeEditing.createText("weg", 0f, 0f, 32f, black, null)!!
+        assertNull(NativeEditing.withText(text, "   "))
+    }
+
+    @Test
+    fun `a tap finds the topmost text box under it`() {
+        val below = NativeEditing.createText("unten", 0f, 0f, 32f, black, null)!!
+        val above = NativeEditing.createText("oben", 10f, 5f, 32f, black, null)!!
+        assertTrue(NativeEditing.textAt(listOf(below, above), 20f, 20f) === above)
+        assertNull(NativeEditing.textAt(listOf(below, above), 500f, 500f))
+    }
+
+    @Test
+    fun `text typed on a page wraps at its right edge`() {
+        assertEquals(600f, NativeEditing.typewriterWrapWidth(50f, 793.7f), 0f)
+        assertEquals(793.7f - 400f - 20f, NativeEditing.typewriterWrapWidth(400f, 793.7f), 1e-3f)
+        // Too close to the edge for a useful column: the default width instead.
+        assertEquals(600f, NativeEditing.typewriterWrapWidth(700f, 793.7f), 0f)
+        // Pages repeat: the same holds on the page to the right.
+        assertEquals(793.7f - 400f - 20f, NativeEditing.typewriterWrapWidth(793.7f + 400f, 793.7f), 1e-2f)
+    }
+
+    @Test
+    fun `new text survives a save and a reload`() {
+        val text = NativeEditing.createText("Mathe\nAufgabe 1", 30f, 40f, 24f, black, 500f)!!
+        val reread = RnoteNativeParser.parseElementJson(
+            com.google.gson.JsonObject().apply { add("textstroke", text.raw) }.toString()
+        ) as NativeTextElement
+        assertEquals(text.text, reread.text)
+        assertEquals(24f, reread.fontSize, 0f)
+        assertEquals(500f, reread.maxWidth!!, 0f)
+    }
 }

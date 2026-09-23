@@ -4,18 +4,24 @@ import androidx.compose.ui.graphics.Color
 
 /**
  * Matches desktop Rnote's six "pens" (Brush, Shaper, Typewriter, Eraser,
- * Selector, Tools) — see penpicker.ui in the flxzt/rnote source. SHAPER,
- * TYPEWRITER, and TOOLS have a UI slot in [io.github.kjly.brna.ui.components.PenPicker]
- * but no implementation yet; selecting them is a no-op. See HANDOFF.md roadmap.
+ * Selector, Tools) — see penpicker.ui in the flxzt/rnote source. TOOLS has a UI slot
+ * in [io.github.kjly.brna.ui.components.PenPicker] but no implementation yet;
+ * selecting it is a no-op. See HANDOFF.md roadmap.
  */
 enum class ToolType(val isImplemented: Boolean = true) {
     BRUSH,
     SHAPER,
-    TYPEWRITER(isImplemented = false),
+    TYPEWRITER,
     ERASER,
     SELECTOR,
     TOOLS(isImplemented = false)
 }
+
+/**
+ * Desktop Rnote's two eraser styles: TRASH removes every stroke the eraser touches,
+ * SPLIT cuts out only the part of a brush stroke under it and keeps the rest.
+ */
+enum class EraserMode { TRASH, SPLIT }
 
 /** The shapes the Shaper draws — the basic ones from desktop Rnote's shape picker. */
 enum class ShapeKind { LINE, ARROW, RECTANGLE, ELLIPSE }
@@ -71,6 +77,9 @@ data class ToolConfig(
     /** The Shaper's current shape and width; Rnote's shaper defaults to a 2.0 line. */
     val shapeKind: ShapeKind = ShapeKind.LINE,
     val shaperWidth: Float = 2f,
+    val eraserMode: EraserMode = EraserMode.TRASH,
+    /** Typewriter font size; Rnote's `TextStyle::FONT_SIZE_DEFAULT` is 32. */
+    val textSize: Float = 32f,
     /** When false (default), only stylus/S-Pen input can draw. Finger touch is reserved for pan & zoom. */
     val allowFingerDrawing: Boolean = false
 ) {
@@ -81,6 +90,7 @@ data class ToolConfig(
         get() = when {
             activeTool == ToolType.ERASER -> eraserWidth
             activeTool == ToolType.SHAPER -> shaperWidth
+            activeTool == ToolType.TYPEWRITER -> textSize
             isMarker -> highlighterWidth
             else -> strokeWidth
         }
@@ -95,6 +105,10 @@ data class ToolConfig(
         // 0.1 / 500, EraserConfig::WIDTH_MIN / _MAX are 1 / 500. The old flat 1f floor
         // sat above the range the spin button steps through for a brush (0.1 below
         // width 12), so the finest widths desktop can express were unreachable here.
+        if (activeTool == ToolType.TYPEWRITER) {
+            // Rnote's TextStyle::FONT_SIZE_MIN / _MAX.
+            return copy(textSize = newSize.coerceIn(1f, 512f))
+        }
         val minWidth = if (activeTool == ToolType.ERASER) 1f else 0.1f
         val clamped = newSize.coerceIn(minWidth, 500f)
         return when {

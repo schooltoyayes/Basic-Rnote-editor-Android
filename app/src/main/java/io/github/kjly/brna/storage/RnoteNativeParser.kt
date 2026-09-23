@@ -255,8 +255,8 @@ object RnoteNativeParser {
         while (reader.hasNext()) {
             element = when (reader.nextName()) {
                 "brushstroke" -> parseBrushStroke(reader)
-                // Text, images and shapes are shown here but never edited, so each keeps
-                // the element exactly as read and a save writes that back untouched.
+                // Text, images and shapes keep the element exactly as read, and a save
+                // writes that back; editing changes it along with the fields (NativeEditing).
                 "textstroke"  -> fromTree(reader) { r, tree -> parseTextStroke(r)?.copy(raw = tree) }
                 "bitmapimage" -> fromTree(reader) { r, tree -> parseBitmapImage(r)?.copy(raw = tree) }
                 "shapestroke" -> fromTree(reader) { r, tree ->
@@ -492,7 +492,10 @@ object RnoteNativeParser {
         if (maxX == 0f) {
             val lines = text.split('\n')
             val wrap = maxWidth
-            val w = wrap ?: (lines.maxOf { it.length } * size * 0.6f)
+            // A wrap width is only an upper limit: short text stays as narrow as it is, so
+            // tapping beside it with the typewriter starts a new box instead of editing it.
+            val longest = lines.maxOf { it.length } * size * 0.6f
+            val w = if (wrap != null && wrap > 0f) minOf(wrap, longest) else longest
             val lineCount = if (wrap != null && wrap > 0f) {
                 lines.sumOf { maxOf(1, kotlin.math.ceil(it.length * size * 0.6f / wrap).toInt()) }
             } else lines.size

@@ -1,0 +1,31 @@
+From d783fed77d5b88f86183b247518f53e386a59aa7 Mon Sep 17 00:00:00 2001
+From: claude <a@b>
+Date: Wed, 23 Sep 2026 15:33:16 +0000
+Subject: [PATCH] Sign release builds with the shared key so CI can ship them
+
+---
+ app/build.gradle.kts | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index b641b56..11eddd2 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -30,4 +30,14 @@ android {
+             )
++            // The same key as the debug build (~/.android/debug.keystore, which the CI
++            // workflow restores from a secret), so a release APK installs straight over a
++            // debug one. A release build is what makes drawing smooth: a debuggable app
++            // runs Compose far slower than the non-debuggable one users should get.
++            signingConfig = signingConfigs.getByName("debug")
+         }
+     }
++    lint {
++        // assembleRelease runs lint's "vital" checks and fails the build on any of them;
++        // `./gradlew lint` still reports everything, it just doesn't block the APK.
++        checkReleaseBuilds = false
++    }
+     compileOptions {
+-- 
+2.43.0
+

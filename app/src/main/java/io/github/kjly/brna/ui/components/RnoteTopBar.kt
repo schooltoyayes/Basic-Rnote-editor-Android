@@ -5,9 +5,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FilterCenterFocus
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.HighlightAlt
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.IosShare
@@ -16,6 +18,7 @@ import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.SaveAs
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -36,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import io.github.kjly.brna.export.ShareTarget
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.ui.theme.BrnaColors
 
@@ -75,12 +79,19 @@ fun RnoteTopBar(
     canTakePhoto: Boolean = false,
     /** A photo taken now into the open note. */
     onTakePhoto: () -> Unit = {},
+    /** Whether the paper has pages, which decides whether Share offers "this page" or the view. */
+    hasPages: Boolean = true,
+    /** Whether the selector holds anything to share. */
+    hasSelection: Boolean = false,
+    /** Sends a page, the selection or the note to another app. */
+    onShare: (ShareTarget) -> Unit = {},
     /** The notes opened or saved last. */
     onShowRecent: () -> Unit = {},
     /** Thumbnails of every page, to jump to one. */
     onShowPages: () -> Unit = {}
 ) {
     var showOverflowMenu by remember { mutableStateOf(false) }
+    var showShareMenu by remember { mutableStateOf(false) }
     val iconTint = if (paperStyle.isDarkMode) Color.White else Color(0xFF1E1E24)
 
     TopAppBar(
@@ -154,6 +165,39 @@ fun RnoteTopBar(
             // Page settings
             IconButton(onClick = onOpenPageSettings) {
                 Icon(Icons.Default.Article, contentDescription = "Page Settings", tint = iconTint)
+            }
+
+            // Share: to a chat, a mail or the class's course, through Android's share sheet.
+            IconButton(onClick = { showShareMenu = true }) {
+                Icon(Icons.Default.Share, contentDescription = "Share", tint = iconTint)
+
+                DropdownMenu(
+                    expanded = showShareMenu,
+                    onDismissRequest = { showShareMenu = false }
+                ) {
+                    val here = if (hasPages) "This page" else "What's on screen"
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Default.Image, null) },
+                        text = { Text("$here as PNG") },
+                        onClick = { showShareMenu = false; onShare(ShareTarget.PAGE_PNG) }
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Default.PictureAsPdf, null) },
+                        text = { Text("$here as PDF") },
+                        onClick = { showShareMenu = false; onShare(ShareTarget.PAGE_PDF) }
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Default.HighlightAlt, null) },
+                        text = { Text("Selection as PNG") },
+                        enabled = hasSelection,
+                        onClick = { showShareMenu = false; onShare(ShareTarget.SELECTION_PNG) }
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Default.Description, null) },
+                        text = { Text("Whole note as PDF") },
+                        onClick = { showShareMenu = false; onShare(ShareTarget.NOTE_PDF) }
+                    )
+                }
             }
 
             // ⋮ Overflow — New, Open, Save, Export, Clear

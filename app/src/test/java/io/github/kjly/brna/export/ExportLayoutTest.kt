@@ -152,4 +152,33 @@ class ExportLayoutTest {
         assertEquals(200f, bounds.right, 0f)
         assertEquals(400f, bounds.bottom, 0f)
     }
+
+    @Test
+    fun `a selection export covers the selected desktop elements as well as the ink`() {
+        // An image (standing in for any text box, shape or picture) away from the ink.
+        val bounds = ExportLayout.selectionBounds(
+            listOf(dot(10f, 10f)), 12f, listOf(importedPage(100f, 200f, 300f, 400f))
+        )!!
+        assertEquals(-2f, bounds.left, 0f)
+        assertEquals(-2f, bounds.top, 0f)
+        assertEquals(312f, bounds.right, 0f)
+        assertEquals(412f, bounds.bottom, 0f)
+        // Desktop elements alone are a selection too.
+        assertEquals(88f, ExportLayout.selectionBounds(emptyList(), 12f, listOf(importedPage(100f, 200f, 300f, 400f)))!!.left, 0f)
+    }
+
+    @Test
+    fun `this page is the one showing the most of itself`() {
+        val pages = listOf(
+            androidx.compose.ui.geometry.Rect(0f, 0f, 100f, 200f),
+            androidx.compose.ui.geometry.Rect(0f, 200f, 100f, 400f)
+        )
+        // Scrolled so the second page fills most of the view.
+        assertEquals(1, ExportLayout.pageInView(pages, androidx.compose.ui.geometry.Rect(0f, 150f, 100f, 350f)))
+        // Mostly the first.
+        assertEquals(0, ExportLayout.pageInView(pages, androidx.compose.ui.geometry.Rect(0f, 50f, 100f, 250f)))
+        // Off past the last page, or no pages at all.
+        assertNull(ExportLayout.pageInView(pages, androidx.compose.ui.geometry.Rect(0f, 500f, 100f, 600f)))
+        assertNull(ExportLayout.pageInView(emptyList(), androidx.compose.ui.geometry.Rect(0f, 0f, 100f, 100f)))
+    }
 }

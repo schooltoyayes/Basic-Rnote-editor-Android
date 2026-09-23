@@ -40,22 +40,21 @@ object DocumentExporter {
 
     /**
      * [ExportScope.DOCUMENT] and [ExportScope.SELECTION] — a single file at [uri].
-     * [selection] is only read for the selection scope.
+     * [selection] and [selectedNatives] are only read for the selection scope.
      */
     fun exportSingle(
         context: Context,
         uri: Uri,
         document: NoteDocument,
         selection: List<Stroke>,
-        prefs: ExportPrefs
+        prefs: ExportPrefs,
+        selectedNatives: List<NativeCanvasElement> = emptyList()
     ): Result {
         val paperStyle = document.paperStyle
         val pages = pagesFor(document, prefs)
 
         val strokes: List<Stroke>
         val region: Rect
-        // PDF pages, images, text and shapes from a desktop file belong to the document,
-        // not to a selection, which only ever holds ink.
         val natives: List<NativeCanvasElement>
         when (prefs.scope) {
             ExportScope.DOCUMENT -> {
@@ -64,10 +63,11 @@ object DocumentExporter {
                 region = ExportLayout.documentBounds(paperStyle, document.strokes, natives)
             }
             ExportScope.SELECTION -> {
-                if (selection.isEmpty()) return Result.Failure("Nothing is selected")
+                // The selector holds text, shapes and images as well as ink.
+                if (selection.isEmpty() && selectedNatives.isEmpty()) return Result.Failure("Nothing is selected")
                 strokes = selection
-                natives = emptyList()
-                region = ExportLayout.selectionBounds(selection, prefs.marginPx)
+                natives = selectedNatives
+                region = ExportLayout.selectionBounds(selection, prefs.marginPx, selectedNatives)
                     ?: return Result.Failure("The selection has no extent")
             }
             ExportScope.PAGES ->
@@ -93,6 +93,49 @@ object DocumentExporter {
             }
         }
         return if (ok) Result.Success(1) else Result.Failure("Could not write the file")
+    }
+
+    /**
+     * One [region] of the document — a page, or what is on screen of a canvas without
+     * pages — as a single file at [uri], in [ExportPrefs.format]. What sharing a page sends.
+     */
+    fun exportRegion(
+        context: Context,
+        uri: Uri,
+        document: NoteDocument,
+        region: Rect,
+        prefs: ExportPrefs
+    ): Result {
+        val paperStyle = document.paperStyle
+        // The pages it touches, so the pattern stops at their edges as in any export.
+        val pages = pagesFor(document, prefs).filter { ExportLayout.intersectOrNull(it, region) != null }
+        val ok = writeTo(context, uri) { out ->
+            when (prefs.format) {
+                ExportFormat.SVG -> {
+                    out.write(
+                        SvgExporter.export(paperStyle, document.strokes, region, prefs, pages, document.nativeElements)
+                            .toByteArray(Charsets.UTF_8)
+                    )
+                    true
+                }
+                ExportFormat.PNG, ExportFormat.JPEG ->
+                    ImageExporter.exportBitmap(
+                        paperStyle, document.strokes, region, prefs, out, pages, document.nativeElements
+                    )
+                ExportFormat.PDF ->
+                    PdfExporter.export(paperStyle, document.strokes, listOf(region), prefs, out, document.nativeElements)
+            }
+        }
+        return if (ok) Result.Success(1) else Result.Failure("Could not write the file")
+    }
+
+    /**
+     * The name a shared file goes out under, which is what the receiving app shows:
+     * "<note> - page 03.png", "<note> - selection.png", or "<note>.pdf" without [detail].
+     */
+    fun sharedFileName(baseName: String, detail: String?, format: ExportFormat): String {
+        val stem = sanitize(baseName)
+        return if (detail == null) "$stem.${format.extension}" else "$stem - $detail.${format.extension}"
     }
 
     /**

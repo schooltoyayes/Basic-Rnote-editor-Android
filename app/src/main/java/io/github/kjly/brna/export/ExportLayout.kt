@@ -217,9 +217,34 @@ object ExportLayout {
         return content.inflate(UNPAGED_MARGIN_PX)
     }
 
-    /** The region a selection export covers: its bounds plus Rnote's configurable margin. */
-    fun selectionBounds(selection: List<Stroke>, marginPx: Float): Rect? =
-        contentBounds(selection)?.inflate(marginPx.coerceAtLeast(0f))
+    /**
+     * The region a selection export covers: its bounds plus Rnote's configurable margin.
+     * [natives] are the selected desktop elements — text, shapes, images — which the
+     * selector holds alongside the ink.
+     */
+    fun selectionBounds(
+        selection: List<Stroke>,
+        marginPx: Float,
+        natives: List<NativeCanvasElement> = emptyList()
+    ): Rect? = contentBounds(selection, natives)?.inflate(marginPx.coerceAtLeast(0f))
+
+    /**
+     * Which of [pages] is "this page" for a [view] of the document: the one showing the
+     * most of itself. Null when none of them is in view at all.
+     */
+    fun pageInView(pages: List<Rect>, view: Rect): Int? {
+        var best: Int? = null
+        var bestArea = 0f
+        pages.forEachIndexed { i, page ->
+            val overlap = intersectOrNull(page, view) ?: return@forEachIndexed
+            val area = overlap.width * overlap.height
+            if (area > bestArea) {
+                best = i
+                bestArea = area
+            }
+        }
+        return best
+    }
 
     /** The overlap of two rects, or null when they don't meet. */
     fun intersectOrNull(a: Rect, b: Rect): Rect? {

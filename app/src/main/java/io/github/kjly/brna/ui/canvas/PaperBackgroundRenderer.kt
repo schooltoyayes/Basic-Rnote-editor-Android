@@ -125,6 +125,14 @@ object PaperBackgroundRenderer {
                     val rEnd = lastRow.coerceAtLeast(0)
                     0..0 to (rStart..rEnd)
                 }
+                io.github.kjly.brna.model.LayoutMode.SEMI_INFINITE -> {
+                    // Pages only to the right of and below the origin page.
+                    val cStart = firstCol.coerceAtLeast(0)
+                    val rStart = firstRow.coerceAtLeast(0)
+                    val colCount = (lastCol - cStart).coerceIn(0, 30)
+                    val rowCount = (lastRow - rStart).coerceIn(0, 30)
+                    (cStart..(cStart + colCount)) to (rStart..(rStart + rowCount))
+                }
                 io.github.kjly.brna.model.LayoutMode.INFINITE -> {
                     val colCount = (lastCol - firstCol).coerceIn(0, 30)
                     val rowCount = (lastRow - firstRow).coerceIn(0, 30)
@@ -208,7 +216,10 @@ object PaperBackgroundRenderer {
 
         val docLeft = panOffset.x
         val docTop = panOffset.y
-        val docRight = paperStyle.effectivePageWidthPx * zoomLevel + panOffset.x
+        val isSemiInfinite = paperStyle.layoutMode == io.github.kjly.brna.model.LayoutMode.SEMI_INFINITE
+        // Semi Infinite grows right and down without end: only left of and above the
+        // origin is outside the document.
+        val docRight = if (isSemiInfinite) screenW else paperStyle.effectivePageWidthPx * zoomLevel + panOffset.x
         // Continuous Vertical grows downwards without end, so it has no bottom edge to
         // dim past — clamping to the screen leaves that strip empty.
         val docBottom = if (paperStyle.layoutMode == io.github.kjly.brna.model.LayoutMode.FIXED_SIZE) {

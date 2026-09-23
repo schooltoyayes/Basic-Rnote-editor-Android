@@ -173,6 +173,9 @@ class MainActivity : ComponentActivity() {
     /** A note recovered from the last session, waiting to be offered back. */
     private var pendingRecovery by mutableStateOf<Recovery.Pending?>(null)
 
+    /** Set when [incomingDocument] is the open note reloaded from its file. */
+    private var incomingKeepsView = false
+
     /** Set when [incomingDocument] is a recovered note, which is unsaved by definition. */
     private var incomingIsRecovered = false
 
@@ -276,17 +279,24 @@ class MainActivity : ComponentActivity() {
     /**
      * Reads [uri] off the main thread and hands the note to the UI. Shared by the Open
      * picker and by "Open with" from other apps.
+     *
+     * [reload] is the conflict dialog's "Load theirs": the open note's own file, read again
+     * as it is now, with the changes made here thrown away and the view left where it was.
      */
-    private fun openDocument(uri: Uri, fromRecent: Boolean = false) {
+    private fun openDocument(uri: Uri, fromRecent: Boolean = false, reload: Boolean = false) {
         if (busyMessage != null) return
-        busyMessage = "Opening…"
+        busyMessage = if (reload) "Loading their version…" else "Opening…"
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 try {
+                    // Taken before reading, so a sync that lands mid-read counts as a change
+                    // made elsewhere rather than being taken for the version that was read.
+                    val lastModified = DocumentUri.lastModified(this@MainActivity, uri)
                     FileManager.loadDocumentFromUri(this@MainActivity, uri)
                         ?.let {
-                            knownLastModified = DocumentUri.lastModified(this@MainActivity, uri)
-                            it to DocumentUri.displayName(this@MainActivity, uri)
+                            // Discarded on purpose; don't offer them back on the next launch.
+                            if (reload) Recovery.clear(this@MainActivity)
+                            Triple(it, DocumentUri.displayName(this@MainActivity, uri), lastModified)
                         }
                 } catch (e: Throwable) {
                     // OutOfMemoryError included: a file too big to hold is a failed open,
@@ -297,7 +307,7 @@ class MainActivity : ComponentActivity() {
             }
             busyMessage = null
             if (result != null) {
-                val (loaded, fileName) = result
+                val (loaded, fileName, lastModified) = result
                 // The file's own name wins over the title inside it: a .rnote carries no
                 // title at all, and our JSON's title is only what it was last renamed to.
                 val title = fileName?.let(DocumentUri::titleFrom) ?: loaded.document.title
@@ -305,8 +315,17 @@ class MainActivity : ComponentActivity() {
                 // "Imported Note" placeholder title, which said nothing about the file.
                 saveAsRnote = loaded.isNativeRnote
                 adoptDocumentUri(uri, title)
+                // Set here on the main thread together with incomingDocument, never earlier:
+                // autosave must not see the new file's baseline while the old note is still
+                // open, or it would write that note over the file just read.
+                knownLastModified = lastModified
+                incomingKeepsView = reload
                 incomingDocument = loaded.document.copy(title = title)
-                Toast.makeText(this@MainActivity, "Opened: $title", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this@MainActivity,
+                    if (reload) "Loaded their version of $title" else "Opened: $title",
+                    Toast.LENGTH_SHORT
+                ).show()
             } else if (fromRecent) {
                 // Moved, deleted, or its access withdrawn: an entry that can only fail goes.
                 RecentFiles.remove(this@MainActivity, uri.toString())
@@ -360,8 +379,9 @@ class MainActivity : ComponentActivity() {
         if (busyMessage != null) return true
         busyMessage = "Saving…"
         val asRnote = saveAsRnote
+        val known = knownLastModified
         lifecycleScope.launch {
-            if (!overwriteChanges && withContext(Dispatchers.IO) { changedElsewhere(target) }) {
+            if (!overwriteChanges && withContext(Dispatchers.IO) { changedElsewhere(target, known) }) {
                 busyMessage = null
                 pendingConflict = document
                 return@launch
@@ -385,9 +405,14 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
-    /** Blocking; call from [Dispatchers.IO]. */
-    private fun changedElsewhere(uri: Uri): Boolean {
-        val known = knownLastModified ?: return false
+    /**
+     * Whether [uri] was written since [known]: [knownLastModified] as it was when the note
+     * being written was captured. Passed in rather than read here, because a reload that
+     * finishes in between moves it on to the reloaded file. Blocking; call from
+     * [Dispatchers.IO].
+     */
+    private fun changedElsewhere(uri: Uri, known: Long?): Boolean {
+        if (known == null) return false
         val now = DocumentUri.lastModified(this, uri) ?: return false
         return now != known
     }
@@ -421,13 +446,14 @@ class MainActivity : ComponentActivity() {
         val document = unsavedDocument?.invoke() ?: return true
         val target = currentDocumentUri
         val asRnote = saveAsRnote
+        val known = knownLastModified
         val wrote = withContext(Dispatchers.IO) {
             try {
                 Recovery.write(this@MainActivity, document, target, asRnote)
             } catch (e: Throwable) {
                 e.printStackTrace()
             }
-            target != null && busyMessage == null && !changedElsewhere(target) &&
+            target != null && busyMessage == null && !changedElsewhere(target, known) &&
                 writeLock.withLock { writeDocument(target, document, asRnote) }
         }
         if (wrote && target != null) afterSave(target, document)
@@ -696,8 +722,14 @@ class MainActivity : ComponentActivity() {
             val pendingDocument = incomingDocument
             LaunchedEffect(pendingDocument) {
                 if (pendingDocument != null) {
+                    val view = viewportState
                     onDocumentLoaded(pendingDocument)
                     incomingDocument = null
+                    if (incomingKeepsView) {
+                        // Reloaded: stay on the part of the note that was on screen.
+                        incomingKeepsView = false
+                        viewportState = view
+                    }
                     if (incomingIsRecovered) {
                         incomingIsRecovered = false
                         isModified = true
@@ -741,7 +773,9 @@ class MainActivity : ComponentActivity() {
                 if (unchanged) isModified = false
             }
             unsavedDocument = {
-                if (!isModified) null else NoteDocument(
+                // A loaded note waiting to replace this one already has its file's baseline
+                // (see openDocument), so this one must not be written against it.
+                if (!isModified || incomingDocument != null) null else NoteDocument(
                     title = documentTitle,
                     paperStyle = paperStyle,
                     strokes = strokes.toList(),
@@ -1289,8 +1323,10 @@ class MainActivity : ComponentActivity() {
                             text = {
                                 Text(
                                     "\"${conflicted.title}\" was changed since you opened it — " +
-                                        "on another device, for example. Saving over it would " +
-                                        "lose those changes."
+                                        "on another device, for example.\n\n" +
+                                        "Save as copy keeps both versions. Overwrite replaces " +
+                                        "theirs with yours. Load theirs opens their version and " +
+                                        "discards the changes made on this device."
                                 )
                             },
                             confirmButton = {
@@ -1299,7 +1335,13 @@ class MainActivity : ComponentActivity() {
                                     launchSavePicker(conflicted)
                                 }) { Text("Save as copy") }
                             },
+                            // Both emitted straight into the dialog's button row, not wrapped
+                            // in a Row, so the three buttons can wrap on a narrow screen.
                             dismissButton = {
+                                TextButton(onClick = {
+                                    pendingConflict = null
+                                    currentDocumentUri?.let { openDocument(it, reload = true) }
+                                }) { Text("Load theirs") }
                                 TextButton(onClick = {
                                     pendingConflict = null
                                     saveInPlace(conflicted, overwriteChanges = true)

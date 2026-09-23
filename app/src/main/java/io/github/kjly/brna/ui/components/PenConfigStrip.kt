@@ -1,7 +1,10 @@
 package io.github.kjly.brna.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,6 +22,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Architecture
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
@@ -61,6 +65,8 @@ import androidx.compose.ui.window.Dialog
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.BrushSizePreset
 import io.github.kjly.brna.model.EraserMode
+import io.github.kjly.brna.model.PenFavorite
+import io.github.kjly.brna.model.brushFavorite
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.ui.icons.GeneratedIcons
@@ -91,7 +97,13 @@ fun PenConfigStrip(
     onCutSelection: () -> Unit = {},
     onPaste: () -> Unit = {},
     onLockAspectRatioToggled: () -> Unit = {},
-    onSnapAnglesToggled: () -> Unit = {}
+    onSnapAnglesToggled: () -> Unit = {},
+    /** The saved pens, [io.github.kjly.brna.storage.PenFavorites.SLOTS] of them; null for an empty slot. */
+    favorites: List<PenFavorite?> = emptyList(),
+    onApplyFavorite: (PenFavorite) -> Unit = {},
+    /** Keep the brush as it is set now in this slot. */
+    onStoreFavorite: (Int) -> Unit = {},
+    onClearFavorite: (Int) -> Unit = {}
 ) {
     Surface(
         modifier = modifier.width(60.dp),
@@ -105,7 +117,10 @@ fun PenConfigStrip(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             when (toolConfig.activeTool) {
-                ToolType.BRUSH -> BrushConfigPage(toolConfig, onBrushStyleSelected, onSizeChanged)
+                ToolType.BRUSH -> BrushConfigPage(
+                    toolConfig, onBrushStyleSelected, onSizeChanged,
+                    favorites, onApplyFavorite, onStoreFavorite, onClearFavorite
+                )
                 ToolType.ERASER -> EraserConfigPage(toolConfig, onEraserModeSelected, onSizeChanged)
                 ToolType.SELECTOR -> SelectorConfigPage(
                     hasActiveSelection, onDeleteSelection, onDuplicateSelection, onSelectAll, onDeselectAll,
@@ -126,7 +141,11 @@ fun PenConfigStrip(
 private fun BrushConfigPage(
     toolConfig: ToolConfig,
     onBrushStyleSelected: (BrushStyle) -> Unit,
-    onSizeChanged: (Float) -> Unit
+    onSizeChanged: (Float) -> Unit,
+    favorites: List<PenFavorite?>,
+    onApplyFavorite: (PenFavorite) -> Unit,
+    onStoreFavorite: (Int) -> Unit,
+    onClearFavorite: (Int) -> Unit
 ) {
     StripIconToggle(GeneratedIcons.BrushStyleSolid, "Solid", toolConfig.brushStyle == BrushStyle.SOLID, true) {
         onBrushStyleSelected(BrushStyle.SOLID)
@@ -140,6 +159,82 @@ private fun BrushConfigPage(
     StripDivider()
     val presets = BrushSizePreset.entries.map { it to it.sizeForTool(ToolType.BRUSH, toolConfig.brushStyle) }
     StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = if (toolConfig.brushStyle == BrushStyle.MARKER) 128f else 64f, onSizeChanged)
+    if (favorites.isNotEmpty()) {
+        StripDivider()
+        FavoriteSlots(toolConfig.brushFavorite(), favorites, onApplyFavorite, onStoreFavorite, onClearFavorite)
+    }
+}
+
+/**
+ * The saved pens, each a dot in its colour and roughly its width. An empty slot saves the
+ * brush as it is set now; a full one switches to it, or, held down, offers to replace
+ * or remove it.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FavoriteSlots(
+    current: PenFavorite,
+    favorites: List<PenFavorite?>,
+    onApply: (PenFavorite) -> Unit,
+    onStore: (Int) -> Unit,
+    onClear: (Int) -> Unit
+) {
+    favorites.forEachIndexed { slot, favorite ->
+        var showMenu by remember { mutableStateOf(false) }
+        Box {
+            Box(
+                modifier = Modifier
+                    .padding(vertical = 2.dp)
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (favorite != null && favorite.matches(current)) BrnaColors.PanelInactive else Color.Transparent
+                    )
+                    .combinedClickable(
+                        onClickLabel = if (favorite == null) "Save the current pen here" else "Use this pen",
+                        onLongClickLabel = "Replace or remove",
+                        onClick = { if (favorite == null) onStore(slot) else onApply(favorite) },
+                        onLongClick = { if (favorite != null) showMenu = true }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (favorite == null) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = "Empty favorite",
+                        tint = BrnaColors.TextSecondaryOnPanel,
+                        modifier = Modifier.size(18.dp)
+                    )
+                } else {
+                    // Ringed, so a black pen still shows on the dark panel.
+                    val diameter = (6f + favorite.width.coerceAtMost(32f) / 32f * 16f).dp
+                    Box(
+                        modifier = Modifier
+                            .size(diameter)
+                            .clip(CircleShape)
+                            .background(Color(favorite.argb))
+                            .border(1.dp, BrnaColors.TextSecondaryOnPanel, CircleShape)
+                    )
+                }
+            }
+            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                DropdownMenuItem(
+                    text = { Text("Replace with current pen") },
+                    onClick = {
+                        showMenu = false
+                        onStore(slot)
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Remove") },
+                    onClick = {
+                        showMenu = false
+                        onClear(slot)
+                    }
+                )
+            }
+        }
+    }
 }
 
 // ── Shaper ───────────────────────────────────────────────────────────────

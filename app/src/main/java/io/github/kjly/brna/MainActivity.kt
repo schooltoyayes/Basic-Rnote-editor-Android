@@ -63,6 +63,9 @@ import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.PaperStyle
+import io.github.kjly.brna.model.PenFavorite
+import io.github.kjly.brna.model.brushFavorite
+import io.github.kjly.brna.model.withFavorite
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
 import io.github.kjly.brna.model.ToolConfig
@@ -73,6 +76,7 @@ import io.github.kjly.brna.storage.FileManager
 import io.github.kjly.brna.storage.ImageImport
 import io.github.kjly.brna.storage.NativeEditing
 import io.github.kjly.brna.storage.PdfImporter
+import io.github.kjly.brna.storage.PenFavorites
 import io.github.kjly.brna.storage.RecentFiles
 import io.github.kjly.brna.storage.Recovery
 import io.github.kjly.brna.storage.SettingsManager
@@ -784,6 +788,11 @@ class MainActivity : ComponentActivity() {
             var showExportSheet by remember { mutableStateOf(false) }
             // Kept across openings so a second export doesn't start from the defaults again.
             var exportPrefs by remember { mutableStateOf(ExportPrefs()) }
+            var penFavorites by remember { mutableStateOf(PenFavorites.load(this@MainActivity)) }
+            val setFavorite = { slot: Int, favorite: PenFavorite? ->
+                penFavorites = penFavorites.toMutableList().also { it[slot] = favorite }
+                PenFavorites.save(this@MainActivity, penFavorites)
+            }
 
             // ── Stroke stacks ─────────────────────────────────────────────────────
             val strokes = remember { mutableStateListOf<Stroke>() }
@@ -1374,6 +1383,10 @@ class MainActivity : ComponentActivity() {
                             onSnapAnglesToggled = {
                                 toolConfig = toolConfig.copy(snapAngles = !toolConfig.snapAngles)
                             },
+                            favorites = penFavorites,
+                            onApplyFavorite = { favorite -> toolConfig = toolConfig.withFavorite(favorite) },
+                            onStoreFavorite = { slot -> setFavorite(slot, toolConfig.brushFavorite()) },
+                            onClearFavorite = { slot -> setFavorite(slot, null) },
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 18.dp)

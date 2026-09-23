@@ -52,6 +52,16 @@ object RnoteNativeParser {
         return parseRoot(reader)
     }
 
+    /**
+     * One stroke_components value, e.g. `{"shapestroke": {...}}`, read exactly as it would
+     * be from a file — which is how shapes drawn in this app are built.
+     */
+    fun parseElementJson(json: String): NativeCanvasElement? {
+        val reader = JsonReader(java.io.StringReader(json))
+        reader.isLenient = true
+        return parseElementValue(reader)
+    }
+
     // ── Internal holder types ─────────────────────────────────────────────────
 
     private data class FormatConfig(
@@ -1074,6 +1084,12 @@ object RnoteNativeParser {
     // ── Shared helpers ────────────────────────────────────────────────────────
 
     private fun parseColor(reader: JsonReader): RnoteNativeColor {
+        // Rnote's shape colours are `Option<Color>`: null means "not drawn", which reads
+        // as transparent. Reading it as an object threw, and took the whole file with it.
+        if (reader.peek() == JsonToken.NULL) {
+            reader.nextNull()
+            return RnoteNativeColor.TRANSPARENT
+        }
         var r = 0f; var g = 0f; var b = 0f; var a = 1f
         reader.beginObject()
         while (reader.hasNext()) {

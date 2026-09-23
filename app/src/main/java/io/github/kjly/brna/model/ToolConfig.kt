@@ -10,12 +10,15 @@ import androidx.compose.ui.graphics.Color
  */
 enum class ToolType(val isImplemented: Boolean = true) {
     BRUSH,
-    SHAPER(isImplemented = false),
+    SHAPER,
     TYPEWRITER(isImplemented = false),
     ERASER,
     SELECTOR,
     TOOLS(isImplemented = false)
 }
+
+/** The shapes the Shaper draws — the basic ones from desktop Rnote's shape picker. */
+enum class ShapeKind { LINE, ARROW, RECTANGLE, ELLIPSE }
 
 /**
  * Desktop Rnote's brush styles. MARKER reproduces what BRNA used to call the
@@ -65,6 +68,9 @@ data class ToolConfig(
     // 4/9/24 palette presets — a fresh eraser starts between Small and Medium.
     val eraserWidth: Float = 12f,          // Eraser square side in canvas units
     val isPressureSensitive: Boolean = true,
+    /** The Shaper's current shape and width; Rnote's shaper defaults to a 2.0 line. */
+    val shapeKind: ShapeKind = ShapeKind.LINE,
+    val shaperWidth: Float = 2f,
     /** When false (default), only stylus/S-Pen input can draw. Finger touch is reserved for pan & zoom. */
     val allowFingerDrawing: Boolean = false
 ) {
@@ -74,6 +80,7 @@ data class ToolConfig(
     val currentActiveSize: Float
         get() = when {
             activeTool == ToolType.ERASER -> eraserWidth
+            activeTool == ToolType.SHAPER -> shaperWidth
             isMarker -> highlighterWidth
             else -> strokeWidth
         }
@@ -92,6 +99,7 @@ data class ToolConfig(
         val clamped = newSize.coerceIn(minWidth, 500f)
         return when {
             activeTool == ToolType.ERASER -> copy(eraserWidth = clamped)
+            activeTool == ToolType.SHAPER -> copy(shaperWidth = clamped)
             isMarker -> copy(highlighterWidth = clamped)
             else -> copy(strokeWidth = clamped)
         }

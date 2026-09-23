@@ -60,8 +60,9 @@ class NativeElementRenderer {
         canvas.restore()
     }
 
-    fun drawShape(canvas: Canvas, el: NativeShapeElement) {
-        val path = shapePaths.getOrPut(el) { pathOf(el.shape) }
+    /** [cache] false for a shape drawn only once, like the Shaper's preview. */
+    fun drawShape(canvas: Canvas, el: NativeShapeElement, cache: Boolean = true) {
+        val path = if (cache) shapePaths.getOrPut(el) { pathOf(el.shape) } else pathOf(el.shape)
         if (el.fillColor.a > 0f) {
             fillPaint.color = argb(el.fillColor)
             canvas.drawPath(path, fillPaint)
@@ -90,6 +91,14 @@ class NativeElementRenderer {
         } else {
             canvas.drawBitmap(bitmap, null, RectF(el.minX, el.minY, el.maxX, el.maxY), bitmapPaint)
         }
+    }
+
+    /** Drops cached layouts and paths of elements no longer in the document. */
+    fun retainOnly(elements: Collection<NativeCanvasElement>) {
+        val keep = java.util.Collections.newSetFromMap(IdentityHashMap<NativeCanvasElement, Boolean>())
+        keep.addAll(elements)
+        textLayouts.keys.retainAll(keep)
+        shapePaths.keys.retainAll(keep)
     }
 
     private fun buildLayout(el: NativeTextElement): StaticLayout {

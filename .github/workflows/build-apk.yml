@@ -9,7 +9,9 @@ on:
 
 permissions:
   contents: write      # nötig, um das Release "latest" anzulegen
-
+concurrency:
+  group: apk-build
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-latest

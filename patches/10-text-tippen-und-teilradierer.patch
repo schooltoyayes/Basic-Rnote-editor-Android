@@ -1,0 +1,973 @@
+From d8f729fc8734b1bea40a4fdf842f23c3d08cf3e5 Mon Sep 17 00:00:00 2001
+From: Toni & Yannick <schuletoya@gmail.com>
+Date: Wed, 23 Sep 2026 16:07:31 +0000
+Subject: [PATCH] Typewriter: type and edit text boxes; splitting eraser
+
+---
+ .../java/io/github/kjly/brna/MainActivity.kt  |  72 ++++++++
+ .../kjly/brna/model/RnoteNativeDocument.kt    |   6 +-
+ .../io/github/kjly/brna/model/ToolConfig.kt   |  22 ++-
+ .../github/kjly/brna/storage/NativeEditing.kt | 173 +++++++++++++++++-
+ .../kjly/brna/storage/RnoteNativeParser.kt    |   9 +-
+ .../kjly/brna/ui/canvas/DrawingCanvas.kt      |  88 +++++++--
+ .../kjly/brna/ui/canvas/EraserHitTest.kt      |  70 +++++--
+ .../kjly/brna/ui/components/PenConfigStrip.kt |  51 +++++-
+ .../brna/ui/components/TextEntryDialog.kt     |  83 +++++++++
+ .../kjly/brna/storage/NativeEditingTest.kt    | 108 +++++++++++
+ .../kjly/brna/ui/canvas/EraserHitTestTest.kt  |  54 ++++++
+ 11 files changed, 691 insertions(+), 45 deletions(-)
+ create mode 100644 app/src/main/java/io/github/kjly/brna/ui/components/TextEntryDialog.kt
+
+diff --git a/app/src/main/java/io/github/kjly/brna/MainActivity.kt b/app/src/main/java/io/github/kjly/brna/MainActivity.kt
+index 9fb898b..5323ffb 100644
+--- a/app/src/main/java/io/github/kjly/brna/MainActivity.kt
++++ b/app/src/main/java/io/github/kjly/brna/MainActivity.kt
+@@ -49,2 +49,4 @@ import io.github.kjly.brna.model.NativeBrushStroke
+ import io.github.kjly.brna.model.NativeCanvasElement
++import io.github.kjly.brna.model.NativeTextElement
++import io.github.kjly.brna.model.RnoteNativeColor
+ import io.github.kjly.brna.model.NativeVectorImageElement
+@@ -59,2 +61,3 @@ import io.github.kjly.brna.storage.DocumentUri
+ import io.github.kjly.brna.storage.FileManager
++import io.github.kjly.brna.storage.NativeEditing
+ import io.github.kjly.brna.storage.PdfImporter
+@@ -76,2 +79,3 @@ import io.github.kjly.brna.ui.components.PenPicker
+ import io.github.kjly.brna.ui.components.RnoteTopBar
++import io.github.kjly.brna.ui.components.TextEntryDialog
+ import io.github.kjly.brna.ui.theme.BabyRnoteTheme
+@@ -84,2 +88,5 @@ private data class DocSnapshot(val strokes: List<Stroke>, val natives: List<Nati
+ 
++/** Where the Typewriter was tapped, and the text box it hit there, if any. */
++private class TextEditTarget(val x: Float, val y: Float, val existing: NativeTextElement?)
++
+ class MainActivity : ComponentActivity() {
+@@ -562,2 +569,3 @@ class MainActivity : ComponentActivity() {
+             val selectedNatives = remember { mutableStateListOf<NativeCanvasElement>() }
++            var textEditTarget by remember { mutableStateOf<TextEditTarget?>(null) }
+             val snapshot = { DocSnapshot(strokes.toList(), documentNativeElements) }
+@@ -869,2 +877,19 @@ class MainActivity : ComponentActivity() {
+                             },
++                            onSplitStrokes = { split ->
++                                // Each cut stroke is replaced where it stood, so the pieces
++                                // keep its place in the drawing order.
++                                for (i in strokes.indices.reversed()) {
++                                    val pieces = split[strokes[i].id] ?: continue
++                                    strokes.removeAt(i)
++                                    strokes.addAll(i, pieces)
++                                }
++                                selectedStrokes.removeAll { it.id in split.keys }
++                                isModified = true
++                            },
++                            onTypewriterTap = { x, y ->
++                                val slop = 12f / viewportState.effectiveScale
++                                textEditTarget = TextEditTarget(
++                                    x, y, NativeEditing.textAt(documentNativeElements, x, y, slop)
++                                )
++                            },
+                         )
+@@ -942,2 +967,3 @@ class MainActivity : ComponentActivity() {
+                             onShapeKindSelected = { kind -> toolConfig = toolConfig.copy(shapeKind = kind) },
++                            onEraserModeSelected = { mode -> toolConfig = toolConfig.copy(eraserMode = mode) },
+                             modifier = Modifier
+@@ -1030,2 +1056,48 @@ class MainActivity : ComponentActivity() {
+ 
++                    // ── Typewriter: type a new text box, or change the one tapped ──
++                    textEditTarget?.let { target ->
++                        val existing = target.existing
++                        TextEntryDialog(
++                            initialText = existing?.text ?: "",
++                            isNew = existing == null,
++                            onDismiss = { textEditTarget = null },
++                            onDelete = {
++                                textEditTarget = null
++                                if (existing != null) {
++                                    undoStack.add(snapshot())
++                                    redoStack.clear()
++                                    documentNativeElements = documentNativeElements.filter { it !== existing }
++                                    isModified = true
++                                }
++                            },
++                            onConfirm = { text ->
++                                textEditTarget = null
++                                if (existing == null) {
++                                    val c = toolConfig.penColor
++                                    NativeEditing.createText(
++                                        text, target.x, target.y, toolConfig.textSize,
++                                        RnoteNativeColor(c.red, c.green, c.blue, c.alpha),
++                                        NativeEditing.typewriterWrapWidth(target.x, paperStyle.effectivePageWidthPx)
++                                    )?.let { created ->
++                                        undoStack.add(snapshot())
++                                        redoStack.clear()
++                                        documentNativeElements = documentNativeElements + created
++                                        isModified = true
++                                    }
++                                } else if (text != existing.text) {
++                                    undoStack.add(snapshot())
++                                    redoStack.clear()
++                                    // Blank text removes the box, as emptying one does in Rnote.
++                                    val edited = NativeEditing.withText(existing, text)
++                                    documentNativeElements = if (edited == null) {
++                                        documentNativeElements.filter { it !== existing }
++                                    } else {
++                                        documentNativeElements.map { if (it === existing) edited else it }
++                                    }
++                                    isModified = true
++                                }
++                            }
++                        )
++                    }
++
+                     // ── Changed elsewhere since it was opened ─────────────────────
+diff --git a/app/src/main/java/io/github/kjly/brna/model/RnoteNativeDocument.kt b/app/src/main/java/io/github/kjly/brna/model/RnoteNativeDocument.kt
+index 2a94a78..0838201 100644
+--- a/app/src/main/java/io/github/kjly/brna/model/RnoteNativeDocument.kt
++++ b/app/src/main/java/io/github/kjly/brna/model/RnoteNativeDocument.kt
+@@ -68,5 +68,5 @@ data class NativeTextElement(
+     /**
+-     * The element exactly as the file had it. This app displays text but cannot edit it,
+-     * so a save writes this back untouched — bold ranges, underlines and anything else
+-     * the model here has no field for survive the round trip.
++     * The element exactly as the file had it. A save writes this back, and editing the
++     * text changes it in place (NativeEditing.withText) — so bold ranges, underlines and
++     * anything else the model here has no field for survive the round trip.
+      */
+diff --git a/app/src/main/java/io/github/kjly/brna/model/ToolConfig.kt b/app/src/main/java/io/github/kjly/brna/model/ToolConfig.kt
+index 0f53cf3..b5d8568 100644
+--- a/app/src/main/java/io/github/kjly/brna/model/ToolConfig.kt
++++ b/app/src/main/java/io/github/kjly/brna/model/ToolConfig.kt
+@@ -6,5 +6,5 @@ import androidx.compose.ui.graphics.Color
+  * Matches desktop Rnote's six "pens" (Brush, Shaper, Typewriter, Eraser,
+- * Selector, Tools) — see penpicker.ui in the flxzt/rnote source. SHAPER,
+- * TYPEWRITER, and TOOLS have a UI slot in [io.github.kjly.brna.ui.components.PenPicker]
+- * but no implementation yet; selecting them is a no-op. See HANDOFF.md roadmap.
++ * Selector, Tools) — see penpicker.ui in the flxzt/rnote source. TOOLS has a UI slot
++ * in [io.github.kjly.brna.ui.components.PenPicker] but no implementation yet;
++ * selecting it is a no-op. See HANDOFF.md roadmap.
+  */
+@@ -13,3 +13,3 @@ enum class ToolType(val isImplemented: Boolean = true) {
+     SHAPER,
+-    TYPEWRITER(isImplemented = false),
++    TYPEWRITER,
+     ERASER,
+@@ -19,2 +19,8 @@ enum class ToolType(val isImplemented: Boolean = true) {
+ 
++/**
++ * Desktop Rnote's two eraser styles: TRASH removes every stroke the eraser touches,
++ * SPLIT cuts out only the part of a brush stroke under it and keeps the rest.
++ */
++enum class EraserMode { TRASH, SPLIT }
++
+ /** The shapes the Shaper draws — the basic ones from desktop Rnote's shape picker. */
+@@ -73,2 +79,5 @@ data class ToolConfig(
+     val shaperWidth: Float = 2f,
++    val eraserMode: EraserMode = EraserMode.TRASH,
++    /** Typewriter font size; Rnote's `TextStyle::FONT_SIZE_DEFAULT` is 32. */
++    val textSize: Float = 32f,
+     /** When false (default), only stylus/S-Pen input can draw. Finger touch is reserved for pan & zoom. */
+@@ -83,2 +92,3 @@ data class ToolConfig(
+             activeTool == ToolType.SHAPER -> shaperWidth
++            activeTool == ToolType.TYPEWRITER -> textSize
+             isMarker -> highlighterWidth
+@@ -97,2 +107,6 @@ data class ToolConfig(
+         // width 12), so the finest widths desktop can express were unreachable here.
++        if (activeTool == ToolType.TYPEWRITER) {
++            // Rnote's TextStyle::FONT_SIZE_MIN / _MAX.
++            return copy(textSize = newSize.coerceIn(1f, 512f))
++        }
+         val minWidth = if (activeTool == ToolType.ERASER) 1f else 0.1f
+diff --git a/app/src/main/java/io/github/kjly/brna/storage/NativeEditing.kt b/app/src/main/java/io/github/kjly/brna/storage/NativeEditing.kt
+index 2b6707c..ef4947f 100644
+--- a/app/src/main/java/io/github/kjly/brna/storage/NativeEditing.kt
++++ b/app/src/main/java/io/github/kjly/brna/storage/NativeEditing.kt
+@@ -4,2 +4,3 @@ import com.google.gson.JsonArray
+ import com.google.gson.JsonElement
++import com.google.gson.JsonNull
+ import com.google.gson.JsonObject
+@@ -26,3 +27,3 @@ import kotlin.math.sin
+  * Editing for the desktop elements this app used to only display — text, shapes, images,
+- * PDF pages — and creating new shapes. Every element that carries the JSON it was read
++ * PDF pages — and creating new shapes and text. Every element that carries the JSON it was read
+  * from ([NativeShapeElement.raw] etc.) gets that JSON changed along with it, so a moved
+@@ -280,2 +281,172 @@ object NativeEditing {
+     }
++
++    // ── Text (the Typewriter) ─────────────────────────────────────────────────
++
++    /**
++     * How wide a new text box may grow before it wraps: Rnote's typewriter default of 600,
++     * narrowed so text typed on a page wraps at that page's right edge rather than running
++     * off it — unless that would leave a column too narrow to write in.
++     */
++    fun typewriterWrapWidth(x: Float, pageWidth: Float): Float {
++        if (pageWidth <= 0f) return TEXT_WIDTH_DEFAULT
++        val pageRight = (kotlin.math.floor(x / pageWidth) + 1f) * pageWidth
++        val room = pageRight - x - TEXT_PAGE_MARGIN
++        return if (room >= TEXT_WIDTH_MIN) minOf(TEXT_WIDTH_DEFAULT, room) else TEXT_WIDTH_DEFAULT
++    }
++
++    /**
++     * A new text box with its top-left corner at ([x], [y]), written the way desktop
++     * Rnote's typewriter writes one and read back through the normal parser. Null for
++     * text that is only whitespace, which Rnote doesn't keep either.
++     */
++    fun createText(
++        text: String,
++        x: Float, y: Float,
++        fontSize: Float,
++        color: RnoteNativeColor,
++        maxWidth: Float?
++    ): NativeTextElement? {
++        if (text.isBlank()) return null
++        val style = JsonObject().apply {
++            addProperty("font_family", TEXT_FONT_FAMILY)
++            addProperty("font_size", round3(fontSize.toDouble()))
++            addProperty("font_weight", 500)
++            addProperty("font_style", "regular")
++            add("color", colorJson(color))
++            if (maxWidth != null) addProperty("max_width", round3(maxWidth.toDouble()))
++            else add("max_width", JsonNull.INSTANCE)
++            addProperty("alignment", "start")
++            add("ranged_text_attributes", JsonArray())
++        }
++        val obj = JsonObject().apply {
++            addProperty("text", text)
++            add("transform", affineJson(floatArrayOf(1f, 0f, 0f, 1f, x, y)))
++            add("text_style", style)
++        }
++        return parseText(obj)
++    }
++
++    /**
++     * [el] with its text replaced, everything else kept — font, colour, position, and
++     * the bold/italic/underline ranges desktop Rnote put on parts of it, which are moved
++     * along with the text around the edit. Null when the new text is blank: the caller
++     * deletes the box, as Rnote does with an emptied one.
++     */
++    fun withText(el: NativeTextElement, newText: String): NativeTextElement? {
++        if (newText.isBlank()) return null
++        val obj = el.raw?.takeIf { it.isJsonObject }?.deepCopy()?.asJsonObject ?: textJson(el)
++        obj.addProperty("text", newText)
++        val style = obj.get("text_style")
++        if (style != null && style.isJsonObject) {
++            val ranges = style.asJsonObject.get("ranged_text_attributes")
++            if (ranges != null && ranges.isJsonArray) {
++                style.asJsonObject.add("ranged_text_attributes", shiftRanges(ranges.asJsonArray, el.text, newText))
++            }
++        }
++        return parseText(obj)
++    }
++
++    /** The topmost text box at ([x], [y]), if any; [slop] widens each box for a fingertip. */
++    fun textAt(elements: List<NativeCanvasElement>, x: Float, y: Float, slop: Float = 0f): NativeTextElement? =
++        elements.lastOrNull {
++            it is NativeTextElement &&
++                x >= it.minX - slop && x <= it.maxX + slop && y >= it.minY - slop && y <= it.maxY + slop
++        } as NativeTextElement?
++
++    /**
++     * Moves Rnote's `ranged_text_attributes` from [old] to [new]. Ranges are UTF-8 byte
++     * offsets (Rust string indices). The edit is taken to be the part between the two
++     * texts' common prefix and suffix: ranges before it stay, ranges after it shift,
++     * a range around it grows or shrinks with it, and whatever of a range lay inside the
++     * replaced part is dropped.
++     */
++    internal fun shiftRanges(ranges: JsonArray, old: String, new: String): JsonArray {
++        var p = 0
++        val maxP = minOf(old.length, new.length)
++        while (p < maxP && old[p] == new[p]) p++
++        // Never split a surrogate pair: back off to the start of the character.
++        if (p in 1 until old.length && Character.isLowSurrogate(old[p])) p--
++        var s = 0
++        val maxS = minOf(old.length, new.length) - p
++        while (s < maxS && old[old.length - 1 - s] == new[new.length - 1 - s]) s++
++        if (s > 0 && Character.isLowSurrogate(old[old.length - s])) s--
++
++        val prefixEnd = utf8Length(old, 0, p)
++        val oldChangeEnd = utf8Length(old, 0, old.length - s)
++        val newLength = utf8Length(new, 0, new.length)
++        val delta = newLength - utf8Length(old, 0, old.length)
++
++        val out = JsonArray()
++        for (item in ranges) {
++            if (!item.isJsonObject) continue
++            val range = item.asJsonObject.get("range")
++            if (range == null || !range.isJsonObject) { out.add(item); continue }
++            val a = range.asJsonObject.get("start")?.asInt ?: continue
++            val b = range.asJsonObject.get("end")?.asInt ?: continue
++            val na = when {
++                a <= prefixEnd -> a
++                a >= oldChangeEnd -> a + delta
++                else -> oldChangeEnd + delta
++            }.coerceIn(0, newLength)
++            val nb = when {
++                b <= prefixEnd -> b
++                b >= oldChangeEnd -> b + delta
++                else -> prefixEnd
++            }.coerceIn(0, newLength)
++            if (nb <= na) continue
++            val moved = item.asJsonObject.deepCopy()
++            moved.add("range", JsonObject().apply {
++                addProperty("start", na)
++                addProperty("end", nb)
++            })
++            out.add(moved)
++        }
++        return out
++    }
++
++    private fun utf8Length(s: String, from: Int, to: Int): Int =
++        s.substring(from, to).toByteArray(Charsets.UTF_8).size
++
++    /** JSON for a text element that came without the JSON it was read from. */
++    private fun textJson(el: NativeTextElement): JsonObject = JsonObject().apply {
++        addProperty("text", el.text)
++        add("transform", affineJson(el.transform))
++        add("text_style", JsonObject().apply {
++            addProperty("font_family", el.fontFamily)
++            addProperty("font_size", round3(el.fontSize.toDouble()))
++            addProperty("font_weight", el.fontWeight)
++            addProperty("font_style", if (el.italic) "italic" else "regular")
++            add("color", colorJson(el.color))
++            val w = el.maxWidth
++            if (w != null) addProperty("max_width", round3(w.toDouble())) else add("max_width", JsonNull.INSTANCE)
++            addProperty("alignment", el.alignment)
++            add("ranged_text_attributes", JsonArray())
++        })
++    }
++
++    private fun parseText(inner: JsonObject): NativeTextElement? {
++        val wrapper = JsonObject().apply { add("textstroke", inner) }
++        return RnoteNativeParser.parseElementJson(wrapper.toString()) as? NativeTextElement
++    }
++
++    /** Rnote's column-major 3×3 `affine` for our [a, b, c, d, tx, ty]. */
++    private fun affineJson(t: FloatArray) = JsonObject().apply {
++        add("affine", JsonArray().apply {
++            listOf(t[0], t[1], 0f, t[2], t[3], 0f, t[4], t[5], 1f).forEach { add(round3(it.toDouble())) }
++        })
++    }
++
++    private fun colorJson(c: RnoteNativeColor) = JsonObject().apply {
++        addProperty("r", round3(c.r.toDouble()))
++        addProperty("g", round3(c.g.toDouble()))
++        addProperty("b", round3(c.b.toDouble()))
++        addProperty("a", round3(c.a.toDouble()))
++    }
++
++    /** Rnote's `TextStyle::FONT_FAMILY_DEFAULT`. */
++    const val TEXT_FONT_FAMILY = "serif"
++    /** Rnote's typewriter `text_width` default. */
++    const val TEXT_WIDTH_DEFAULT = 600f
++    private const val TEXT_WIDTH_MIN = 150f
++    private const val TEXT_PAGE_MARGIN = 20f
+ }
+diff --git a/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeParser.kt b/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeParser.kt
+index fc5eb0d..03028f3 100644
+--- a/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeParser.kt
++++ b/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeParser.kt
+@@ -257,4 +257,4 @@ object RnoteNativeParser {
+                 "brushstroke" -> parseBrushStroke(reader)
+-                // Text, images and shapes are shown here but never edited, so each keeps
+-                // the element exactly as read and a save writes that back untouched.
++                // Text, images and shapes keep the element exactly as read, and a save
++                // writes that back; editing changes it along with the fields (NativeEditing).
+                 "textstroke"  -> fromTree(reader) { r, tree -> parseTextStroke(r)?.copy(raw = tree) }
+@@ -494,3 +494,6 @@ object RnoteNativeParser {
+             val wrap = maxWidth
+-            val w = wrap ?: (lines.maxOf { it.length } * size * 0.6f)
++            // A wrap width is only an upper limit: short text stays as narrow as it is, so
++            // tapping beside it with the typewriter starts a new box instead of editing it.
++            val longest = lines.maxOf { it.length } * size * 0.6f
++            val w = if (wrap != null && wrap > 0f) minOf(wrap, longest) else longest
+             val lineCount = if (wrap != null && wrap > 0f) {
+diff --git a/app/src/main/java/io/github/kjly/brna/ui/canvas/DrawingCanvas.kt b/app/src/main/java/io/github/kjly/brna/ui/canvas/DrawingCanvas.kt
+index 2f4e0d1..408d366 100644
+--- a/app/src/main/java/io/github/kjly/brna/ui/canvas/DrawingCanvas.kt
++++ b/app/src/main/java/io/github/kjly/brna/ui/canvas/DrawingCanvas.kt
+@@ -31,2 +31,3 @@ import androidx.compose.ui.unit.IntSize
+ import io.github.kjly.brna.model.BrushStyle
++import io.github.kjly.brna.model.EraserMode
+ import io.github.kjly.brna.model.InkPoint
+@@ -96,3 +97,10 @@ fun DrawingCanvas(
+     /** Desktop elements the selector moved: old instance -> moved copy. */
+-    onNativesMoved: (IdentityHashMap<NativeCanvasElement, NativeCanvasElement>) -> Unit = {}
++    onNativesMoved: (IdentityHashMap<NativeCanvasElement, NativeCanvasElement>) -> Unit = {},
++    /**
++     * The splitting eraser cut strokes apart: stroke id -> the pieces that replace it
++     * (none if nothing is left). Part of the same gesture as [onEraseStrokes].
++     */
++    onSplitStrokes: (Map<String, List<Stroke>>) -> Unit = {},
++    /** The Typewriter was tapped at this canvas position: start or edit a text box there. */
++    onTypewriterTap: (Float, Float) -> Unit = { _, _ -> }
+ ) {
+@@ -212,2 +220,7 @@ fun DrawingCanvas(
+ 
++    // A Typewriter tap: where it went down (screen px, and canvas units), and whether it
++    // has since moved too far to be a tap. A finger that pans the view isn't a tap.
++    var tapDownScreen by remember { mutableStateOf<Offset?>(null) }
++    var tapDownCanvas by remember { mutableStateOf(Offset.Zero) }
++
+     // Rnote's eraser is `width` canvas units across, full stop — no density factor, no
+@@ -216,2 +229,3 @@ fun DrawingCanvas(
+     val eraserWidth = toolConfig.eraserWidth
++    val splitEraser = toolConfig.eraserMode == EraserMode.SPLIT
+ 
+@@ -229,2 +243,3 @@ fun DrawingCanvas(
+                 if (motionEvent.pointerCount == 2) {
++                    tapDownScreen = null
+                     // Cancel any in-progress single-finger stroke
+@@ -314,2 +329,6 @@ fun DrawingCanvas(
+                             lastFingerPanPosition = Offset(screenX, screenY)
++                            // With the Typewriter, a finger tap types too: nobody reaches
++                            // for the pen to put a cursor somewhere.
++                            tapDownScreen = if (toolConfig.activeTool == ToolType.TYPEWRITER) Offset(screenX, screenY) else null
++                            tapDownCanvas = canvasPos
+                         }
+@@ -322,2 +341,3 @@ fun DrawingCanvas(
+                             lastFingerPanPosition = Offset(screenX, screenY)
++                            tapDownScreen?.let { if ((Offset(screenX, screenY) - it).getDistance() > TAP_SLOP_PX) tapDownScreen = null }
+                         }
+@@ -325,2 +345,6 @@ fun DrawingCanvas(
+                             lastFingerPanPosition = null
++                            if (motionEvent.actionMasked == MotionEvent.ACTION_UP && tapDownScreen != null) {
++                                onTypewriterTap(tapDownCanvas.x, tapDownCanvas.y)
++                            }
++                            tapDownScreen = null
+                         }
+@@ -408,2 +432,4 @@ fun DrawingCanvas(
+                         }
++                        tapDownScreen = if (activeTool == ToolType.TYPEWRITER) Offset(screenX, screenY) else null
++                        tapDownCanvas = Offset(x, y)
+ 
+@@ -417,3 +443,3 @@ fun DrawingCanvas(
+                             eraserCursorDown = true
+-                            eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes, overlays, onEraseNatives) {
++                            eraseAt(Offset(x, y), eraserWidth, splitEraser, strokes, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
+                                 if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
+@@ -458,2 +484,8 @@ fun DrawingCanvas(
+                             }
++                            if (activeTool == ToolType.TYPEWRITER) {
++                                tapDownScreen?.let {
++                                    if ((Offset(screenX, screenY) - it).getDistance() > TAP_SLOP_PX) tapDownScreen = null
++                                }
++                                return@pointerInteropFilter true
++                            }
+ 
+@@ -465,3 +497,3 @@ fun DrawingCanvas(
+                                 eraserCursorDown = true
+-                                eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes, overlays, onEraseNatives) {
++                                eraseAt(Offset(x, y), eraserWidth, splitEraser, strokes, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
+                                     if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
+@@ -486,2 +518,6 @@ fun DrawingCanvas(
+                                 }
++                            } else if (activeTool == ToolType.TYPEWRITER) {
++                                if (action == MotionEvent.ACTION_UP && tapDownScreen != null) {
++                                    onTypewriterTap(tapDownCanvas.x, tapDownCanvas.y)
++                                }
+                             } else if (activeTool == ToolType.SHAPER) {
+@@ -517,2 +553,3 @@ fun DrawingCanvas(
+                         isDrawing = false
++                        tapDownScreen = null
+                         shapeStart = null
+@@ -702,7 +739,19 @@ fun DrawingCanvas(
+         hoverOffset?.let { hoverPos ->
+-            drawCircle(
+-                color = toolConfig.currentActiveColor,
+-                radius = (toolConfig.currentActiveSize * viewportState.effectiveScale) / 2f,
+-                center = hoverPos
+-            )
++            if (toolConfig.activeTool == ToolType.TYPEWRITER) {
++                // A text cursor as tall as a line of the chosen size: tapping here puts the
++                // top-left of the new text box at the pen tip.
++                val height = toolConfig.textSize * 1.2f * viewportState.effectiveScale
++                drawLine(
++                    color = toolConfig.penColor,
++                    start = hoverPos,
++                    end = hoverPos + Offset(0f, height),
++                    strokeWidth = 2f
++                )
++            } else {
++                drawCircle(
++                    color = toolConfig.currentActiveColor,
++                    radius = (toolConfig.currentActiveSize * viewportState.effectiveScale) / 2f,
++                    center = hoverPos
++                )
++            }
+         }
+@@ -740,5 +789,7 @@ private val ERASER_PROXIMITY_FILL = Color(0x33F66151)
+ /**
+- * Trashes every stroke the eraser square touches, Rnote's default
+- * `EraserStyle::TrashCollidingStrokes`. [onFirstHit] fires before the first removal of a
+- * gesture, so the whole drag collapses into one undo step rather than one per frame.
++ * Rnote's two eraser styles. `TrashCollidingStrokes` (the default) removes every stroke
++ * the eraser square touches; `SplitCollidingStrokes` ([split]) cuts out only the part of
++ * each ink stroke under it. Shapes are removed whole either way, and text and images are
++ * left alone, as in Rnote. [onFirstHit] fires before the first change of a gesture, so
++ * the whole drag collapses into one undo step rather than one per frame.
+  */
+@@ -747,4 +798,6 @@ private fun eraseAt(
+     eraserWidth: Float,
++    split: Boolean,
+     strokes: List<Stroke>,
+     onEraseStrokes: (List<Stroke>) -> Unit,
++    onSplitStrokes: (Map<String, List<Stroke>>) -> Unit,
+     overlays: List<NativeCanvasElement>,
+@@ -754,4 +807,7 @@ private fun eraseAt(
+     val bounds = EraserHitTest.eraserBounds(center, eraserWidth)
+-    val hit = EraserHitTest.collidingStrokes(bounds, strokes)
+-    // Like Rnote's trash eraser: ink and shapes go, text and images stay.
++    val hit = if (split) emptyList() else EraserHitTest.collidingStrokes(bounds, strokes)
++    val pieces = LinkedHashMap<String, List<Stroke>>()
++    if (split) {
++        for (stroke in strokes) EraserHitTest.splitStroke(bounds, stroke)?.let { pieces[stroke.id] = it }
++    }
+     val hitShapes = overlays.filter {
+@@ -760,4 +816,5 @@ private fun eraseAt(
+     }
+-    if (hit.isNotEmpty() || hitShapes.isNotEmpty()) onFirstHit()
++    if (hit.isNotEmpty() || pieces.isNotEmpty() || hitShapes.isNotEmpty()) onFirstHit()
+     if (hit.isNotEmpty()) onEraseStrokes(hit)
++    if (pieces.isNotEmpty()) onSplitStrokes(pieces)
+     if (hitShapes.isNotEmpty()) onEraseNatives(hitShapes)
+@@ -765,2 +822,5 @@ private fun eraseAt(
+ 
++/** How far (screen px) a Typewriter tap may drift and still count as a tap. */
++private const val TAP_SLOP_PX = 24f
++
+ /** What a page or image is rendered from; the key its bitmap is kept under. */
+diff --git a/app/src/main/java/io/github/kjly/brna/ui/canvas/EraserHitTest.kt b/app/src/main/java/io/github/kjly/brna/ui/canvas/EraserHitTest.kt
+index 3223c29..e6cb734 100644
+--- a/app/src/main/java/io/github/kjly/brna/ui/canvas/EraserHitTest.kt
++++ b/app/src/main/java/io/github/kjly/brna/ui/canvas/EraserHitTest.kt
+@@ -5,2 +5,4 @@ import androidx.compose.ui.geometry.Rect
+ import io.github.kjly.brna.model.Stroke
++import io.github.kjly.brna.model.StrokePoint
++import java.util.UUID
+ import kotlin.math.ceil
+@@ -57,17 +59,61 @@ object EraserHitTest {
+         for (i in 1 until points.size) {
+-            val a = points[i - 1]
+-            val b = points[i]
+-            val splits = subsegmentCount(hypot(b.x - a.x, b.y - a.y))
+-            for (s in 0 until splits) {
+-                val t0 = s.toFloat() / splits
+-                val t1 = (s + 1).toFloat() / splits
+-                val x0 = a.x + (b.x - a.x) * t0; val y0 = a.y + (b.y - a.y) * t0
+-                val x1 = a.x + (b.x - a.x) * t1; val y1 = a.y + (b.y - a.y) * t1
+-                val box = Rect(
+-                    min(x0, x1) - loosen, min(y0, y1) - loosen,
+-                    max(x0, x1) + loosen, max(y0, y1) + loosen
++            if (segmentHit(eraserBounds, points[i - 1], points[i], loosen)) return true
++        }
++        return false
++    }
++
++    /**
++     * Rnote's `EraserStyle::SplitCollidingStrokes` for one stroke: the pieces left once
++     * every segment the eraser square touches is cut out, or null if it touches none.
++     * Empty means nothing is left. Follows `split_colliding_strokes`: a piece needs at
++     * least one whole segment, the piece that begins where the stroke began keeps the
++     * stroke's id, and the rest are new strokes in the same style.
++     *
++     * A lone dot has no segments, so Rnote's splitter never hits it and it can only be
++     * trashed; here it is removed, so a dot doesn't need a change of eraser to get rid of.
++     */
++    fun splitStroke(eraserBounds: Rect, stroke: Stroke): List<Stroke>? {
++        val points = stroke.points
++        if (points.isEmpty()) return null
++        val loosen = stroke.strokeWidth * 0.5f
++        if (!eraserBounds.overlaps(strokeBounds(stroke, loosen))) return null
++        if (points.size == 1) return if (collides(eraserBounds, stroke)) emptyList() else null
++
++        // Segment i runs from points[i] to points[i + 1].
++        val hits = (0 until points.size - 1).filter { i ->
++            segmentHit(eraserBounds, points[i], points[i + 1], loosen)
++        }
++        if (hits.isEmpty()) return null
++
++        val pieces = mutableListOf<Stroke>()
++        val first = hits.first()
++        if (first > 0) pieces += stroke.copy(points = points.subList(0, first + 1).toList())
++        for (k in hits.indices) {
++            val cut = hits[k]
++            val nextCut = if (k + 1 < hits.size) hits[k + 1] else points.size - 1
++            // Between two cut segments: from the first one's end to the next one's start.
++            if (nextCut - cut > 1) {
++                pieces += stroke.copy(
++                    id = UUID.randomUUID().toString(),
++                    points = points.subList(cut + 1, nextCut + 1).toList()
+                 )
+-                if (eraserBounds.overlaps(box)) return true
+             }
+         }
++        return pieces
++    }
++
++    /** Whether the eraser square hits the segment [a]–[b], checked as Rnote's hitboxes. */
++    private fun segmentHit(eraserBounds: Rect, a: StrokePoint, b: StrokePoint, loosen: Float): Boolean {
++        val splits = subsegmentCount(hypot(b.x - a.x, b.y - a.y))
++        for (s in 0 until splits) {
++            val t0 = s.toFloat() / splits
++            val t1 = (s + 1).toFloat() / splits
++            val x0 = a.x + (b.x - a.x) * t0; val y0 = a.y + (b.y - a.y) * t0
++            val x1 = a.x + (b.x - a.x) * t1; val y1 = a.y + (b.y - a.y) * t1
++            val box = Rect(
++                min(x0, x1) - loosen, min(y0, y1) - loosen,
++                max(x0, x1) + loosen, max(y0, y1) + loosen
++            )
++            if (eraserBounds.overlaps(box)) return true
++        }
+         return false
+diff --git a/app/src/main/java/io/github/kjly/brna/ui/components/PenConfigStrip.kt b/app/src/main/java/io/github/kjly/brna/ui/components/PenConfigStrip.kt
+index 4ae6a42..62afc06 100644
+--- a/app/src/main/java/io/github/kjly/brna/ui/components/PenConfigStrip.kt
++++ b/app/src/main/java/io/github/kjly/brna/ui/components/PenConfigStrip.kt
+@@ -55,2 +55,3 @@ import io.github.kjly.brna.model.BrushStyle
+ import io.github.kjly.brna.model.BrushSizePreset
++import io.github.kjly.brna.model.EraserMode
+ import io.github.kjly.brna.model.ToolConfig
+@@ -78,3 +79,4 @@ fun PenConfigStrip(
+     modifier: Modifier = Modifier,
+-    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit = {}
++    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit = {},
++    onEraserModeSelected: (EraserMode) -> Unit = {}
+ ) {
+@@ -93,3 +95,3 @@ fun PenConfigStrip(
+                 ToolType.BRUSH -> BrushConfigPage(toolConfig, onBrushStyleSelected, onSizeChanged)
+-                ToolType.ERASER -> EraserConfigPage(toolConfig, onSizeChanged)
++                ToolType.ERASER -> EraserConfigPage(toolConfig, onEraserModeSelected, onSizeChanged)
+                 ToolType.SELECTOR -> SelectorConfigPage(
+@@ -98,3 +100,3 @@ fun PenConfigStrip(
+                 ToolType.SHAPER -> ShaperConfigPage(toolConfig, onShapeKindSelected, onSizeChanged)
+-                ToolType.TYPEWRITER -> StubConfigPage("Typewriter")
++                ToolType.TYPEWRITER -> TypewriterConfigPage(toolConfig, onSizeChanged)
+                 ToolType.TOOLS -> StubConfigPage("Tools")
+@@ -157,5 +159,13 @@ private fun ShaperConfigPage(
+ @Composable
+-private fun EraserConfigPage(toolConfig: ToolConfig, onSizeChanged: (Float) -> Unit) {
+-    StripIconToggle(GeneratedIcons.EraserTrash, "Trash Strokes", selected = true, implemented = true) {}
+-    StripIconToggle(GeneratedIcons.EraserSplit, "Split Strokes (coming soon)", selected = false, implemented = false) {}
++private fun EraserConfigPage(
++    toolConfig: ToolConfig,
++    onEraserModeSelected: (EraserMode) -> Unit,
++    onSizeChanged: (Float) -> Unit
++) {
++    StripIconToggle(GeneratedIcons.EraserTrash, "Trash Strokes", toolConfig.eraserMode == EraserMode.TRASH, true) {
++        onEraserModeSelected(EraserMode.TRASH)
++    }
++    StripIconToggle(GeneratedIcons.EraserSplit, "Split Strokes", toolConfig.eraserMode == EraserMode.SPLIT, true) {
++        onEraserModeSelected(EraserMode.SPLIT)
++    }
+     StripDivider()
+@@ -168,2 +178,24 @@ private fun EraserConfigPage(toolConfig: ToolConfig, onSizeChanged: (Float) -> U
+ 
++// ── Typewriter ───────────────────────────────────────────────────────────
++
++@Composable
++private fun TypewriterConfigPage(toolConfig: ToolConfig, onSizeChanged: (Float) -> Unit) {
++    Text(
++        text = "Tap to\ntype",
++        color = BrnaColors.TextSecondaryOnPanel,
++        fontSize = 10.sp,
++        lineHeight = 12.sp,
++        textAlign = TextAlign.Center,
++        modifier = Modifier.padding(bottom = 4.dp)
++    )
++    StripDivider()
++    // Font size, not a stroke width: small, Rnote's default 32, and large.
++    val presets = listOf(
++        BrushSizePreset.SMALL to 20f,
++        BrushSizePreset.MEDIUM to 32f,
++        BrushSizePreset.LARGE to 48f
++    )
++    StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = 128f, onSizeChanged, title = "Font Size")
++}
++
+ // ── Selector ─────────────────────────────────────────────────────────────
+@@ -291,3 +323,4 @@ private fun StrokeWidthPicker(
+     onSizeChanged: (Float) -> Unit,
+-    previewStyle: StrokeWidthPreviewStyle = StrokeWidthPreviewStyle.CIRCLE
++    previewStyle: StrokeWidthPreviewStyle = StrokeWidthPreviewStyle.CIRCLE,
++    title: String = "Stroke Size"
+ ) {
+@@ -342,2 +375,3 @@ private fun StrokeWidthPicker(
+         WheelPickerDialog(
++            title = title,
+             currentValue = currentSize,
+@@ -377,2 +411,3 @@ private fun tieredStrokeSizeValues(maxRange: Float): List<Float> {
+ private fun WheelPickerDialog(
++    title: String,
+     currentValue: Float,
+@@ -393,3 +428,3 @@ private fun WheelPickerDialog(
+                 Text(
+-                    text = "Stroke Size",
++                    text = title,
+                     color = BrnaColors.TextPrimaryOnPanel,
+diff --git a/app/src/main/java/io/github/kjly/brna/ui/components/TextEntryDialog.kt b/app/src/main/java/io/github/kjly/brna/ui/components/TextEntryDialog.kt
+new file mode 100644
+index 0000000..7152941
+--- /dev/null
++++ b/app/src/main/java/io/github/kjly/brna/ui/components/TextEntryDialog.kt
+@@ -0,0 +1,83 @@
++package io.github.kjly.brna.ui.components
++
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.heightIn
++import androidx.compose.material3.AlertDialog
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.focus.FocusRequester
++import androidx.compose.ui.focus.focusRequester
++import androidx.compose.ui.platform.LocalSoftwareKeyboardController
++import androidx.compose.ui.text.TextRange
++import androidx.compose.ui.text.input.TextFieldValue
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.window.DialogProperties
++import io.github.kjly.brna.ui.theme.BrnaColors
++import kotlinx.coroutines.delay
++
++/**
++ * The Typewriter's text entry. Desktop Rnote types straight onto the canvas; on a tablet
++ * the on-screen keyboard would cover half the page anyway, so the text is written here
++ * and placed where the canvas was tapped.
++ *
++ * A tap outside doesn't close it — that would throw away what was typed. Emptying the
++ * text and confirming removes the box, as it does in Rnote.
++ */
++@Composable
++fun TextEntryDialog(
++    initialText: String,
++    isNew: Boolean,
++    onConfirm: (String) -> Unit,
++    onDelete: () -> Unit,
++    onDismiss: () -> Unit
++) {
++    var value by remember {
++        mutableStateOf(TextFieldValue(initialText, selection = TextRange(initialText.length)))
++    }
++    val focus = remember { FocusRequester() }
++    val keyboard = LocalSoftwareKeyboardController.current
++
++    AlertDialog(
++        onDismissRequest = onDismiss,
++        properties = DialogProperties(dismissOnClickOutside = false),
++        title = { Text(if (isNew) "New text" else "Edit text") },
++        text = {
++            OutlinedTextField(
++                value = value,
++                onValueChange = { value = it },
++                placeholder = { Text("Type here…") },
++                modifier = Modifier
++                    .fillMaxWidth()
++                    .heightIn(min = 120.dp)
++                    .focusRequester(focus)
++            )
++        },
++        confirmButton = {
++            TextButton(onClick = { onConfirm(value.text) }) { Text("OK") }
++        },
++        dismissButton = {
++            Row {
++                if (!isNew) {
++                    TextButton(onClick = onDelete) { Text("Delete", color = BrnaColors.DestructiveTint) }
++                }
++                TextButton(onClick = onDismiss) { Text("Cancel") }
++            }
++        }
++    )
++
++    LaunchedEffect(Unit) {
++        // The dialog's window has to be up before its field can take focus.
++        delay(100)
++        focus.requestFocus()
++        keyboard?.show()
++    }
++}
+diff --git a/app/src/test/java/io/github/kjly/brna/storage/NativeEditingTest.kt b/app/src/test/java/io/github/kjly/brna/storage/NativeEditingTest.kt
+index 99e371a..7b6b6ac 100644
+--- a/app/src/test/java/io/github/kjly/brna/storage/NativeEditingTest.kt
++++ b/app/src/test/java/io/github/kjly/brna/storage/NativeEditingTest.kt
+@@ -116,2 +116,110 @@ class NativeEditingTest {
+     }
++
++    // ── Typewriter ────────────────────────────────────────────────────────────
++
++    @Test
++    fun `new text is written the way Rnote's typewriter writes it`() {
++        val text = NativeEditing.createText("Hallo \"Welt\"\nZeile 2", 100f, 200f, 32f, black, 600f)!!
++        assertEquals("Hallo \"Welt\"\nZeile 2", text.text)
++        assertEquals(32f, text.fontSize, 0f)
++        assertEquals(100f, text.transform[4], 1e-3f)
++        assertEquals(200f, text.transform[5], 1e-3f)
++        assertEquals(100f, text.minX, 1e-3f)
++        assertEquals(200f, text.minY, 1e-3f)
++        val raw = text.raw!!.asJsonObject
++        val style = raw.getAsJsonObject("text_style")
++        assertEquals("serif", style.get("font_family").asString)
++        assertEquals(600.0, style.get("max_width").asDouble, 1e-6)
++        assertEquals(9, raw.getAsJsonObject("transform").getAsJsonArray("affine").size())
++        assertTrue(style.getAsJsonArray("ranged_text_attributes").isEmpty)
++    }
++
++    @Test
++    fun `blank text makes no text box`() {
++        assertNull(NativeEditing.createText("  \n ", 0f, 0f, 32f, black, null))
++    }
++
++    @Test
++    fun `short text is only as wide as it is, not as wide as its wrap width`() {
++        val text = NativeEditing.createText("Hi", 0f, 0f, 20f, black, 600f)!!
++        assertTrue(text.maxX < 100f)
++    }
++
++    @Test
++    fun `editing text keeps its position, style and formatting`() {
++        val json = """{"textstroke":{"text":"ab fett cd","transform":{"affine":[1.0,0.0,0.0,0.0,1.0,0.0,5.0,7.0,1.0]},""" +
++            """"text_style":{"font_family":"Cantarell","font_size":18.0,"font_weight":500,"font_style":"regular",""" +
++            """"color":{"r":1.0,"g":0.0,"b":0.0,"a":1.0},"max_width":300.0,"alignment":"center",""" +
++            """"ranged_text_attributes":[{"range":{"start":3,"end":7},"attribute":{"font_weight":700}},""" +
++            """{"range":{"start":8,"end":10},"attribute":{"underline":true}}]}}}"""
++        val original = RnoteNativeParser.parseElementJson(json) as NativeTextElement
++        val edited = NativeEditing.withText(original, "XYab fett cd")!!
++        assertEquals("XYab fett cd", edited.text)
++        assertEquals("Cantarell", edited.fontFamily)
++        assertEquals("center", edited.alignment)
++        assertEquals(5f, edited.transform[4], 1e-3f)
++        val ranges = edited.raw!!.asJsonObject.getAsJsonObject("text_style").getAsJsonArray("ranged_text_attributes")
++        assertEquals(2, ranges.size())
++        val bold = ranges[0].asJsonObject.getAsJsonObject("range")
++        assertEquals(5, bold.get("start").asInt)
++        assertEquals(9, bold.get("end").asInt)
++        // The original is left as it was: undo holds on to it.
++        assertEquals("ab fett cd", original.raw!!.asJsonObject.get("text").asString)
++    }
++
++    @Test
++    fun `typing inside a formatted range extends it, deleting it drops it`() {
++        val ranges = com.google.gson.JsonParser.parseString(
++            """[{"range":{"start":3,"end":7},"attribute":{"font_weight":700}}]"""
++        ).asJsonArray
++        val grown = NativeEditing.shiftRanges(ranges, "ab fett cd", "ab feeett cd")
++        assertEquals(9, grown[0].asJsonObject.getAsJsonObject("range").get("end").asInt)
++        assertEquals(0, NativeEditing.shiftRanges(ranges, "ab fett cd", "ab  cd").size())
++    }
++
++    @Test
++    fun `ranges count UTF-8 bytes, as Rust does`() {
++        // "text" starts at byte 4 of "abc text" and at byte 5 of "äbc text": ä is two bytes.
++        val shifted = NativeEditing.shiftRanges(
++            com.google.gson.JsonParser.parseString("""[{"range":{"start":4,"end":8},"attribute":{"underline":true}}]""").asJsonArray,
++            "abc text", "äbc text"
++        )
++        assertEquals(5, shifted[0].asJsonObject.getAsJsonObject("range").get("start").asInt)
++        assertEquals(9, shifted[0].asJsonObject.getAsJsonObject("range").get("end").asInt)
++    }
++
++    @Test
++    fun `emptying a text box removes it`() {
++        val text = NativeEditing.createText("weg", 0f, 0f, 32f, black, null)!!
++        assertNull(NativeEditing.withText(text, "   "))
++    }
++
++    @Test
++    fun `a tap finds the topmost text box under it`() {
++        val below = NativeEditing.createText("unten", 0f, 0f, 32f, black, null)!!
++        val above = NativeEditing.createText("oben", 10f, 5f, 32f, black, null)!!
++        assertTrue(NativeEditing.textAt(listOf(below, above), 20f, 20f) === above)
++        assertNull(NativeEditing.textAt(listOf(below, above), 500f, 500f))
++    }
++
++    @Test
++    fun `text typed on a page wraps at its right edge`() {
++        assertEquals(600f, NativeEditing.typewriterWrapWidth(50f, 793.7f), 0f)
++        assertEquals(793.7f - 400f - 20f, NativeEditing.typewriterWrapWidth(400f, 793.7f), 1e-3f)
++        // Too close to the edge for a useful column: the default width instead.
++        assertEquals(600f, NativeEditing.typewriterWrapWidth(700f, 793.7f), 0f)
++        // Pages repeat: the same holds on the page to the right.
++        assertEquals(793.7f - 400f - 20f, NativeEditing.typewriterWrapWidth(793.7f + 400f, 793.7f), 1e-2f)
++    }
++
++    @Test
++    fun `new text survives a save and a reload`() {
++        val text = NativeEditing.createText("Mathe\nAufgabe 1", 30f, 40f, 24f, black, 500f)!!
++        val reread = RnoteNativeParser.parseElementJson(
++            com.google.gson.JsonObject().apply { add("textstroke", text.raw) }.toString()
++        ) as NativeTextElement
++        assertEquals(text.text, reread.text)
++        assertEquals(24f, reread.fontSize, 0f)
++        assertEquals(500f, reread.maxWidth!!, 0f)
++    }
+ }
+diff --git a/app/src/test/java/io/github/kjly/brna/ui/canvas/EraserHitTestTest.kt b/app/src/test/java/io/github/kjly/brna/ui/canvas/EraserHitTestTest.kt
+index 38f98b3..333fee6 100644
+--- a/app/src/test/java/io/github/kjly/brna/ui/canvas/EraserHitTestTest.kt
++++ b/app/src/test/java/io/github/kjly/brna/ui/canvas/EraserHitTestTest.kt
+@@ -114,2 +114,56 @@ class EraserHitTestTest {
+     }
++
++    // ── Split eraser ──────────────────────────────────────────────────────────
++
++    private fun split(center: Offset, eraserWidth: Float, s: Stroke) =
++        EraserHitTest.splitStroke(EraserHitTest.eraserBounds(center, eraserWidth), s)
++
++    @Test
++    fun `the split eraser cuts a stroke in two and keeps both ends`() {
++        val s = stroke(*(0..10).map { it * 10f to 0f }.toTypedArray(), width = 1f)
++        val pieces = split(Offset(50f, 0f), 4f, s)!!
++        assertEquals(2, pieces.size)
++        // Segments 4 (40-50) and 5 (50-60) are cut out, with the point between them.
++        assertEquals(listOf(0f, 10f, 20f, 30f, 40f), pieces[0].points.map { it.x })
++        assertEquals(listOf(60f, 70f, 80f, 90f, 100f), pieces[1].points.map { it.x })
++        // The start keeps the stroke's identity; the rest are new strokes of the same style.
++        assertEquals(s.id, pieces[0].id)
++        assertTrue(pieces[1].id != s.id)
++        assertEquals(s.strokeWidth, pieces[1].strokeWidth, 0f)
++        assertEquals(s.color, pieces[1].color)
++    }
++
++    @Test
++    fun `cutting the start leaves only the rest`() {
++        val s = stroke(*(0..5).map { it * 10f to 0f }.toTypedArray(), width = 1f)
++        val pieces = split(Offset(0f, 0f), 4f, s)!!
++        assertEquals(1, pieces.size)
++        assertEquals(listOf(10f, 20f, 30f, 40f, 50f), pieces[0].points.map { it.x })
++    }
++
++    @Test
++    fun `a stroke the split eraser misses is left alone`() {
++        val s = stroke(0f to 0f, 100f to 0f, width = 1f)
++        assertEquals(null, split(Offset(50f, 50f), 4f, s))
++    }
++
++    @Test
++    fun `a stroke with nothing left worth keeping goes entirely`() {
++        val s = stroke(0f to 0f, 10f to 0f, 20f to 0f, width = 1f)
++        assertEquals(emptyList<Stroke>(), split(Offset(10f, 0f), 40f, s))
++        val dot = stroke(5f to 5f)
++        assertEquals(emptyList<Stroke>(), split(Offset(5f, 5f), 4f, dot))
++    }
++
++    @Test
++    fun `leftovers of a single segment between two cuts are dropped, as in Rnote`() {
++        // Cuts at segments 1 and 3 leave only segment 2 between them: Rnote needs two
++        // segments to make a piece there (one's end becomes the start of the next).
++        val s = stroke(*(0..6).map { it * 100f to 0f }.toTypedArray(), width = 1f)
++        val bounds1 = EraserHitTest.eraserBounds(Offset(150f, 0f), 4f)
++        val first = EraserHitTest.splitStroke(bounds1, s)!!
++        assertEquals(2, first.size)
++        assertEquals(listOf(0f, 100f), first[0].points.map { it.x })
++        assertEquals(listOf(200f, 300f, 400f, 500f, 600f), first[1].points.map { it.x })
++    }
+ }
+-- 
+2.43.0
+

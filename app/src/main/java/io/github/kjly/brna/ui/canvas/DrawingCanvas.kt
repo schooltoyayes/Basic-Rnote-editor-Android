@@ -42,6 +42,7 @@ import io.github.kjly.brna.model.NativeTextElement
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.RnoteNativeColor
+import io.github.kjly.brna.model.ShapeKind
 import io.github.kjly.brna.model.PressureCurve
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
@@ -51,6 +52,7 @@ import io.github.kjly.brna.model.ViewportState
 import io.github.kjly.brna.render.NativeElementRenderer
 import io.github.kjly.brna.render.VectorImageRenderer
 import io.github.kjly.brna.storage.NativeEditing
+import io.github.kjly.brna.storage.ShapeBuilders
 import io.github.kjly.brna.render.composeStrokePath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -96,8 +98,8 @@ fun DrawingCanvas(
     modifier: Modifier = Modifier,
     /** The desktop elements (text, shapes, images) the selector currently holds. */
     selectedNatives: SnapshotStateList<NativeCanvasElement>? = null,
-    /** A shape the Shaper just finished drawing. */
-    onAddShape: (NativeShapeElement) -> Unit = {},
+    /** What the Shaper just finished drawing: one shape, or the lines of a grid or axes. */
+    onAddShapes: (List<NativeShapeElement>) -> Unit = {},
     /** Shapes the eraser went over; part of the same gesture as [onEraseStrokes]. */
     onEraseNatives: (List<NativeCanvasElement>) -> Unit = {},
     /** Desktop elements the selector moved: old instance -> moved copy. */
@@ -194,6 +196,10 @@ fun DrawingCanvas(
     // The Shaper's drag, in canvas units; null when no shape is being drawn.
     var shapeStart by remember { mutableStateOf<Offset?>(null) }
     var shapeEnd by remember { mutableStateOf<Offset?>(null) }
+    // A grid's first cell, drawn and waiting for the second drag that repeats it. Only
+    // meaningful while the Shaper stays on the grid.
+    var gridCell by remember { mutableStateOf<GridCell?>(null) }
+    LaunchedEffect(toolConfig.activeTool, toolConfig.shapeKind) { gridCell = null }
 
     val currentPoints = remember { mutableStateListOf<InkPoint>() }
     /** Memoised stroke outlines, keyed by Stroke identity. See the draw block below. */
@@ -479,7 +485,10 @@ fun DrawingCanvas(
                             return@pointerInteropFilter true
                         }
                         if (activeTool == ToolType.SHAPER) {
-                            shapeStart = Offset(x, y)
+                            // The grid's second drag spans from its first cell's corner,
+                            // wherever the pen comes down, as in Rnote's GridBuilder.
+                            val cell = gridCell.takeIf { toolConfig.shapeKind == ShapeKind.GRID }
+                            shapeStart = cell?.start ?: Offset(x, y)
                             shapeEnd = Offset(x, y)
                         }
                         tapDownScreen = if (activeTool == ToolType.TYPEWRITER) Offset(screenX, screenY) else null
@@ -559,8 +568,9 @@ fun DrawingCanvas(
                                 return@pointerInteropFilter true
                             }
 
-                            if (activeTool == ToolType.SHAPER && shapeStart != null) {
-                                shapeEnd = Offset(x, y)
+                            val start = shapeStart
+                            if (activeTool == ToolType.SHAPER && start != null) {
+                                shapeEnd = shapeEndFor(toolConfig, start, Offset(x, y))
                                 return@pointerInteropFilter true
                             }
                             if (activeTool == ToolType.TYPEWRITER) {
@@ -613,10 +623,37 @@ fun DrawingCanvas(
                                 val start = shapeStart
                                 val end = shapeEnd
                                 if (start != null && end != null) {
-                                    NativeEditing.createShape(
-                                        toolConfig.shapeKind, start.x, start.y, end.x, end.y,
-                                        nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth
-                                    )?.let(onAddShape)
+                                    val kind = toolConfig.shapeKind
+                                    val color = nativeColorOf(toolConfig.penColor)
+                                    val width = toolConfig.shaperWidth
+                                    val cell = gridCell
+                                    val lines: List<ShapeBuilders.Segment>? = when {
+                                        kind == ShapeKind.GRID && cell == null -> {
+                                            // The first drag only sets the cell; too small a
+                                            // one cancels, as in Rnote.
+                                            val w = end.x - start.x
+                                            val h = end.y - start.y
+                                            if (abs(w) >= ShapeBuilders.GRID_CELL_MIN && abs(h) >= ShapeBuilders.GRID_CELL_MIN) {
+                                                gridCell = GridCell(start, Offset(w, h))
+                                            }
+                                            emptyList()
+                                        }
+                                        kind == ShapeKind.GRID && cell != null -> {
+                                            gridCell = null
+                                            ShapeBuilders.grid(cell.start.x, cell.start.y, cell.size.x, cell.size.y, end.x, end.y)
+                                        }
+                                        ShapeBuilders.isMultiLine(kind) ->
+                                            ShapeBuilders.axes(kind, start.x, start.y, end.x, end.y)
+                                        else -> null
+                                    }
+                                    val shapes = if (lines != null) {
+                                        lines.mapNotNull {
+                                            NativeEditing.createShape(ShapeKind.LINE, it.x1, it.y1, it.x2, it.y2, color, width)
+                                        }
+                                    } else {
+                                        listOfNotNull(NativeEditing.createShape(kind, start.x, start.y, end.x, end.y, color, width))
+                                    }
+                                    if (shapes.isNotEmpty()) onAddShapes(shapes)
                                 }
                             } else if (activeTool == ToolType.BRUSH && currentPoints.isNotEmpty()) {
                                 val isMarker = toolConfig.brushStyle == BrushStyle.MARKER
@@ -767,12 +804,45 @@ fun DrawingCanvas(
             // 3b. Shape being dragged out with the Shaper.
             val previewStart = shapeStart
             val previewEnd = shapeEnd
-            if (isDrawing && activeTool == ToolType.SHAPER && previewStart != null && previewEnd != null) {
-                NativeEditing.createShape(
-                    toolConfig.shapeKind, previewStart.x, previewStart.y, previewEnd.x, previewEnd.y,
-                    nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth
-                )?.let { preview ->
-                    drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, preview, cache = false) }
+            val dragging = isDrawing && previewStart != null && previewEnd != null
+            if (activeTool == ToolType.SHAPER) {
+                val kind = toolConfig.shapeKind
+                val cell = gridCell
+                // Shapes made of lines are previewed as plain lines: a grid can be thousands
+                // of them, far too many to build as shapes on every frame.
+                val lines: List<ShapeBuilders.Segment>? = when {
+                    kind == ShapeKind.GRID && cell != null ->
+                        if (dragging) {
+                            ShapeBuilders.grid(cell.start.x, cell.start.y, cell.size.x, cell.size.y, previewEnd!!.x, previewEnd.y)
+                        } else {
+                            ShapeBuilders.cellOutline(
+                                cell.start.x, cell.start.y, cell.start.x + cell.size.x, cell.start.y + cell.size.y
+                            )
+                        }
+                    kind == ShapeKind.GRID ->
+                        if (dragging) ShapeBuilders.cellOutline(previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y)
+                        else emptyList()
+                    ShapeBuilders.isMultiLine(kind) ->
+                        if (dragging) ShapeBuilders.axes(kind, previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y)
+                        else emptyList()
+                    else -> null
+                }
+                if (lines != null) {
+                    for (line in lines) {
+                        drawLine(
+                            color = toolConfig.penColor,
+                            start = Offset(line.x1, line.y1),
+                            end = Offset(line.x2, line.y2),
+                            strokeWidth = toolConfig.shaperWidth
+                        )
+                    }
+                } else if (dragging) {
+                    NativeEditing.createShape(
+                        kind, previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y,
+                        nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth
+                    )?.let { preview ->
+                        drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, preview, cache = false) }
+                    }
                 }
             }
 
@@ -943,6 +1013,20 @@ private fun pressureCurveFor(toolConfig: ToolConfig): PressureCurve = when {
 private const val SAMSUNG_ACTION_PEN_DOWN = 211
 private const val SAMSUNG_ACTION_PEN_UP = 212
 private const val SAMSUNG_ACTION_PEN_MOVE = 213
+
+/** A grid's first cell: its corner where the pen went down, and its size and direction. */
+private class GridCell(val start: Offset, val size: Offset)
+
+/**
+ * Where the Shaper's drag ends for the pen at [pos]: turned to the nearest 15° for a line
+ * or an arrow when that is switched on.
+ */
+private fun shapeEndFor(toolConfig: ToolConfig, start: Offset, pos: Offset): Offset {
+    val kind = toolConfig.shapeKind
+    if (!toolConfig.snapAngles || (kind != ShapeKind.LINE && kind != ShapeKind.ARROW)) return pos
+    val (x, y) = ShapeBuilders.snapAngle(start.x, start.y, pos.x, pos.y)
+    return Offset(x, y)
+}
 
 /** A vertical-space drag: what moves, fixed when the pen went down, and how far it has. */
 private class SpaceDrag(

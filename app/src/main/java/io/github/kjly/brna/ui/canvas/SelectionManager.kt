@@ -2,6 +2,7 @@ package io.github.kjly.brna.ui.canvas
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import io.github.kjly.brna.model.Affine
 import io.github.kjly.brna.model.Stroke
 
 object SelectionManager {
@@ -71,6 +72,23 @@ object SelectionManager {
                 pt.copy(x = newX, y = newY)
             }
             stroke.copy(points = newPoints, strokeWidth = stroke.strokeWidth * scaleFactor)
+        }
+    }
+
+    /**
+     * Applies the affine [m] (see [Affine]) to strokes — the selector's scale and rotate.
+     * Widths scale with the geometric mean of the scale factors, as Rnote's
+     * `BrushStroke::scale` does, so a rotation leaves them alone.
+     */
+    fun transformStrokes(strokes: List<Stroke>, m: FloatArray): List<Stroke> {
+        val widthFactor = Affine.widthFactor(m)
+        return strokes.map { stroke ->
+            stroke.copy(
+                points = stroke.points.map { pt ->
+                    pt.copy(x = Affine.mapX(m, pt.x, pt.y), y = Affine.mapY(m, pt.x, pt.y))
+                },
+                strokeWidth = stroke.strokeWidth * widthFactor
+            )
         }
     }
 

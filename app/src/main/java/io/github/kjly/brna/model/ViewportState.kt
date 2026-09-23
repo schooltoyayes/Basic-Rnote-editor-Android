@@ -63,6 +63,16 @@ data class ViewportState(
     }
 
     /**
+     * [returnedToOrigin] for any page: the page whose top-left corner is at ([left], [top])
+     * comes into view the same way — centred when it fits, else from its left edge — at
+     * the zoom already in use. The page overview jumps with this.
+     */
+    fun showingPage(left: Float, top: Float, pageWidthPx: Float, viewportWidthPx: Float): ViewportState {
+        val atOrigin = returnedToOrigin(viewportWidthPx, pageWidthPx)
+        return atOrigin.copy(panOffset = atOrigin.panOffset - Offset(left, top) * effectiveScale)
+    }
+
+    /**
      * Clamps and returns a new ViewportState with updated zoom and pan.
      */
     fun update(newPan: Offset, newZoom: Float): ViewportState {

@@ -3,6 +3,8 @@ package io.github.kjly.brna.ui.canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import io.github.kjly.brna.model.Stroke
+import io.github.kjly.brna.model.StrokePoint
+import java.util.UUID
 import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.max
@@ -55,20 +57,64 @@ object EraserHitTest {
         }
 
         for (i in 1 until points.size) {
-            val a = points[i - 1]
-            val b = points[i]
-            val splits = subsegmentCount(hypot(b.x - a.x, b.y - a.y))
-            for (s in 0 until splits) {
-                val t0 = s.toFloat() / splits
-                val t1 = (s + 1).toFloat() / splits
-                val x0 = a.x + (b.x - a.x) * t0; val y0 = a.y + (b.y - a.y) * t0
-                val x1 = a.x + (b.x - a.x) * t1; val y1 = a.y + (b.y - a.y) * t1
-                val box = Rect(
-                    min(x0, x1) - loosen, min(y0, y1) - loosen,
-                    max(x0, x1) + loosen, max(y0, y1) + loosen
+            if (segmentHit(eraserBounds, points[i - 1], points[i], loosen)) return true
+        }
+        return false
+    }
+
+    /**
+     * Rnote's `EraserStyle::SplitCollidingStrokes` for one stroke: the pieces left once
+     * every segment the eraser square touches is cut out, or null if it touches none.
+     * Empty means nothing is left. Follows `split_colliding_strokes`: a piece needs at
+     * least one whole segment, the piece that begins where the stroke began keeps the
+     * stroke's id, and the rest are new strokes in the same style.
+     *
+     * A lone dot has no segments, so Rnote's splitter never hits it and it can only be
+     * trashed; here it is removed, so a dot doesn't need a change of eraser to get rid of.
+     */
+    fun splitStroke(eraserBounds: Rect, stroke: Stroke): List<Stroke>? {
+        val points = stroke.points
+        if (points.isEmpty()) return null
+        val loosen = stroke.strokeWidth * 0.5f
+        if (!eraserBounds.overlaps(strokeBounds(stroke, loosen))) return null
+        if (points.size == 1) return if (collides(eraserBounds, stroke)) emptyList() else null
+
+        // Segment i runs from points[i] to points[i + 1].
+        val hits = (0 until points.size - 1).filter { i ->
+            segmentHit(eraserBounds, points[i], points[i + 1], loosen)
+        }
+        if (hits.isEmpty()) return null
+
+        val pieces = mutableListOf<Stroke>()
+        val first = hits.first()
+        if (first > 0) pieces += stroke.copy(points = points.subList(0, first + 1).toList())
+        for (k in hits.indices) {
+            val cut = hits[k]
+            val nextCut = if (k + 1 < hits.size) hits[k + 1] else points.size - 1
+            // Between two cut segments: from the first one's end to the next one's start.
+            if (nextCut - cut > 1) {
+                pieces += stroke.copy(
+                    id = UUID.randomUUID().toString(),
+                    points = points.subList(cut + 1, nextCut + 1).toList()
                 )
-                if (eraserBounds.overlaps(box)) return true
             }
+        }
+        return pieces
+    }
+
+    /** Whether the eraser square hits the segment [a]–[b], checked as Rnote's hitboxes. */
+    private fun segmentHit(eraserBounds: Rect, a: StrokePoint, b: StrokePoint, loosen: Float): Boolean {
+        val splits = subsegmentCount(hypot(b.x - a.x, b.y - a.y))
+        for (s in 0 until splits) {
+            val t0 = s.toFloat() / splits
+            val t1 = (s + 1).toFloat() / splits
+            val x0 = a.x + (b.x - a.x) * t0; val y0 = a.y + (b.y - a.y) * t0
+            val x1 = a.x + (b.x - a.x) * t1; val y1 = a.y + (b.y - a.y) * t1
+            val box = Rect(
+                min(x0, x1) - loosen, min(y0, y1) - loosen,
+                max(x0, x1) + loosen, max(y0, y1) + loosen
+            )
+            if (eraserBounds.overlaps(box)) return true
         }
         return false
     }

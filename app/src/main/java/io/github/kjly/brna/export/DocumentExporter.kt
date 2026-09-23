@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.compose.ui.geometry.Rect
+import io.github.kjly.brna.model.NativeCanvasElement
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.Stroke
 import java.io.OutputStream
@@ -24,7 +25,14 @@ object DocumentExporter {
 
     /** The pages this document has, in the order [prefs] asks for. Empty if it has none. */
     fun pagesFor(document: NoteDocument, prefs: ExportPrefs): List<Rect> =
-        ExportLayout.pageRects(document.paperStyle, document.strokes, prefs.pageOrder)
+        ExportLayout.pageRects(
+            document.paperStyle, document.strokes, prefs.pageOrder, document.nativeElements,
+            followImportedPages = prefs.pagesFromImportedPdf
+        )
+
+    /** Whether the document has imported PDF pages, which [ExportPrefs.pagesFromImportedPdf] follows. */
+    fun hasImportedPages(document: NoteDocument): Boolean =
+        document.nativeElements.any { it is io.github.kjly.brna.model.NativeVectorImageElement }
 
     /** The suggested file name for a single-file export, extension included. */
     fun fileNameFor(baseName: String, prefs: ExportPrefs): String =
@@ -46,14 +54,19 @@ object DocumentExporter {
 
         val strokes: List<Stroke>
         val region: Rect
+        // PDF pages, images, text and shapes from a desktop file belong to the document,
+        // not to a selection, which only ever holds ink.
+        val natives: List<NativeCanvasElement>
         when (prefs.scope) {
             ExportScope.DOCUMENT -> {
                 strokes = document.strokes
-                region = ExportLayout.documentBounds(paperStyle, document.strokes)
+                natives = document.nativeElements
+                region = ExportLayout.documentBounds(paperStyle, document.strokes, natives)
             }
             ExportScope.SELECTION -> {
                 if (selection.isEmpty()) return Result.Failure("Nothing is selected")
                 strokes = selection
+                natives = emptyList()
                 region = ExportLayout.selectionBounds(selection, prefs.marginPx)
                     ?: return Result.Failure("The selection has no extent")
             }
@@ -65,17 +78,17 @@ object DocumentExporter {
             when (prefs.format) {
                 ExportFormat.SVG -> {
                     out.write(
-                        SvgExporter.export(paperStyle, strokes, region, prefs, pages)
+                        SvgExporter.export(paperStyle, strokes, region, prefs, pages, natives)
                             .toByteArray(Charsets.UTF_8)
                     )
                     true
                 }
                 ExportFormat.PNG, ExportFormat.JPEG ->
-                    ImageExporter.exportBitmap(paperStyle, strokes, region, prefs, out, pages)
+                    ImageExporter.exportBitmap(paperStyle, strokes, region, prefs, out, pages, natives)
                 ExportFormat.PDF -> {
                     // A document with no page grid is still one PDF page: the whole thing.
                     val pdfPages = pages.ifEmpty { listOf(region) }
-                    PdfExporter.export(paperStyle, strokes, pdfPages, prefs, out)
+                    PdfExporter.export(paperStyle, strokes, pdfPages, prefs, out, natives)
                 }
             }
         }
@@ -133,14 +146,16 @@ object DocumentExporter {
                     ExportFormat.SVG -> {
                         out.write(
                             SvgExporter.export(
-                                document.paperStyle, document.strokes, page, prefs, listOf(page)
+                                document.paperStyle, document.strokes, page, prefs, listOf(page),
+                                document.nativeElements
                             ).toByteArray(Charsets.UTF_8)
                         )
                         true
                     }
                     else ->
                         ImageExporter.exportBitmap(
-                            document.paperStyle, document.strokes, page, prefs, out, listOf(page)
+                            document.paperStyle, document.strokes, page, prefs, out, listOf(page),
+                            document.nativeElements
                         )
                 }
             }

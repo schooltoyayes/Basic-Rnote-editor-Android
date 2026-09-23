@@ -60,7 +60,13 @@ data class ExportPrefs(
     val jpegQuality: Int = 85,
     val marginPx: Float = 12f,
     /** Blank means every page. Otherwise a 1-based list like "1-3, 5". */
-    val pageRange: String = ""
+    val pageRange: String = "",
+    /**
+     * For a document with imported PDF pages: one exported page per imported page (with
+     * the notes beside it) instead of cutting along the format grid, which slices a PDF
+     * imported larger than the format into pieces. No counterpart in Rnote.
+     */
+    val pagesFromImportedPdf: Boolean = true
 ) {
     /** Keeps [format] legal after a scope change, since the format lists differ. */
     fun withScope(newScope: ExportScope): ExportPrefs {

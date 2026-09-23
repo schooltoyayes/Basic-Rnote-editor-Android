@@ -19,7 +19,14 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Highlight
+import androidx.compose.material.icons.filled.HorizontalRule
+import androidx.compose.material.icons.filled.NorthEast
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -49,6 +56,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.BrushSizePreset
+import io.github.kjly.brna.model.EraserMode
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.ui.icons.GeneratedIcons
@@ -71,7 +79,14 @@ fun PenConfigStrip(
     onDuplicateSelection: () -> Unit,
     onSelectAll: () -> Unit,
     onDeselectAll: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit = {},
+    onEraserModeSelected: (EraserMode) -> Unit = {},
+    canPaste: Boolean = false,
+    onCopySelection: () -> Unit = {},
+    onCutSelection: () -> Unit = {},
+    onPaste: () -> Unit = {},
+    onLockAspectRatioToggled: () -> Unit = {}
 ) {
     Surface(
         modifier = modifier.width(60.dp),
@@ -86,12 +101,14 @@ fun PenConfigStrip(
         ) {
             when (toolConfig.activeTool) {
                 ToolType.BRUSH -> BrushConfigPage(toolConfig, onBrushStyleSelected, onSizeChanged)
-                ToolType.ERASER -> EraserConfigPage(toolConfig, onSizeChanged)
+                ToolType.ERASER -> EraserConfigPage(toolConfig, onEraserModeSelected, onSizeChanged)
                 ToolType.SELECTOR -> SelectorConfigPage(
-                    hasActiveSelection, onDeleteSelection, onDuplicateSelection, onSelectAll, onDeselectAll
+                    hasActiveSelection, onDeleteSelection, onDuplicateSelection, onSelectAll, onDeselectAll,
+                    canPaste, onCopySelection, onCutSelection, onPaste,
+                    toolConfig.lockAspectRatio, onLockAspectRatioToggled
                 )
-                ToolType.SHAPER -> StubConfigPage("Shaper")
-                ToolType.TYPEWRITER -> StubConfigPage("Typewriter")
+                ToolType.SHAPER -> ShaperConfigPage(toolConfig, onShapeKindSelected, onSizeChanged)
+                ToolType.TYPEWRITER -> TypewriterConfigPage(toolConfig, onSizeChanged)
                 ToolType.TOOLS -> StubConfigPage("Tools")
             }
         }
@@ -120,18 +137,75 @@ private fun BrushConfigPage(
     StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = if (toolConfig.brushStyle == BrushStyle.MARKER) 128f else 64f, onSizeChanged)
 }
 
+// ── Shaper ───────────────────────────────────────────────────────────────
+
+@Composable
+private fun ShaperConfigPage(
+    toolConfig: ToolConfig,
+    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit,
+    onSizeChanged: (Float) -> Unit
+) {
+    val kind = toolConfig.shapeKind
+    StripIconToggle(Icons.Default.HorizontalRule, "Line", kind == io.github.kjly.brna.model.ShapeKind.LINE, true) {
+        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.LINE)
+    }
+    StripIconToggle(Icons.Default.NorthEast, "Arrow", kind == io.github.kjly.brna.model.ShapeKind.ARROW, true) {
+        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.ARROW)
+    }
+    StripIconToggle(Icons.Default.CropSquare, "Rectangle", kind == io.github.kjly.brna.model.ShapeKind.RECTANGLE, true) {
+        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.RECTANGLE)
+    }
+    StripIconToggle(Icons.Default.RadioButtonUnchecked, "Ellipse", kind == io.github.kjly.brna.model.ShapeKind.ELLIPSE, true) {
+        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.ELLIPSE)
+    }
+    StripDivider()
+    // Rnote's shaper shares the brush's 2 / 6 / 12 width presets.
+    val presets = BrushSizePreset.entries.map { it to it.brushSolidPx }
+    StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = 64f, onSizeChanged)
+}
+
 // ── Eraser ───────────────────────────────────────────────────────────────
 
 @Composable
-private fun EraserConfigPage(toolConfig: ToolConfig, onSizeChanged: (Float) -> Unit) {
-    StripIconToggle(GeneratedIcons.EraserTrash, "Trash Strokes", selected = true, implemented = true) {}
-    StripIconToggle(GeneratedIcons.EraserSplit, "Split Strokes (coming soon)", selected = false, implemented = false) {}
+private fun EraserConfigPage(
+    toolConfig: ToolConfig,
+    onEraserModeSelected: (EraserMode) -> Unit,
+    onSizeChanged: (Float) -> Unit
+) {
+    StripIconToggle(GeneratedIcons.EraserTrash, "Trash Strokes", toolConfig.eraserMode == EraserMode.TRASH, true) {
+        onEraserModeSelected(EraserMode.TRASH)
+    }
+    StripIconToggle(GeneratedIcons.EraserSplit, "Split Strokes", toolConfig.eraserMode == EraserMode.SPLIT, true) {
+        onEraserModeSelected(EraserMode.SPLIT)
+    }
     StripDivider()
     val presets = BrushSizePreset.entries.map { it to it.eraserPx }
     StrokeWidthPicker(
         toolConfig.currentActiveSize, presets, maxRange = 128f, onSizeChanged,
         previewStyle = StrokeWidthPreviewStyle.ROUNDED_RECT
     )
+}
+
+// ── Typewriter ───────────────────────────────────────────────────────────
+
+@Composable
+private fun TypewriterConfigPage(toolConfig: ToolConfig, onSizeChanged: (Float) -> Unit) {
+    Text(
+        text = "Tap to\ntype",
+        color = BrnaColors.TextSecondaryOnPanel,
+        fontSize = 10.sp,
+        lineHeight = 12.sp,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.padding(bottom = 4.dp)
+    )
+    StripDivider()
+    // Font size, not a stroke width: small, Rnote's default 32, and large.
+    val presets = listOf(
+        BrushSizePreset.SMALL to 20f,
+        BrushSizePreset.MEDIUM to 32f,
+        BrushSizePreset.LARGE to 48f
+    )
+    StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = 128f, onSizeChanged, title = "Font Size")
 }
 
 // ── Selector ─────────────────────────────────────────────────────────────
@@ -142,7 +216,13 @@ private fun SelectorConfigPage(
     onDeleteSelection: () -> Unit,
     onDuplicateSelection: () -> Unit,
     onSelectAll: () -> Unit,
-    onDeselectAll: () -> Unit
+    onDeselectAll: () -> Unit,
+    canPaste: Boolean,
+    onCopySelection: () -> Unit,
+    onCutSelection: () -> Unit,
+    onPaste: () -> Unit,
+    lockAspectRatio: Boolean,
+    onLockAspectRatioToggled: () -> Unit
 ) {
     StripIconToggle(GeneratedIcons.SelectorPolygon, "Select With a Polygon", selected = true, implemented = true) {}
     StripDivider()
@@ -151,8 +231,11 @@ private fun SelectorConfigPage(
     StripActionButton(GeneratedIcons.SelectionDuplicate, "Duplicate Selection", enabled = hasActiveSelection, onClick = onDuplicateSelection)
     StripActionButton(GeneratedIcons.SelectionDelete, "Delete Selection", enabled = hasActiveSelection, tint = BrnaColors.DestructiveTint, onClick = onDeleteSelection)
     StripDivider()
-    StripIconToggle(GeneratedIcons.SelectionInvertColor, "Invert Color Brightness (coming soon)", selected = false, implemented = false) {}
-    StripIconToggle(GeneratedIcons.SelectionLockAspectRatio, "Lock Aspect Ratio (coming soon)", selected = false, implemented = false) {}
+    StripActionButton(Icons.Default.ContentCopy, "Copy", enabled = hasActiveSelection, onClick = onCopySelection)
+    StripActionButton(Icons.Default.ContentCut, "Cut", enabled = hasActiveSelection, onClick = onCutSelection)
+    StripActionButton(Icons.Default.ContentPaste, "Paste", enabled = canPaste, onClick = onPaste)
+    StripDivider()
+    StripIconToggle(GeneratedIcons.SelectionLockAspectRatio, "Lock Aspect Ratio", selected = lockAspectRatio, implemented = true, onClick = onLockAspectRatioToggled)
 }
 
 // ── Stub pages (Shaper / Typewriter / Tools) ────────────────────────────
@@ -257,7 +340,8 @@ private fun StrokeWidthPicker(
     presets: List<Pair<BrushSizePreset, Float>>,
     maxRange: Float,
     onSizeChanged: (Float) -> Unit,
-    previewStyle: StrokeWidthPreviewStyle = StrokeWidthPreviewStyle.CIRCLE
+    previewStyle: StrokeWidthPreviewStyle = StrokeWidthPreviewStyle.CIRCLE,
+    title: String = "Stroke Size"
 ) {
     var showPicker by remember { mutableStateOf(false) }
 
@@ -308,6 +392,7 @@ private fun StrokeWidthPicker(
 
     if (showPicker) {
         WheelPickerDialog(
+            title = title,
             currentValue = currentSize,
             maxRange = maxRange,
             onValueChange = onSizeChanged,
@@ -343,6 +428,7 @@ private fun tieredStrokeSizeValues(maxRange: Float): List<Float> {
 
 @Composable
 private fun WheelPickerDialog(
+    title: String,
     currentValue: Float,
     maxRange: Float,
     onValueChange: (Float) -> Unit,
@@ -359,7 +445,7 @@ private fun WheelPickerDialog(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Stroke Size",
+                    text = title,
                     color = BrnaColors.TextPrimaryOnPanel,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold

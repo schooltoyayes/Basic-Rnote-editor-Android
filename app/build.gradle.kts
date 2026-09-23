@@ -28,7 +28,17 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // The same key as the debug build (~/.android/debug.keystore, which the CI
+            // workflow restores from a secret), so a release APK installs straight over a
+            // debug one. A release build is what makes drawing smooth: a debuggable app
+            // runs Compose far slower than the non-debuggable one users should get.
+            signingConfig = signingConfigs.getByName("debug")
         }
+    }
+    lint {
+        // assembleRelease runs lint's "vital" checks and fails the build on any of them;
+        // `./gradlew lint` still reports everything, it just doesn't block the APK.
+        checkReleaseBuilds = false
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -62,6 +72,8 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
 
     implementation("com.google.code.gson:gson:2.10.1")
+    // Renders the SVG of PDF pages imported in desktop Rnote (vectorimage strokes).
+    implementation("com.caverock:androidsvg-aar:1.4")
 
     debugImplementation(libs.androidx.ui.tooling)
 

@@ -57,16 +57,64 @@ data class NativeTextElement(
     /** Column-major 2D affine transform: [a, b, c, d, tx, ty] */
     val transform: FloatArray = floatArrayOf(1f,0f,0f,1f,0f,0f),
     override val minX: Float, override val minY: Float,
-    override val maxX: Float, override val maxY: Float
+    override val maxX: Float, override val maxY: Float,
+    /** Wrap width in document units; null means the text only breaks at newlines. */
+    val maxWidth: Float? = null,
+    /** CSS-style weight, 100-900; Rnote's default is 500. */
+    val fontWeight: Int = 500,
+    val italic: Boolean = false,
+    /** Rnote's `TextAlignment`: "start", "center", "end" or "fill". */
+    val alignment: String = "start",
+    /**
+     * The element exactly as the file had it. A save writes this back, and editing the
+     * text changes it in place (NativeEditing.withText) — so bold ranges, underlines and
+     * anything else the model here has no field for survive the round trip.
+     */
+    val raw: com.google.gson.JsonElement? = null
 ) : NativeCanvasElement()
 
-/** Embedded bitmap image (PNG/JPEG decoded from Base64). */
+/**
+ * Embedded bitmap image.
+ *
+ * Two shapes of it exist. Older files carry an encoded PNG/JPEG, decoded into [pixels].
+ * Rnote 0.14 writes raw premultiplied RGBA ([rgbaBase64]) placed by a transformed
+ * rectangle ([rect]), like a vector image; that data is only decoded when drawn, since a
+ * photo or a bitmap-imported PDF page is tens of megabytes of pixels.
+ */
 data class NativeBitmapElement(
-    val pixels: IntArray,   // ARGB pixels, width × height
+    val pixels: IntArray,   // ARGB pixels, width × height; empty for the 0.14 form
     val bmpWidth: Int,
     val bmpHeight: Int,
     /** Column-major 2D affine transform: [a, b, c, d, tx, ty] */
     val transform: FloatArray = floatArrayOf(1f,0f,0f,1f,0f,0f),
+    override val minX: Float, override val minY: Float,
+    override val maxX: Float, override val maxY: Float,
+    /** Rnote 0.14: base64 of bmpWidth × bmpHeight × 4 bytes of premultiplied RGBA. */
+    val rgbaBase64: String? = null,
+    /** Rnote 0.14: where the image sits, as half-extents about a transformed centre. */
+    val rect: RectShape? = null,
+    /** The chrono layer it came from; Rnote puts images on "image". */
+    val layer: String = "image",
+    /** The element exactly as the file had it, written back untouched on save. */
+    val raw: com.google.gson.JsonElement? = null
+) : NativeCanvasElement()
+
+/**
+ * Rnote's `VectorImage` — what desktop Rnote makes of an imported PDF page or SVG. The
+ * SVG is kept verbatim so a save writes it back untouched; it is stretched over the
+ * rectangle [-halfExtentX, halfExtentX] x [-halfExtentY, halfExtentY], which [transform]
+ * then places in the document (Rnote's `VectorImage::gen_svg`).
+ */
+class NativeVectorImageElement(
+    val svgData: String,
+    val intrinsicWidth: Float,
+    val intrinsicHeight: Float,
+    val halfExtentX: Float,
+    val halfExtentY: Float,
+    /** Column-major 2D affine, as [NativeTextElement.transform]. Centres the rectangle. */
+    val transform: FloatArray,
+    /** The chrono layer it came from: "document" for PDF pages, "image" otherwise. */
+    val layer: String,
     override val minX: Float, override val minY: Float,
     override val maxX: Float, override val maxY: Float
 ) : NativeCanvasElement()
@@ -93,6 +141,24 @@ data class RectShape(
     val transform: FloatArray = floatArrayOf(1f, 0f, 0f, 1f, 0f, 0f)
 ) : NativeShapeKind()
 
+/**
+ * One step of a [PathShape] outline, in document coordinates. Covers the shapes the
+ * model has no dedicated class for — arrows, curves, polylines, polygons — which only
+ * ever need drawing, never editing.
+ */
+sealed class PathOp {
+    data class MoveTo(val x: Float, val y: Float) : PathOp()
+    data class LineTo(val x: Float, val y: Float) : PathOp()
+    data class QuadTo(val x1: Float, val y1: Float, val x: Float, val y: Float) : PathOp()
+    data class CubicTo(
+        val x1: Float, val y1: Float, val x2: Float, val y2: Float, val x: Float, val y: Float
+    ) : PathOp()
+    object Close : PathOp()
+}
+
+/** Rnote's arrow, curve, polyline and polygon shapes, kept as their outline. */
+data class PathShape(val ops: List<PathOp>) : NativeShapeKind()
+
 data class EllipseShape(
     val radiusX: Float,
     val radiusY: Float,
@@ -107,7 +173,13 @@ data class NativeShapeElement(
     override val minX: Float, override val minY: Float,
     override val maxX: Float, override val maxY: Float,
     /** A shape can be filled; a brush stroke can't. Dropping this emptied filled shapes. */
-    val fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT
+    val fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT,
+    /** Rnote's `line_style`: "solid", "dotted", "dashed_narrow", "dashed_equidistant", "dashed_wide". */
+    val lineStyle: String = "solid",
+    /** Rnote's `line_cap`: true for "rounded". */
+    val roundCap: Boolean = false,
+    /** The element exactly as the file had it, written back untouched on save. */
+    val raw: com.google.gson.JsonElement? = null
 ) : NativeCanvasElement()
 
 // ── Document ──────────────────────────────────────────────────────────────────

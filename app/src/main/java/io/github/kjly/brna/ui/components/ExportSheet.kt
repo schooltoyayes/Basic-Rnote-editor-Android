@@ -51,6 +51,8 @@ fun ExportSheet(
     prefs: ExportPrefs,
     pageCount: Int,
     hasSelection: Boolean,
+    /** Shows the "pages follow the imported PDF" switch. */
+    hasImportedPages: Boolean = false,
     onPrefsChanged: (ExportPrefs) -> Unit,
     onDismiss: () -> Unit,
     onExport: () -> Unit
@@ -162,6 +164,14 @@ fun ExportSheet(
                     onCheckedChange = { onPrefsChanged(prefs.copy(optimizePrinterOutput = it)) },
                     onSurface = onSurface, accent = accent, isDark = isDark
                 )
+                if (hasImportedPages && prefs.scope != ExportScope.SELECTION) {
+                    ExportSwitchRow(
+                        label = "Pages follow imported PDF",
+                        checked = prefs.pagesFromImportedPdf,
+                        onCheckedChange = { onPrefsChanged(prefs.copy(pagesFromImportedPdf = it)) },
+                        onSurface = onSurface, accent = accent, isDark = isDark
+                    )
+                }
 
                 // ── Page order ────────────────────────────────────────────────
                 if (showPageOrder) {

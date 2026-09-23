@@ -13,6 +13,9 @@ import io.github.kjly.brna.model.NativeCanvasElement
 import io.github.kjly.brna.model.NativePatternType
 import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.NativeTextElement
+import io.github.kjly.brna.model.NativeVectorImageElement
+import io.github.kjly.brna.model.PathOp
+import io.github.kjly.brna.model.PathShape
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RnoteNativeDocument
@@ -114,6 +117,13 @@ object RnoteNativeSerializer {
             LayoutMode.CONTINUOUS_VERTICAL ->
                 maxY = maxOf(pageH, (ink?.maxY ?: 0f).coerceAtLeast(0f) + pageH)
 
+            // Anchored at the origin like Rnote's `resize_doc_semi_infinite_layout`: the
+            // extent only ever reaches out to the right and down.
+            LayoutMode.SEMI_INFINITE -> if (ink != null) {
+                if (ink.maxX > maxX) maxX = ink.maxX
+                if (ink.maxY > maxY) maxY = ink.maxY
+            }
+
             // No bounds to respect, so it is the page widened to cover everything.
             // Infinite-layout content sits at negative coordinates routinely.
             LayoutMode.INFINITE -> if (ink != null) {
@@ -199,7 +209,16 @@ object RnoteNativeSerializer {
 
         sb.append("""],"chrono_components":[{"value":null,"version":0}""")
         doc.elements.forEachIndexed { i, el ->
-            val layer = if (el is NativeBrushStroke && el.isHighlighter) "\"highlighter\"" else """{"user_layer":0}"""
+            val layer = when {
+                el is NativeBrushStroke && el.isHighlighter -> "\"highlighter\""
+                // PDF pages sit on Rnote's document layer, underneath everything else.
+                el is NativeVectorImageElement ->
+                    if (el.layer == "document") "\"document\"" else "\"image\""
+                // Rnote's default layer for images; a bitmap-imported PDF page is "document".
+                el is NativeBitmapElement ->
+                    if (el.layer == "document") "\"document\"" else "\"image\""
+                else -> """{"user_layer":0}"""
+            }
             sb.append(""",{"value":{"t":${i + 1},"layer":$layer},"version":1}""")
         }
         sb.append("""],"chrono_counter":${doc.elements.size}}}}""")
@@ -251,6 +270,7 @@ object RnoteNativeSerializer {
             is NativeTextElement  -> appendTextElement(el)
             is NativeBitmapElement -> appendBitmapElement(el)
             is NativeShapeElement  -> appendShapeElement(el)
+            is NativeVectorImageElement -> appendVectorImage(el)
         }
     }
 
@@ -306,7 +326,15 @@ object RnoteNativeSerializer {
 
     // ── TextElement ───────────────────────────────────────────────────────────
 
+    /** `{"<variant>": <the element as read>}` — see the `raw` fields on the model. */
+    private fun StringBuilder.appendRaw(variant: String, raw: com.google.gson.JsonElement) {
+        append("{\"").append(variant).append("\":")
+        append(raw.toString())
+        append("}")
+    }
+
     private fun StringBuilder.appendTextElement(el: NativeTextElement) {
+        el.raw?.let { appendRaw("textstroke", it); return }
         val tf = el.transform
         append("""{"textstroke":{""")
         append(""""text":${jsonString(el.text)},""")
@@ -326,6 +354,7 @@ object RnoteNativeSerializer {
     // ── BitmapElement ─────────────────────────────────────────────────────────
 
     private fun StringBuilder.appendBitmapElement(el: NativeBitmapElement) {
+        el.raw?.let { appendRaw("bitmapimage", it); return }
         // Re-encode pixels to PNG Base64
         val bmp = Bitmap.createBitmap(el.bmpWidth, el.bmpHeight, Bitmap.Config.ARGB_8888)
         bmp.setPixels(el.pixels, 0, el.bmpWidth, 0, 0, el.bmpWidth, el.bmpHeight)
@@ -345,6 +374,18 @@ object RnoteNativeSerializer {
         append("}}}")
     }
 
+    // ── VectorImage ───────────────────────────────────────────────────────────
+
+    /** The mirror of `parseVectorImage`; the SVG goes back exactly as it was read. */
+    private fun StringBuilder.appendVectorImage(el: NativeVectorImageElement) {
+        append("""{"vectorimage":{"svg_data":""")
+        append(jsonString(el.svgData))
+        append(""","intrinsic_size":[${el.intrinsicWidth},${el.intrinsicHeight}]""")
+        append(""","rectangle":{"cuboid":{"half_extents":[${el.halfExtentX},${el.halfExtentY}]},"transform":""")
+        appendAffine(el.transform)
+        append("}}}")
+    }
+
     // ── ShapeElement ──────────────────────────────────────────────────────────
 
     /**
@@ -353,6 +394,7 @@ object RnoteNativeSerializer {
      * file under the same name, so the two stay in step by construction.
      */
     private fun StringBuilder.appendShapeElement(el: NativeShapeElement) {
+        el.raw?.let { appendRaw("shapestroke", it); return }
         append("""{"shapestroke":{"shape":{""")
         when (val s = el.shape) {
             is LineShape    -> append(""""line":{"start":[${s.x1},${s.y1}],"end":[${s.x2},${s.y2}]}""")
@@ -365,6 +407,23 @@ object RnoteNativeSerializer {
                 append(""""ellipse":{"radii":[${s.radiusX},${s.radiusY}],"transform":""")
                 appendAffine(s.transform)
                 append("}")
+            }
+            // Only ever read from a file, so it always has `raw` and never gets here; a
+            // polyline through its on-curve points is the closest fallback there is.
+            is PathShape -> {
+                val pts = s.ops.mapNotNull {
+                    when (it) {
+                        is PathOp.MoveTo -> it.x to it.y
+                        is PathOp.LineTo -> it.x to it.y
+                        is PathOp.QuadTo -> it.x to it.y
+                        is PathOp.CubicTo -> it.x to it.y
+                        PathOp.Close -> null
+                    }
+                }
+                val first = pts.firstOrNull() ?: (0f to 0f)
+                append(""""polyline":{"start":[${first.first},${first.second}],"path":[""")
+                append(pts.drop(1).joinToString(",") { "[${it.first},${it.second}]" })
+                append("]}")
             }
         }
         append("""},"style":""")

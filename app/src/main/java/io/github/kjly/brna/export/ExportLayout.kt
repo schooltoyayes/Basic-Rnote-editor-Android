@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.Rect
 import io.github.kjly.brna.model.LayoutMode
 import io.github.kjly.brna.model.NativeBrushStroke
 import io.github.kjly.brna.model.NativeCanvasElement
+import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.Stroke
 import kotlin.math.floor
@@ -82,8 +83,13 @@ object ExportLayout {
         paperStyle: PaperStyle,
         strokes: List<Stroke>,
         order: SplitOrder = SplitOrder.ROW_MAJOR,
-        nativeElements: List<NativeCanvasElement> = emptyList()
+        nativeElements: List<NativeCanvasElement> = emptyList(),
+        /** Cut along imported PDF pages instead of the format grid; see [importedPageRects]. */
+        followImportedPages: Boolean = false
     ): List<Rect> {
+        if (followImportedPages) {
+            importedPageRects(strokes, nativeElements, order)?.let { return it }
+        }
         if (!hasPages(paperStyle)) return emptyList()
 
         val pageW = paperStyle.effectivePageWidthPx
@@ -119,6 +125,73 @@ object ExportLayout {
         return ordered.take(MAX_PAGES).map { (col, row) ->
             Rect(col * pageW, row * pageH, col * pageW + pageW, row * pageH + pageH)
         }
+    }
+
+    /** Room left around ink that widens an imported page, so it isn't cut at the edge. */
+    private const val IMPORTED_PAGE_MARGIN_PX = 24f
+
+    /**
+     * One page per imported PDF page, or null when the document has none.
+     *
+     * A PDF imported larger than the document format straddles several format pages, so
+     * cutting along the format grid slices every worksheet into pieces. Here each imported
+     * page is a page of its own, widened to take in the notes written beside it: anything
+     * whose vertical centre lies level with the page belongs to it, and anything level with
+     * no page goes to the nearest one.
+     */
+    fun importedPageRects(
+        strokes: List<Stroke>,
+        nativeElements: List<NativeCanvasElement>,
+        order: SplitOrder = SplitOrder.ROW_MAJOR
+    ): List<Rect>? {
+        val imported = nativeElements.filterIsInstance<NativeVectorImageElement>()
+        if (imported.isEmpty()) return null
+
+        // Reading order: top to bottom, then left to right.
+        val bases = imported
+            .map { Rect(it.minX, it.minY, it.maxX, it.maxY) }
+            .sortedWith(compareBy<Rect>({ it.top }, { it.left }))
+        val lefts = bases.map { it.left }.toFloatArray()
+        val tops = bases.map { it.top }.toFloatArray()
+        val rights = bases.map { it.right }.toFloatArray()
+        val bottoms = bases.map { it.bottom }.toFloatArray()
+
+        fun include(minX: Float, minY: Float, maxX: Float, maxY: Float) {
+            val cy = (minY + maxY) / 2f
+            var best = -1
+            var bestDistance = Float.MAX_VALUE
+            for (i in bases.indices) {
+                val b = bases[i]
+                val distance = when {
+                    cy < b.top -> b.top - cy
+                    cy > b.bottom -> cy - b.bottom
+                    else -> 0f
+                }
+                if (distance < bestDistance) { bestDistance = distance; best = i }
+            }
+            if (best < 0) return
+            val m = IMPORTED_PAGE_MARGIN_PX
+            if (minX - m < lefts[best]) lefts[best] = minX - m
+            if (minY - m < tops[best]) tops[best] = minY - m
+            if (maxX + m > rights[best]) rights[best] = maxX + m
+            if (maxY + m > bottoms[best]) bottoms[best] = maxY + m
+        }
+
+        for (stroke in strokes) {
+            if (stroke.points.isEmpty()) continue
+            val half = stroke.strokeWidth / 2f
+            include(
+                stroke.points.minOf { it.x } - half, stroke.points.minOf { it.y } - half,
+                stroke.points.maxOf { it.x } + half, stroke.points.maxOf { it.y } + half
+            )
+        }
+        for (el in nativeElements) {
+            if (el is NativeBrushStroke || el is NativeVectorImageElement) continue
+            include(el.minX, el.minY, el.maxX, el.maxY)
+        }
+
+        val pages = bases.indices.map { Rect(lefts[it], tops[it], rights[it], bottoms[it]) }
+        return if (order.isReversed) pages.reversed() else pages
     }
 
     /**

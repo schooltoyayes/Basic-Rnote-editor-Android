@@ -772,6 +772,7 @@ class MainActivity : ComponentActivity() {
                             prefs = exportPrefs,
                             pageCount = DocumentExporter.pagesFor(exportDocument, exportPrefs).size,
                             hasSelection = selectedStrokes.isNotEmpty(),
+                            hasImportedPages = DocumentExporter.hasImportedPages(exportDocument),
                             onPrefsChanged = { exportPrefs = it },
                             onDismiss = { showExportSheet = false },
                             onExport = {

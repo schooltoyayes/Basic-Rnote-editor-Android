@@ -202,7 +202,9 @@ class RnoteNativeRoundTripTest {
             )
         )
         val flags = parsed.elements.map { (it as NativeBrushStroke).isHighlighter }
-        assertEquals(listOf(false, true), flags)
+        // Both survive with their layer; Rnote draws the highlighter layer beneath the
+        // ink (`Ord for StrokeLayer`), so in draw order the highlighter comes first.
+        assertEquals(listOf(true, false), flags)
     }
 
     @Test

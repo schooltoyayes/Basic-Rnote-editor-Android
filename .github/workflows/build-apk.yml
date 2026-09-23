@@ -16,6 +16,14 @@ jobs:
     steps:
       - name: Code auschecken
         uses: actions/checkout@v5
+        
+      - name: Eigene Patches anwenden (Ordner patches/)
+        run: |
+          shopt -s nullglob
+          for p in patches/*.patch; do
+            echo "Wende $p an"
+            git apply --ignore-whitespace --verbose "$p"
+          done
 
       - name: JDK 21 einrichten
         uses: actions/setup-java@v5

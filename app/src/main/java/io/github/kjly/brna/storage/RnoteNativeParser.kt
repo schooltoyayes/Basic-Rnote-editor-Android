@@ -4,6 +4,9 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
+import com.google.gson.JsonElement
+import com.google.gson.JsonParser
+import com.google.gson.internal.bind.JsonTreeReader
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import io.github.kjly.brna.model.EllipseShape
@@ -18,6 +21,8 @@ import io.github.kjly.brna.model.NativeStrokePoint
 import io.github.kjly.brna.model.PressureCurve
 import io.github.kjly.brna.model.NativeTextElement
 import io.github.kjly.brna.model.NativeVectorImageElement
+import io.github.kjly.brna.model.PathOp
+import io.github.kjly.brna.model.PathShape
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RnoteNativeDocument
@@ -240,9 +245,18 @@ object RnoteNativeParser {
         while (reader.hasNext()) {
             element = when (reader.nextName()) {
                 "brushstroke" -> parseBrushStroke(reader)
-                "textstroke"  -> parseTextStroke(reader)
-                "bitmapimage" -> parseBitmapImage(reader)
-                "shapestroke" -> parseShapeStroke(reader)
+                // Text, images and shapes are shown here but never edited, so each keeps
+                // the element exactly as read and a save writes that back untouched.
+                "textstroke"  -> fromTree(reader) { r, tree -> parseTextStroke(r)?.copy(raw = tree) }
+                "bitmapimage" -> fromTree(reader) { r, tree -> parseBitmapImage(r)?.copy(raw = tree) }
+                "shapestroke" -> fromTree(reader) { r, tree ->
+                    when (val el = parseShapeStroke(r)) {
+                        is NativeShapeElement -> el.copy(raw = tree)
+                        // A legacy freehand "shape" becomes a brush stroke, which this
+                        // app edits and writes out as one.
+                        else -> el
+                    }
+                }
                 "vectorimage" -> parseVectorImage(reader)
                 else          -> { reader.skipValue(); element }
             }
@@ -385,11 +399,42 @@ object RnoteNativeParser {
         return NativeStrokePoint(x, y, pressure)
     }
 
+    /**
+     * Reads the next value as a tree, then parses it from that tree. The tree is what a
+     * save writes back; reading it through [JsonTreeReader] rather than re-serialising it
+     * means a large string (an embedded image's pixels) exists once, not three times.
+     */
+    private inline fun <T> fromTree(reader: JsonReader, parse: (JsonReader, JsonElement) -> T): T {
+        val tree = JsonParser.parseReader(reader)
+        return parse(JsonTreeReader(tree), tree)
+    }
+
+    /** Axis-aligned bounds of the w × h box at the origin with [t] applied. */
+    private fun transformedBoxBounds(t: FloatArray, w: Float, h: Float): FloatArray {
+        var mnX = Float.MAX_VALUE; var mnY = Float.MAX_VALUE
+        var mxX = -Float.MAX_VALUE; var mxY = -Float.MAX_VALUE
+        for (cx in floatArrayOf(0f, w)) {
+            for (cy in floatArrayOf(0f, h)) {
+                val x = t[0] * cx + t[2] * cy + t[4]
+                val y = t[1] * cx + t[3] * cy + t[5]
+                if (x < mnX) mnX = x
+                if (x > mxX) mxX = x
+                if (y < mnY) mnY = y
+                if (y > mxY) mxY = y
+            }
+        }
+        return floatArrayOf(mnX, mnY, mxX, mxY)
+    }
+
     // ── TextStroke ────────────────────────────────────────────────────────────
 
     private fun parseTextStroke(reader: JsonReader): NativeTextElement? {
         var text = ""; var family = "sans-serif"; var size = 14f
         var color = RnoteNativeColor.BLACK
+        var maxWidth: Float? = null
+        var weight = 500
+        var italic = false
+        var alignment = "start"
         val transform = floatArrayOf(1f, 0f, 0f, 1f, 0f, 0f)
         var minX = 0f; var minY = 0f; var maxX = 0f; var maxY = 0f
 
@@ -405,6 +450,12 @@ object RnoteNativeParser {
                             "font_family" -> family = reader.nextString()
                             "font_size"   -> size   = reader.nextDouble().toFloat()
                             "color"       -> color  = parseColor(reader)
+                            "max_width"   -> maxWidth =
+                                if (reader.peek() == JsonToken.NULL) { reader.nextNull(); null }
+                                else reader.nextDouble().toFloat()
+                            "font_weight" -> weight = reader.nextInt()
+                            "font_style"  -> italic = reader.nextString().equals("italic", ignoreCase = true)
+                            "alignment"   -> alignment = reader.nextString().lowercase()
                             else          -> reader.skipValue()
                         }
                     }
@@ -426,9 +477,22 @@ object RnoteNativeParser {
         }
         reader.endObject()
         if (text.isBlank()) return null
-        // Fallback bounds from transform if no explicit bounds
-        if (maxX == 0f) { minX = transform[4]; minY = transform[5]; maxX = minX + size * 10; maxY = minY + size }
-        return NativeTextElement(text, family, size, color, transform, minX, minY, maxX, maxY)
+        // Rnote 0.14 stores no bounds for text; estimate the laid-out box instead. It only
+        // feeds the document extent and hit-testing, so an approximation is enough.
+        if (maxX == 0f) {
+            val lines = text.split('\n')
+            val wrap = maxWidth
+            val w = wrap ?: (lines.maxOf { it.length } * size * 0.6f)
+            val lineCount = if (wrap != null && wrap > 0f) {
+                lines.sumOf { maxOf(1, kotlin.math.ceil(it.length * size * 0.6f / wrap).toInt()) }
+            } else lines.size
+            val b = transformedBoxBounds(transform, w, lineCount * size * 1.25f)
+            minX = b[0]; minY = b[1]; maxX = b[2]; maxY = b[3]
+        }
+        return NativeTextElement(
+            text, family, size, color, transform, minX, minY, maxX, maxY,
+            maxWidth = maxWidth, fontWeight = weight, italic = italic, alignment = alignment
+        )
     }
 
     // ── BitmapImage ───────────────────────────────────────────────────────────
@@ -437,10 +501,27 @@ object RnoteNativeParser {
         var imageBase64 = ""
         val transform   = floatArrayOf(1f, 0f, 0f, 1f, 0f, 0f)
         var minX = 0f; var minY = 0f; var maxX = 100f; var maxY = 100f
+        // Rnote 0.14: {"image": {"data", "pixel_width", "pixel_height", ...}, "rectangle"}
+        var rgba: String? = null
+        var pixelW = 0; var pixelH = 0
+        var rect: RectShape? = null
 
         reader.beginObject()
         while (reader.hasNext()) {
             when (reader.nextName()) {
+                "image" -> {
+                    reader.beginObject()
+                    while (reader.hasNext()) {
+                        when (reader.nextName()) {
+                            "data"         -> rgba = reader.nextString()
+                            "pixel_width"  -> pixelW = reader.nextInt()
+                            "pixel_height" -> pixelH = reader.nextInt()
+                            else           -> reader.skipValue()
+                        }
+                    }
+                    reader.endObject()
+                }
+                "rectangle"  -> rect = parseRectShape(reader)
                 "image_data" -> imageBase64 = reader.nextString()
                 "transform"  -> parseTransformInto(reader, transform)
                 "bounds" -> {
@@ -458,6 +539,15 @@ object RnoteNativeParser {
             }
         }
         reader.endObject()
+
+        val r = rect
+        if (rgba != null && r != null && pixelW > 0 && pixelH > 0) {
+            val b = boundsForShape(r)
+            return NativeBitmapElement(
+                IntArray(0), pixelW, pixelH, r.transform, b[0], b[1], b[2], b[3],
+                rgbaBase64 = rgba, rect = r
+            )
+        }
 
         if (imageBase64.isBlank()) return null
         return try {
@@ -529,6 +619,11 @@ object RnoteNativeParser {
         var color = RnoteNativeColor.BLACK
         var fill = RnoteNativeColor.TRANSPARENT
         var width = 2f
+        var lineStyle = "solid"
+        var roundCap = false
+        // An arrow's head grows with the stroke width, which is only known once "style"
+        // has been read, so its outline is built after the loop.
+        var arrow: FloatArray? = null
 
         reader.beginObject()
         while (reader.hasNext()) {
@@ -540,6 +635,20 @@ object RnoteNativeParser {
                             "line", "Line" -> shape = parseLineShape(reader)
                             "rect"         -> shape = parseRectShape(reader)
                             "ellipse"      -> shape = parseEllipseShape(reader)
+                            "arrow"        -> arrow = parsePointFields(reader, "start", "tip")
+                            "quadbez"      -> parsePointFields(reader, "start", "cp", "end").let { p ->
+                                shape = PathShape(listOf(
+                                    PathOp.MoveTo(p[0], p[1]), PathOp.QuadTo(p[2], p[3], p[4], p[5])
+                                ))
+                            }
+                            "cubbez"       -> parsePointFields(reader, "start", "cp1", "cp2", "end").let { p ->
+                                shape = PathShape(listOf(
+                                    PathOp.MoveTo(p[0], p[1]),
+                                    PathOp.CubicTo(p[2], p[3], p[4], p[5], p[6], p[7])
+                                ))
+                            }
+                            "polyline"     -> shape = parsePolyShape(reader, closed = false)
+                            "polygon"      -> shape = parsePolyShape(reader, closed = true)
                             // Legacy corner-and-size forms, re-centred into the
                             // half-extents and radii the model now carries.
                             "Rectangle"    -> shape = parseLegacyRectShape(reader)
@@ -561,6 +670,8 @@ object RnoteNativeParser {
                                         "stroke_color" -> color = parseColor(reader)
                                         "fill_color"   -> fill  = parseColor(reader)
                                         "stroke_width" -> width = reader.nextDouble().toFloat()
+                                        "line_style"   -> lineStyle = reader.nextString().lowercase()
+                                        "line_cap"     -> roundCap = reader.nextString().equals("rounded", ignoreCase = true)
                                         else           -> reader.skipValue()
                                     }
                                 }
@@ -583,9 +694,86 @@ object RnoteNativeParser {
                 pts.minOf { it.x }, pts.minOf { it.y }, pts.maxOf { it.x }, pts.maxOf { it.y }
             )
         }
+        arrow?.let { a -> shape = arrowShape(a[0], a[1], a[2], a[3], width) }
         val s = shape ?: return null
         val (mnX, mnY, mxX, mxY) = boundsForShape(s)
-        return NativeShapeElement(s, color, width, mnX, mnY, mxX, mxY, fill)
+        return NativeShapeElement(
+            s, color, width, mnX, mnY, mxX, mxY, fill,
+            lineStyle = lineStyle, roundCap = roundCap
+        )
+    }
+
+    /** Reads an object of named [x, y] points, returned flat in the order asked for. */
+    private fun parsePointFields(reader: JsonReader, vararg names: String): FloatArray {
+        val out = FloatArray(names.size * 2)
+        reader.beginObject()
+        while (reader.hasNext()) {
+            val i = names.indexOf(reader.nextName())
+            if (i < 0) { reader.skipValue(); continue }
+            reader.beginArray()
+            out[2 * i] = reader.nextDouble().toFloat()
+            out[2 * i + 1] = reader.nextDouble().toFloat()
+            while (reader.hasNext()) reader.skipValue()
+            reader.endArray()
+        }
+        reader.endObject()
+        return out
+    }
+
+    /** `{"start": [x, y], "path": [[x, y], ...]}` — Rnote's polyline and polygon. */
+    private fun parsePolyShape(reader: JsonReader, closed: Boolean): PathShape {
+        val ops = mutableListOf<PathOp>()
+        var start: PathOp.MoveTo? = null
+        val rest = mutableListOf<PathOp>()
+        reader.beginObject()
+        while (reader.hasNext()) {
+            when (reader.nextName()) {
+                "start" -> {
+                    reader.beginArray()
+                    start = PathOp.MoveTo(reader.nextDouble().toFloat(), reader.nextDouble().toFloat())
+                    while (reader.hasNext()) reader.skipValue()
+                    reader.endArray()
+                }
+                "path" -> {
+                    reader.beginArray()
+                    while (reader.hasNext()) {
+                        reader.beginArray()
+                        rest += PathOp.LineTo(reader.nextDouble().toFloat(), reader.nextDouble().toFloat())
+                        while (reader.hasNext()) reader.skipValue()
+                        reader.endArray()
+                    }
+                    reader.endArray()
+                }
+                else -> reader.skipValue()
+            }
+        }
+        reader.endObject()
+        ops += start ?: PathOp.MoveTo(0f, 0f)
+        ops += rest
+        if (closed) ops += PathOp.Close
+        return PathShape(ops)
+    }
+
+    /**
+     * Rnote's `Arrow::to_kurbo`: the stem, then the two head lines meeting at the tip at
+     * 13/16 π from the stem, each 10 · (1 + 0.18 · stroke width) long.
+     */
+    private fun arrowShape(sx: Float, sy: Float, tx: Float, ty: Float, strokeWidth: Float): PathShape {
+        var dx = tx - sx; var dy = ty - sy
+        val len = sqrt(dx * dx + dy * dy)
+        if (len == 0f) { dx = 1f; dy = 0f } else { dx /= len; dy /= len }
+        val headLen = 10f * (1f + 0.18f * strokeWidth)
+        val angle = (13.0 / 16.0 * Math.PI)
+        fun rotated(a: Double): Pair<Float, Float> {
+            val c = kotlin.math.cos(a).toFloat(); val s = kotlin.math.sin(a).toFloat()
+            return Pair((c * dx - s * dy) * headLen + tx, (s * dx + c * dy) * headLen + ty)
+        }
+        val (lx, ly) = rotated(angle)
+        val (rx, ry) = rotated(-angle)
+        return PathShape(listOf(
+            PathOp.MoveTo(sx, sy), PathOp.LineTo(tx, ty),
+            PathOp.MoveTo(lx, ly), PathOp.LineTo(tx, ty), PathOp.LineTo(rx, ry)
+        ))
     }
 
     private fun parseLineShape(reader: JsonReader): LineShape {
@@ -703,6 +891,26 @@ object RnoteNativeParser {
             val hw = sqrt(sq(t[0] * s.radiusX) + sq(t[2] * s.radiusY))
             val hh = sqrt(sq(t[1] * s.radiusX) + sq(t[3] * s.radiusY))
             floatArrayOf(t[4] - hw, t[5] - hh, t[4] + hw, t[5] + hh)
+        }
+        // Control points included: the hull of a curve's control polygon contains the
+        // curve, so this is never too small, only sometimes a little generous.
+        is PathShape -> {
+            var mnX = Float.MAX_VALUE; var mnY = Float.MAX_VALUE
+            var mxX = -Float.MAX_VALUE; var mxY = -Float.MAX_VALUE
+            fun add(x: Float, y: Float) {
+                if (x < mnX) mnX = x
+                if (x > mxX) mxX = x
+                if (y < mnY) mnY = y
+                if (y > mxY) mxY = y
+            }
+            for (op in s.ops) when (op) {
+                is PathOp.MoveTo -> add(op.x, op.y)
+                is PathOp.LineTo -> add(op.x, op.y)
+                is PathOp.QuadTo -> { add(op.x1, op.y1); add(op.x, op.y) }
+                is PathOp.CubicTo -> { add(op.x1, op.y1); add(op.x2, op.y2); add(op.x, op.y) }
+                PathOp.Close -> Unit
+            }
+            if (mnX > mxX) floatArrayOf(0f, 0f, 0f, 0f) else floatArrayOf(mnX, mnY, mxX, mxY)
         }
     }
 
@@ -847,6 +1055,8 @@ object RnoteNativeParser {
                 when {
                     entry.isHighlighter && el is NativeBrushStroke && !el.isHighlighter ->
                         el.copy(isHighlighter = true)
+                    el is NativeBitmapElement && entry.layerName == "document" ->
+                        el.copy(layer = "document")
                     el is NativeVectorImageElement && entry.layerName == "document" ->
                         NativeVectorImageElement(
                             el.svgData, el.intrinsicWidth, el.intrinsicHeight,

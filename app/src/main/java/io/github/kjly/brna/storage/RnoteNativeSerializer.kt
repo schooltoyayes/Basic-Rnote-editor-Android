@@ -14,6 +14,8 @@ import io.github.kjly.brna.model.NativePatternType
 import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.NativeTextElement
 import io.github.kjly.brna.model.NativeVectorImageElement
+import io.github.kjly.brna.model.PathOp
+import io.github.kjly.brna.model.PathShape
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RnoteNativeDocument
@@ -212,6 +214,9 @@ object RnoteNativeSerializer {
                 // PDF pages sit on Rnote's document layer, underneath everything else.
                 el is NativeVectorImageElement ->
                     if (el.layer == "document") "\"document\"" else "\"image\""
+                // Rnote's default layer for images; a bitmap-imported PDF page is "document".
+                el is NativeBitmapElement ->
+                    if (el.layer == "document") "\"document\"" else "\"image\""
                 else -> """{"user_layer":0}"""
             }
             sb.append(""",{"value":{"t":${i + 1},"layer":$layer},"version":1}""")
@@ -321,7 +326,15 @@ object RnoteNativeSerializer {
 
     // ── TextElement ───────────────────────────────────────────────────────────
 
+    /** `{"<variant>": <the element as read>}` — see the `raw` fields on the model. */
+    private fun StringBuilder.appendRaw(variant: String, raw: com.google.gson.JsonElement) {
+        append("{\"").append(variant).append("\":")
+        append(raw.toString())
+        append("}")
+    }
+
     private fun StringBuilder.appendTextElement(el: NativeTextElement) {
+        el.raw?.let { appendRaw("textstroke", it); return }
         val tf = el.transform
         append("""{"textstroke":{""")
         append(""""text":${jsonString(el.text)},""")
@@ -341,6 +354,7 @@ object RnoteNativeSerializer {
     // ── BitmapElement ─────────────────────────────────────────────────────────
 
     private fun StringBuilder.appendBitmapElement(el: NativeBitmapElement) {
+        el.raw?.let { appendRaw("bitmapimage", it); return }
         // Re-encode pixels to PNG Base64
         val bmp = Bitmap.createBitmap(el.bmpWidth, el.bmpHeight, Bitmap.Config.ARGB_8888)
         bmp.setPixels(el.pixels, 0, el.bmpWidth, 0, 0, el.bmpWidth, el.bmpHeight)
@@ -380,6 +394,7 @@ object RnoteNativeSerializer {
      * file under the same name, so the two stay in step by construction.
      */
     private fun StringBuilder.appendShapeElement(el: NativeShapeElement) {
+        el.raw?.let { appendRaw("shapestroke", it); return }
         append("""{"shapestroke":{"shape":{""")
         when (val s = el.shape) {
             is LineShape    -> append(""""line":{"start":[${s.x1},${s.y1}],"end":[${s.x2},${s.y2}]}""")
@@ -392,6 +407,23 @@ object RnoteNativeSerializer {
                 append(""""ellipse":{"radii":[${s.radiusX},${s.radiusY}],"transform":""")
                 appendAffine(s.transform)
                 append("}")
+            }
+            // Only ever read from a file, so it always has `raw` and never gets here; a
+            // polyline through its on-curve points is the closest fallback there is.
+            is PathShape -> {
+                val pts = s.ops.mapNotNull {
+                    when (it) {
+                        is PathOp.MoveTo -> it.x to it.y
+                        is PathOp.LineTo -> it.x to it.y
+                        is PathOp.QuadTo -> it.x to it.y
+                        is PathOp.CubicTo -> it.x to it.y
+                        PathOp.Close -> null
+                    }
+                }
+                val first = pts.firstOrNull() ?: (0f to 0f)
+                append(""""polyline":{"start":[${first.first},${first.second}],"path":[""")
+                append(pts.drop(1).joinToString(",") { "[${it.first},${it.second}]" })
+                append("]}")
             }
         }
         append("""},"style":""")

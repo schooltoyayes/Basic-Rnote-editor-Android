@@ -26,8 +26,14 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.InkPoint
+import io.github.kjly.brna.model.NativeBitmapElement
+import io.github.kjly.brna.model.NativeCanvasElement
+import io.github.kjly.brna.model.NativeShapeElement
+import io.github.kjly.brna.model.NativeTextElement
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.PressureCurve
@@ -36,12 +42,26 @@ import io.github.kjly.brna.model.StrokePoint
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.ViewportState
+import io.github.kjly.brna.render.NativeElementRenderer
 import io.github.kjly.brna.render.VectorImageRenderer
 import io.github.kjly.brna.render.composeStrokePath
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.IdentityHashMap
 import kotlin.math.hypot
+
+/**
+ * One background thread for the zoom-detail renders: they are superseded as the view
+ * moves, and letting them run side by side would only stack up memory for results that
+ * are already out of date.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+private val detailDispatcher = Dispatchers.Default.limitedParallelism(1)
+
+/** How long the view has to be still before sharper page renders are made for it. */
+private const val DETAIL_SETTLE_MS = 250L
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -58,19 +78,77 @@ fun DrawingCanvas(
     onStrokesModified: (List<Stroke>) -> Unit,
     /** Called once per eraser gesture, before the first stroke of it is removed. */
     onEraseStart: () -> Unit = {},
-    /** Imported PDF pages from a desktop .rnote; drawn under the strokes, not editable. */
-    vectorImages: List<NativeVectorImageElement> = emptyList(),
+    /**
+     * Elements from a desktop .rnote this app shows but doesn't edit: PDF pages and images
+     * (drawn under the ink, as Rnote's document and image layers are) and text and shapes
+     * (drawn over it). Brush strokes in here are ignored; [strokes] is what is drawn.
+     */
+    nativeElements: List<NativeCanvasElement> = emptyList(),
     modifier: Modifier = Modifier
 ) {
-    // Vector images are rasterised once, off the main thread, one at a time (a PDF page
-    // can be megabytes of SVG). Until its bitmap is ready a page shows as a blank sheet.
-    val vectorBitmaps = remember(vectorImages) { mutableStateMapOf<Int, android.graphics.Bitmap>() }
-    LaunchedEffect(vectorImages) {
-        vectorImages.forEachIndexed { i, el ->
-            val bitmap = withContext(Dispatchers.Default) { VectorImageRenderer.rasterize(el) }
-            if (bitmap != null) vectorBitmaps[i] = bitmap
+    val underlays = remember(nativeElements) { nativeElements.filter(NativeElementRenderer::isUnderlay) }
+    val overlays = remember(nativeElements) { nativeElements.filter(NativeElementRenderer::isOverlay) }
+    val nativeRenderer = remember(nativeElements) {
+        VectorImageRenderer.clearCache()
+        NativeElementRenderer()
+    }
+
+    // Pages and images are turned into bitmaps once, off the main thread, one at a time
+    // (a PDF page can be megabytes of SVG). Until then a page shows as a blank sheet.
+    val underlayBitmaps = remember(underlays) { mutableStateMapOf<Int, android.graphics.Bitmap>() }
+    LaunchedEffect(underlays) {
+        underlays.forEachIndexed { i, el ->
+            val bitmap = withContext(Dispatchers.Default) {
+                when (el) {
+                    is NativeVectorImageElement -> VectorImageRenderer.rasterize(el)
+                    is NativeBitmapElement -> NativeElementRenderer.decodeBitmap(el)
+                    else -> null
+                }
+            }
+            if (bitmap != null) underlayBitmaps[i] = bitmap
         }
     }
+
+    // Sharper renders of the visible part of each PDF page, made once the view has come
+    // to rest at a zoom the one-off bitmap can't resolve. Keyed like underlayBitmaps.
+    var viewSize by remember { mutableStateOf(IntSize.Zero) }
+    val detailTiles = remember(underlays) { mutableStateMapOf<Int, VectorImageRenderer.DetailTile>() }
+    // underlayBitmaps.size is a key so a page whose base bitmap arrives while the view is
+    // already zoomed in still gets its sharp render without waiting for the next pan.
+    LaunchedEffect(underlays, viewportState, viewSize, underlayBitmaps.size) {
+        delay(DETAIL_SETTLE_MS)
+        if (viewSize.width == 0 || viewSize.height == 0) return@LaunchedEffect
+        val scale = viewportState.effectiveScale
+        val viewLeft = -viewportState.panOffset.x / scale
+        val viewTop = -viewportState.panOffset.y / scale
+        val viewRight = viewLeft + viewSize.width / scale
+        val viewBottom = viewTop + viewSize.height / scale
+        val wanted = HashMap<Int, VectorImageRenderer.DetailTile>()
+        underlays.forEachIndexed { i, el ->
+            if (el !is NativeVectorImageElement) return@forEachIndexed
+            val base = underlayBitmaps[i] ?: return@forEachIndexed
+            // Device pixels per document unit the base bitmap has to offer.
+            val basePxPerUnit = base.width / (el.maxX - el.minX).coerceAtLeast(1f)
+            if (scale <= basePxPerUnit * 1.25f) return@forEachIndexed
+            val l = maxOf(el.minX, viewLeft)
+            val t = maxOf(el.minY, viewTop)
+            val r = minOf(el.maxX, viewRight)
+            val b = minOf(el.maxY, viewBottom)
+            if (r <= l || b <= t) return@forEachIndexed
+            val existing = detailTiles[i]
+            if (existing != null && existing.pxPerUnit == scale && existing.covers(l, t, r, b)) {
+                wanted[i] = existing
+                return@forEachIndexed
+            }
+            val tile = withContext(detailDispatcher) {
+                VectorImageRenderer.renderRegion(el, l, t, r, b, scale)
+            } ?: return@forEachIndexed
+            wanted[i] = tile
+        }
+        (detailTiles.keys - wanted.keys).forEach { detailTiles.remove(it) }
+        detailTiles.putAll(wanted)
+    }
+
     val vectorPaint = remember {
         android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG or android.graphics.Paint.ANTI_ALIAS_FLAG)
     }
@@ -120,6 +198,7 @@ fun DrawingCanvas(
     Canvas(
         modifier = modifier
             .fillMaxSize()
+            .onSizeChanged { viewSize = it }
             .background(paperStyle.currentBackgroundColor)
             // Single unified pointerInteropFilter handles drawing, erasing, pan, and pinch-zoom.
             // detectTransformGestures is intentionally NOT used — it conflicts with
@@ -403,20 +482,34 @@ fun DrawingCanvas(
             translate(viewportState.panOffset.x, viewportState.panOffset.y)
             scale(viewportState.effectiveScale, viewportState.effectiveScale, Offset.Zero)
         }) {
-            // 1b. Imported PDF pages (Rnote's document/image layers), beneath all ink.
-            if (vectorImages.isNotEmpty()) {
+            // 1b. Imported PDF pages and images (Rnote's document/image layers), beneath all ink.
+            if (underlays.isNotEmpty()) {
                 drawIntoCanvas { canvas ->
                     val nc = canvas.nativeCanvas
-                    vectorImages.forEachIndexed { i, el ->
-                        val dst = android.graphics.RectF(
-                            -el.halfExtentX, -el.halfExtentY, el.halfExtentX, el.halfExtentY
-                        )
-                        nc.save()
-                        nc.concat(VectorImageRenderer.matrixFor(el))
-                        val bitmap = vectorBitmaps[i]
-                        if (bitmap != null) nc.drawBitmap(bitmap, null, dst, vectorPaint)
-                        else nc.drawRect(dst, placeholderPaint)
-                        nc.restore()
+                    underlays.forEachIndexed { i, el ->
+                        val bitmap = underlayBitmaps[i]
+                        when (el) {
+                            is NativeVectorImageElement -> {
+                                val dst = android.graphics.RectF(
+                                    -el.halfExtentX, -el.halfExtentY, el.halfExtentX, el.halfExtentY
+                                )
+                                nc.save()
+                                nc.concat(VectorImageRenderer.matrixFor(el))
+                                if (bitmap != null) nc.drawBitmap(bitmap, null, dst, vectorPaint)
+                                else nc.drawRect(dst, placeholderPaint)
+                                nc.restore()
+                                detailTiles[i]?.let { tile ->
+                                    nc.drawBitmap(
+                                        tile.bitmap, null,
+                                        android.graphics.RectF(tile.left, tile.top, tile.right, tile.bottom),
+                                        vectorPaint
+                                    )
+                                }
+                            }
+                            is NativeBitmapElement ->
+                                bitmap?.let { nativeRenderer.drawBitmap(nc, el, it) }
+                            else -> Unit
+                        }
                     }
                 }
             }
@@ -433,6 +526,20 @@ fun DrawingCanvas(
                     composeStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve)
                 }
                 drawPath(path = path, color = stroke.color)
+            }
+
+            // 2b. Desktop text boxes and shapes, over the ink.
+            if (overlays.isNotEmpty()) {
+                drawIntoCanvas { canvas ->
+                    val nc = canvas.nativeCanvas
+                    for (el in overlays) {
+                        when (el) {
+                            is NativeTextElement -> nativeRenderer.drawText(nc, el)
+                            is NativeShapeElement -> nativeRenderer.drawShape(nc, el)
+                            else -> Unit
+                        }
+                    }
+                }
             }
 
             // 3. Render active stroke preview

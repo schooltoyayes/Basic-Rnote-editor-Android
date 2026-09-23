@@ -422,6 +422,9 @@ object NativeEditing {
                 """{"rect":{"cuboid":{"half_extents":${point(hx, hy)}},"transform":${affine(cx, cy)}}}"""
             ShapeKind.ELLIPSE ->
                 """{"ellipse":{"radii":${point(hx, hy)},"transform":${affine(cx, cy)}}}"""
+            // Several lines each; see ShapeBuilders, whose lines come back through here.
+            ShapeKind.COORD_SYSTEM_2D, ShapeKind.COORD_SYSTEM_3D, ShapeKind.QUADRANT, ShapeKind.GRID ->
+                return null
         }
         fun color(c: RnoteNativeColor) = """{"r":${n(c.r)},"g":${n(c.g)},"b":${n(c.b)},"a":${n(c.a)}}"""
         val style = """{"smooth":{"stroke_width":${n(strokeWidth)},"stroke_color":${color(color)},""" +

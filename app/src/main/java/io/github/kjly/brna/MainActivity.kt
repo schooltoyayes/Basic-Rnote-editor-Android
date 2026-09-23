@@ -63,6 +63,9 @@ import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.PaperStyle
+import io.github.kjly.brna.model.PenFavorite
+import io.github.kjly.brna.model.brushFavorite
+import io.github.kjly.brna.model.withFavorite
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
 import io.github.kjly.brna.model.ToolConfig
@@ -73,6 +76,7 @@ import io.github.kjly.brna.storage.FileManager
 import io.github.kjly.brna.storage.ImageImport
 import io.github.kjly.brna.storage.NativeEditing
 import io.github.kjly.brna.storage.PdfImporter
+import io.github.kjly.brna.storage.PenFavorites
 import io.github.kjly.brna.storage.RecentFiles
 import io.github.kjly.brna.storage.Recovery
 import io.github.kjly.brna.storage.SettingsManager
@@ -84,6 +88,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import io.github.kjly.brna.ui.canvas.DrawingCanvas
+import io.github.kjly.brna.ui.canvas.SelectionManager
 import io.github.kjly.brna.ui.components.ColorPicker
 import io.github.kjly.brna.ui.components.ExportSheet
 import io.github.kjly.brna.ui.components.PageSettingsSheet
@@ -783,6 +788,11 @@ class MainActivity : ComponentActivity() {
             var showExportSheet by remember { mutableStateOf(false) }
             // Kept across openings so a second export doesn't start from the defaults again.
             var exportPrefs by remember { mutableStateOf(ExportPrefs()) }
+            var penFavorites by remember { mutableStateOf(PenFavorites.load(this@MainActivity)) }
+            val setFavorite = { slot: Int, favorite: PenFavorite? ->
+                penFavorites = penFavorites.toMutableList().also { it[slot] = favorite }
+                PenFavorites.save(this@MainActivity, penFavorites)
+            }
 
             // ── Stroke stacks ─────────────────────────────────────────────────────
             val strokes = remember { mutableStateListOf<Stroke>() }
@@ -1189,10 +1199,11 @@ class MainActivity : ComponentActivity() {
                             },
                             nativeElements = documentNativeElements,
                             selectedNatives = selectedNatives,
-                            onAddShape = { shape ->
+                            onAddShapes = { shapes ->
+                                // One undo step for all the lines of a grid or a coordinate system.
                                 undoStack.add(snapshot())
                                 redoStack.clear()
-                                documentNativeElements = documentNativeElements + shape
+                                documentNativeElements = documentNativeElements + shapes
                                 isModified = true
                             },
                             onEraseNatives = { erased ->
@@ -1223,6 +1234,21 @@ class MainActivity : ComponentActivity() {
                                 textEditTarget = TextEditTarget(
                                     x, y, NativeEditing.textAt(documentNativeElements, x, y, slop)
                                 )
+                            },
+                            onVerticalSpace = { dy, strokeIds, natives ->
+                                undoStack.add(snapshot())
+                                redoStack.clear()
+                                // In place, so every stroke keeps its position in the drawing order.
+                                val shift = Offset(0f, dy)
+                                for (i in strokes.indices) {
+                                    if (strokes[i].id in strokeIds) {
+                                        strokes[i] = SelectionManager.translateStrokes(listOf(strokes[i]), shift).single()
+                                    }
+                                }
+                                documentNativeElements = documentNativeElements.map {
+                                    if (it in natives) NativeEditing.translate(it, 0f, dy) else it
+                                }
+                                isModified = true
                             },
                         )
 
@@ -1354,6 +1380,13 @@ class MainActivity : ComponentActivity() {
                             onLockAspectRatioToggled = {
                                 toolConfig = toolConfig.copy(lockAspectRatio = !toolConfig.lockAspectRatio)
                             },
+                            onSnapAnglesToggled = {
+                                toolConfig = toolConfig.copy(snapAngles = !toolConfig.snapAngles)
+                            },
+                            favorites = penFavorites,
+                            onApplyFavorite = { favorite -> toolConfig = toolConfig.withFavorite(favorite) },
+                            onStoreFavorite = { slot -> setFavorite(slot, toolConfig.brushFavorite()) },
+                            onClearFavorite = { slot -> setFavorite(slot, null) },
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 18.dp)

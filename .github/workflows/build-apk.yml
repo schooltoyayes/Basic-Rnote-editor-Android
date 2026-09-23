@@ -1,0 +1,72 @@
+# Baut die Basic-Rnote-Editor-APK und stellt sie als Release "latest" bereit,
+# damit sie direkt auf dem Tablet heruntergeladen und installiert werden kann.
+name: APK bauen
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # manuell starten: Actions -> "APK bauen" -> "Run workflow"
+
+permissions:
+  contents: write      # nötig, um das Release "latest" anzulegen
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v5
+
+      - name: JDK 21 einrichten
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Gradle einrichten (mit Cache)
+        uses: gradle/actions/setup-gradle@v5
+
+      # Optional: fester Signaturschlüssel. Ohne das Secret erzeugt jeder Lauf einen
+      # neuen Schlüssel, und Updates lassen sich nur nach Deinstallieren installieren.
+      - name: Festen Debug-Schlüssel einrichten (falls Secret vorhanden)
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+            mkdir -p ~/.android
+            echo "$DEBUG_KEYSTORE_BASE64" | base64 -d > ~/.android/debug.keystore
+            echo "Fester Schlüssel wird benutzt."
+          else
+            echo "Kein Secret gesetzt – zufälliger Schlüssel."
+          fi
+
+      - name: APK bauen
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Unit-Tests (blockieren die APK nicht)
+        continue-on-error: true
+        run: ./gradlew --no-daemon test
+
+      - name: APK umbenennen
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/*.apk dist/basic-rnote.apk
+
+      - name: APK als Workflow-Artefakt hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: basic-rnote-apk
+          path: dist/basic-rnote.apk
+
+      - name: Release "latest" aktualisieren
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/basic-rnote.apk \
+            --title "Neueste APK (${GITHUB_SHA::7})" \
+            --notes "Automatisch gebaut aus Commit ${GITHUB_SHA::7}." \
+            --prerelease \
+            --target "$GITHUB_SHA"

@@ -31,6 +31,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
@@ -85,6 +86,33 @@ import io.github.kjly.brna.ui.theme.BabyRnoteTheme
  * or an erased shape brings back everything it took.
  */
 private data class DocSnapshot(val strokes: List<Stroke>, val natives: List<NativeCanvasElement>)
+
+/** Copied ink and desktop elements. */
+private class Clip(val strokes: List<Stroke>, val natives: List<NativeCanvasElement>) {
+    /** [minX, minY, maxX, maxY] around everything copied; null if nothing was. */
+    fun bounds(): FloatArray? {
+        var l = Float.MAX_VALUE; var t = Float.MAX_VALUE
+        var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE
+        for (s in strokes) for (p in s.points) {
+            l = minOf(l, p.x); t = minOf(t, p.y); r = maxOf(r, p.x); b = maxOf(b, p.y)
+        }
+        for (el in natives) {
+            l = minOf(l, el.minX); t = minOf(t, el.minY); r = maxOf(r, el.maxX); b = maxOf(b, el.maxY)
+        }
+        return if (l <= r && t <= b) floatArrayOf(l, t, r, b) else null
+    }
+}
+
+/**
+ * The selector's clipboard. It lives as long as the app does, not the note, so what is
+ * copied in one note can be pasted into the next one opened.
+ */
+private object SelectionClipboard {
+    var clip by mutableStateOf<Clip?>(null)
+}
+
+/** How far a paste lands from the original when both are in view, as Duplicate does. */
+private const val PASTE_OFFSET = 20f
 
 /** Where the Typewriter was tapped, and the text box it hit there, if any. */
 private class TextEditTarget(val x: Float, val y: Float, val existing: NativeTextElement?)
@@ -909,6 +937,66 @@ class MainActivity : ComponentActivity() {
                                 .padding(top = 18.dp)
                         )
 
+                        val deleteSelection: () -> Unit = {
+                            if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
+                                undoStack.add(snapshot())
+                                redoStack.clear()
+                                val ids = selectedStrokes.map { it.id }.toSet()
+                                strokes.removeAll { it.id in ids }
+                                val gone = java.util.Collections.newSetFromMap(
+                                    java.util.IdentityHashMap<NativeCanvasElement, Boolean>()
+                                ).apply { addAll(selectedNatives) }
+                                documentNativeElements = documentNativeElements.filter { it !in gone }
+                                selectedStrokes.clear()
+                                selectedNatives.clear()
+                                isModified = true
+                            }
+                        }
+                        val copySelection: () -> Unit = {
+                            if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
+                                SelectionClipboard.clip = Clip(selectedStrokes.toList(), selectedNatives.toList())
+                            }
+                        }
+                        val pasteClipboard: () -> Unit = paste@{
+                            val clip = SelectionClipboard.clip ?: return@paste
+                            val box = clip.bounds() ?: return@paste
+                            // Where the copy was, nudged so it shows as a copy — unless that is
+                            // out of view (another note, or scrolled away): then mid-screen.
+                            val viewTopLeft = viewportState.screenToCanvas(Offset.Zero)
+                            val viewBottomRight = viewportState.screenToCanvas(
+                                Offset(canvasSize.width.toFloat(), canvasSize.height.toFloat())
+                            )
+                            val inView = box[2] >= viewTopLeft.x && box[0] <= viewBottomRight.x &&
+                                box[3] >= viewTopLeft.y && box[1] <= viewBottomRight.y
+                            val dx: Float
+                            val dy: Float
+                            if (inView || canvasSize.width == 0) {
+                                dx = PASTE_OFFSET; dy = PASTE_OFFSET
+                            } else {
+                                dx = (viewTopLeft.x + viewBottomRight.x) / 2f - (box[0] + box[2]) / 2f
+                                dy = (viewTopLeft.y + viewBottomRight.y) / 2f - (box[1] + box[3]) / 2f
+                            }
+                            undoStack.add(snapshot())
+                            redoStack.clear()
+                            val newStrokes = clip.strokes.map { s ->
+                                s.copy(
+                                    id = java.util.UUID.randomUUID().toString(),
+                                    points = s.points.map { p -> StrokePoint(p.x + dx, p.y + dy, p.pressure) }
+                                )
+                            }
+                            // Always new instances: the document tells its elements apart by identity.
+                            val newNatives = clip.natives.map { NativeEditing.translate(it, dx, dy) }
+                            strokes.addAll(newStrokes)
+                            documentNativeElements = documentNativeElements + newNatives
+                            selectedStrokes.clear()
+                            selectedStrokes.addAll(newStrokes)
+                            selectedNatives.clear()
+                            selectedNatives.addAll(newNatives)
+                            // Pasting again cascades from here, as a second duplicate would.
+                            SelectionClipboard.clip = Clip(newStrokes, newNatives)
+                            isModified = true
+                        }
+
                         // Left edge, vertically centered: per-pen config (matches RnPensSideBar).
                         // Hidden below the width breakpoint (see isCompactWidth, top of file).
                         if (!isCompactWidth) PenConfigStrip(
@@ -916,21 +1004,7 @@ class MainActivity : ComponentActivity() {
                             hasActiveSelection = selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty(),
                             onBrushStyleSelected = { style -> toolConfig = toolConfig.copy(brushStyle = style) },
                             onSizeChanged = { newSize -> toolConfig = toolConfig.updateActiveSize(newSize) },
-                            onDeleteSelection = {
-                                if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
-                                    undoStack.add(snapshot())
-                                    redoStack.clear()
-                                    val ids = selectedStrokes.map { it.id }.toSet()
-                                    strokes.removeAll { it.id in ids }
-                                    val gone = java.util.Collections.newSetFromMap(
-                                        java.util.IdentityHashMap<NativeCanvasElement, Boolean>()
-                                    ).apply { addAll(selectedNatives) }
-                                    documentNativeElements = documentNativeElements.filter { it !in gone }
-                                    selectedStrokes.clear()
-                                    selectedNatives.clear()
-                                    isModified = true
-                                }
-                            },
+                            onDeleteSelection = deleteSelection,
                             onDuplicateSelection = {
                                 if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
                                     undoStack.add(snapshot())
@@ -966,6 +1040,16 @@ class MainActivity : ComponentActivity() {
                             },
                             onShapeKindSelected = { kind -> toolConfig = toolConfig.copy(shapeKind = kind) },
                             onEraserModeSelected = { mode -> toolConfig = toolConfig.copy(eraserMode = mode) },
+                            canPaste = SelectionClipboard.clip != null,
+                            onCopySelection = copySelection,
+                            onCutSelection = {
+                                copySelection()
+                                deleteSelection()
+                            },
+                            onPaste = pasteClipboard,
+                            onLockAspectRatioToggled = {
+                                toolConfig = toolConfig.copy(lockAspectRatio = !toolConfig.lockAspectRatio)
+                            },
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 18.dp)

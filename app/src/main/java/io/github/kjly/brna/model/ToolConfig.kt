@@ -78,6 +78,8 @@ data class ToolConfig(
     val shapeKind: ShapeKind = ShapeKind.LINE,
     val shaperWidth: Float = 2f,
     val eraserMode: EraserMode = EraserMode.TRASH,
+    /** The selector's "Lock Aspect Ratio": scale the selection uniformly. Off in Rnote by default. */
+    val lockAspectRatio: Boolean = false,
     /** Typewriter font size; Rnote's `TextStyle::FONT_SIZE_DEFAULT` is 32. */
     val textSize: Float = 32f,
     /** When false (default), only stylus/S-Pen input can draw. Finger touch is reserved for pan & zoom. */

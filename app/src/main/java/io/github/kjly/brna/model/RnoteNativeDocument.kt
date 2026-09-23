@@ -66,9 +66,9 @@ data class NativeTextElement(
     /** Rnote's `TextAlignment`: "start", "center", "end" or "fill". */
     val alignment: String = "start",
     /**
-     * The element exactly as the file had it. This app displays text but cannot edit it,
-     * so a save writes this back untouched — bold ranges, underlines and anything else
-     * the model here has no field for survive the round trip.
+     * The element exactly as the file had it. A save writes this back, and editing the
+     * text changes it in place (NativeEditing.withText) — so bold ranges, underlines and
+     * anything else the model here has no field for survive the round trip.
      */
     val raw: com.google.gson.JsonElement? = null
 ) : NativeCanvasElement()

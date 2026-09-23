@@ -47,6 +47,8 @@ import io.github.kjly.brna.export.ExportScope
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.NativeBrushStroke
 import io.github.kjly.brna.model.NativeCanvasElement
+import io.github.kjly.brna.model.NativeTextElement
+import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.PaperStyle
@@ -57,6 +59,7 @@ import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.ViewportState
 import io.github.kjly.brna.storage.DocumentUri
 import io.github.kjly.brna.storage.FileManager
+import io.github.kjly.brna.storage.NativeEditing
 import io.github.kjly.brna.storage.PdfImporter
 import io.github.kjly.brna.storage.Recovery
 import io.github.kjly.brna.storage.SettingsManager
@@ -74,6 +77,7 @@ import io.github.kjly.brna.ui.components.PageSettingsSheet
 import io.github.kjly.brna.ui.components.PenConfigStrip
 import io.github.kjly.brna.ui.components.PenPicker
 import io.github.kjly.brna.ui.components.RnoteTopBar
+import io.github.kjly.brna.ui.components.TextEntryDialog
 import io.github.kjly.brna.ui.theme.BabyRnoteTheme
 
 /**
@@ -81,6 +85,9 @@ import io.github.kjly.brna.ui.theme.BabyRnoteTheme
  * or an erased shape brings back everything it took.
  */
 private data class DocSnapshot(val strokes: List<Stroke>, val natives: List<NativeCanvasElement>)
+
+/** Where the Typewriter was tapped, and the text box it hit there, if any. */
+private class TextEditTarget(val x: Float, val y: Float, val existing: NativeTextElement?)
 
 class MainActivity : ComponentActivity() {
 
@@ -560,6 +567,7 @@ class MainActivity : ComponentActivity() {
             var documentNativeElements by remember { mutableStateOf<List<NativeCanvasElement>>(emptyList()) }
             // Desktop elements (text, shapes, images) the selector holds, beside selectedStrokes.
             val selectedNatives = remember { mutableStateListOf<NativeCanvasElement>() }
+            var textEditTarget by remember { mutableStateOf<TextEditTarget?>(null) }
             val snapshot = { DocSnapshot(strokes.toList(), documentNativeElements) }
             val restore = { state: DocSnapshot ->
                 strokes.clear()
@@ -867,6 +875,23 @@ class MainActivity : ComponentActivity() {
                                 documentNativeElements = documentNativeElements.map { moved[it] ?: it }
                                 isModified = true
                             },
+                            onSplitStrokes = { split ->
+                                // Each cut stroke is replaced where it stood, so the pieces
+                                // keep its place in the drawing order.
+                                for (i in strokes.indices.reversed()) {
+                                    val pieces = split[strokes[i].id] ?: continue
+                                    strokes.removeAt(i)
+                                    strokes.addAll(i, pieces)
+                                }
+                                selectedStrokes.removeAll { it.id in split.keys }
+                                isModified = true
+                            },
+                            onTypewriterTap = { x, y ->
+                                val slop = 12f / viewportState.effectiveScale
+                                textEditTarget = TextEditTarget(
+                                    x, y, NativeEditing.textAt(documentNativeElements, x, y, slop)
+                                )
+                            },
                         )
 
                         // Top-center: stroke color + palette (matches Rnote's colorpicker.ui)
@@ -940,6 +965,7 @@ class MainActivity : ComponentActivity() {
                                 selectedNatives.clear()
                             },
                             onShapeKindSelected = { kind -> toolConfig = toolConfig.copy(shapeKind = kind) },
+                            onEraserModeSelected = { mode -> toolConfig = toolConfig.copy(eraserMode = mode) },
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 18.dp)
@@ -1024,6 +1050,52 @@ class MainActivity : ComponentActivity() {
                                         baseName = documentTitle
                                     )
                                 )
+                            }
+                        )
+                    }
+
+                    // ── Typewriter: type a new text box, or change the one tapped ──
+                    textEditTarget?.let { target ->
+                        val existing = target.existing
+                        TextEntryDialog(
+                            initialText = existing?.text ?: "",
+                            isNew = existing == null,
+                            onDismiss = { textEditTarget = null },
+                            onDelete = {
+                                textEditTarget = null
+                                if (existing != null) {
+                                    undoStack.add(snapshot())
+                                    redoStack.clear()
+                                    documentNativeElements = documentNativeElements.filter { it !== existing }
+                                    isModified = true
+                                }
+                            },
+                            onConfirm = { text ->
+                                textEditTarget = null
+                                if (existing == null) {
+                                    val c = toolConfig.penColor
+                                    NativeEditing.createText(
+                                        text, target.x, target.y, toolConfig.textSize,
+                                        RnoteNativeColor(c.red, c.green, c.blue, c.alpha),
+                                        NativeEditing.typewriterWrapWidth(target.x, paperStyle.effectivePageWidthPx)
+                                    )?.let { created ->
+                                        undoStack.add(snapshot())
+                                        redoStack.clear()
+                                        documentNativeElements = documentNativeElements + created
+                                        isModified = true
+                                    }
+                                } else if (text != existing.text) {
+                                    undoStack.add(snapshot())
+                                    redoStack.clear()
+                                    // Blank text removes the box, as emptying one does in Rnote.
+                                    val edited = NativeEditing.withText(existing, text)
+                                    documentNativeElements = if (edited == null) {
+                                        documentNativeElements.filter { it !== existing }
+                                    } else {
+                                        documentNativeElements.map { if (it === existing) edited else it }
+                                    }
+                                    isModified = true
+                                }
                             }
                         )
                     }

@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.BrushSizePreset
+import io.github.kjly.brna.model.EraserMode
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.ui.icons.GeneratedIcons
@@ -76,7 +77,8 @@ fun PenConfigStrip(
     onSelectAll: () -> Unit,
     onDeselectAll: () -> Unit,
     modifier: Modifier = Modifier,
-    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit = {}
+    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit = {},
+    onEraserModeSelected: (EraserMode) -> Unit = {}
 ) {
     Surface(
         modifier = modifier.width(60.dp),
@@ -91,12 +93,12 @@ fun PenConfigStrip(
         ) {
             when (toolConfig.activeTool) {
                 ToolType.BRUSH -> BrushConfigPage(toolConfig, onBrushStyleSelected, onSizeChanged)
-                ToolType.ERASER -> EraserConfigPage(toolConfig, onSizeChanged)
+                ToolType.ERASER -> EraserConfigPage(toolConfig, onEraserModeSelected, onSizeChanged)
                 ToolType.SELECTOR -> SelectorConfigPage(
                     hasActiveSelection, onDeleteSelection, onDuplicateSelection, onSelectAll, onDeselectAll
                 )
                 ToolType.SHAPER -> ShaperConfigPage(toolConfig, onShapeKindSelected, onSizeChanged)
-                ToolType.TYPEWRITER -> StubConfigPage("Typewriter")
+                ToolType.TYPEWRITER -> TypewriterConfigPage(toolConfig, onSizeChanged)
                 ToolType.TOOLS -> StubConfigPage("Tools")
             }
         }
@@ -155,15 +157,45 @@ private fun ShaperConfigPage(
 // ── Eraser ───────────────────────────────────────────────────────────────
 
 @Composable
-private fun EraserConfigPage(toolConfig: ToolConfig, onSizeChanged: (Float) -> Unit) {
-    StripIconToggle(GeneratedIcons.EraserTrash, "Trash Strokes", selected = true, implemented = true) {}
-    StripIconToggle(GeneratedIcons.EraserSplit, "Split Strokes (coming soon)", selected = false, implemented = false) {}
+private fun EraserConfigPage(
+    toolConfig: ToolConfig,
+    onEraserModeSelected: (EraserMode) -> Unit,
+    onSizeChanged: (Float) -> Unit
+) {
+    StripIconToggle(GeneratedIcons.EraserTrash, "Trash Strokes", toolConfig.eraserMode == EraserMode.TRASH, true) {
+        onEraserModeSelected(EraserMode.TRASH)
+    }
+    StripIconToggle(GeneratedIcons.EraserSplit, "Split Strokes", toolConfig.eraserMode == EraserMode.SPLIT, true) {
+        onEraserModeSelected(EraserMode.SPLIT)
+    }
     StripDivider()
     val presets = BrushSizePreset.entries.map { it to it.eraserPx }
     StrokeWidthPicker(
         toolConfig.currentActiveSize, presets, maxRange = 128f, onSizeChanged,
         previewStyle = StrokeWidthPreviewStyle.ROUNDED_RECT
     )
+}
+
+// ── Typewriter ───────────────────────────────────────────────────────────
+
+@Composable
+private fun TypewriterConfigPage(toolConfig: ToolConfig, onSizeChanged: (Float) -> Unit) {
+    Text(
+        text = "Tap to\ntype",
+        color = BrnaColors.TextSecondaryOnPanel,
+        fontSize = 10.sp,
+        lineHeight = 12.sp,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.padding(bottom = 4.dp)
+    )
+    StripDivider()
+    // Font size, not a stroke width: small, Rnote's default 32, and large.
+    val presets = listOf(
+        BrushSizePreset.SMALL to 20f,
+        BrushSizePreset.MEDIUM to 32f,
+        BrushSizePreset.LARGE to 48f
+    )
+    StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = 128f, onSizeChanged, title = "Font Size")
 }
 
 // ── Selector ─────────────────────────────────────────────────────────────
@@ -289,7 +321,8 @@ private fun StrokeWidthPicker(
     presets: List<Pair<BrushSizePreset, Float>>,
     maxRange: Float,
     onSizeChanged: (Float) -> Unit,
-    previewStyle: StrokeWidthPreviewStyle = StrokeWidthPreviewStyle.CIRCLE
+    previewStyle: StrokeWidthPreviewStyle = StrokeWidthPreviewStyle.CIRCLE,
+    title: String = "Stroke Size"
 ) {
     var showPicker by remember { mutableStateOf(false) }
 
@@ -340,6 +373,7 @@ private fun StrokeWidthPicker(
 
     if (showPicker) {
         WheelPickerDialog(
+            title = title,
             currentValue = currentSize,
             maxRange = maxRange,
             onValueChange = onSizeChanged,
@@ -375,6 +409,7 @@ private fun tieredStrokeSizeValues(maxRange: Float): List<Float> {
 
 @Composable
 private fun WheelPickerDialog(
+    title: String,
     currentValue: Float,
     maxRange: Float,
     onValueChange: (Float) -> Unit,
@@ -391,7 +426,7 @@ private fun WheelPickerDialog(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Stroke Size",
+                    text = title,
                     color = BrnaColors.TextPrimaryOnPanel,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold

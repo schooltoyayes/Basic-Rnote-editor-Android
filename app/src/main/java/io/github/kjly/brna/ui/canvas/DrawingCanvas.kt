@@ -29,6 +29,7 @@ import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import io.github.kjly.brna.model.BrushStyle
+import io.github.kjly.brna.model.EraserMode
 import io.github.kjly.brna.model.InkPoint
 import io.github.kjly.brna.model.NativeBitmapElement
 import io.github.kjly.brna.model.NativeCanvasElement
@@ -94,7 +95,14 @@ fun DrawingCanvas(
     /** Shapes the eraser went over; part of the same gesture as [onEraseStrokes]. */
     onEraseNatives: (List<NativeCanvasElement>) -> Unit = {},
     /** Desktop elements the selector moved: old instance -> moved copy. */
-    onNativesMoved: (IdentityHashMap<NativeCanvasElement, NativeCanvasElement>) -> Unit = {}
+    onNativesMoved: (IdentityHashMap<NativeCanvasElement, NativeCanvasElement>) -> Unit = {},
+    /**
+     * The splitting eraser cut strokes apart: stroke id -> the pieces that replace it
+     * (none if nothing is left). Part of the same gesture as [onEraseStrokes].
+     */
+    onSplitStrokes: (Map<String, List<Stroke>>) -> Unit = {},
+    /** The Typewriter was tapped at this canvas position: start or edit a text box there. */
+    onTypewriterTap: (Float, Float) -> Unit = { _, _ -> }
 ) {
     val underlays = remember(nativeElements) { nativeElements.filter(NativeElementRenderer::isUnderlay) }
     val overlays = remember(nativeElements) { nativeElements.filter(NativeElementRenderer::isOverlay) }
@@ -210,10 +218,16 @@ fun DrawingCanvas(
     // 1-finger pan tracking (used when finger drawing is disabled)
     var lastFingerPanPosition by remember { mutableStateOf<Offset?>(null) }
 
+    // A Typewriter tap: where it went down (screen px, and canvas units), and whether it
+    // has since moved too far to be a tap. A finger that pans the view isn't a tap.
+    var tapDownScreen by remember { mutableStateOf<Offset?>(null) }
+    var tapDownCanvas by remember { mutableStateOf(Offset.Zero) }
+
     // Rnote's eraser is `width` canvas units across, full stop — no density factor, no
     // 1.5x, no screen-space floor. Those made the tool a different physical size from
     // desktop's and stopped it scaling with zoom the way the ink it erases does.
     val eraserWidth = toolConfig.eraserWidth
+    val splitEraser = toolConfig.eraserMode == EraserMode.SPLIT
 
     Canvas(
         modifier = modifier
@@ -227,6 +241,7 @@ fun DrawingCanvas(
 
                 // ── 2-Finger Pan & Pinch-to-Zoom ─────────────────────────────────────
                 if (motionEvent.pointerCount == 2) {
+                    tapDownScreen = null
                     // Cancel any in-progress single-finger stroke
                     if (isDrawing) {
                         isDrawing = false
@@ -312,6 +327,10 @@ fun DrawingCanvas(
                     when (motionEvent.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
                             lastFingerPanPosition = Offset(screenX, screenY)
+                            // With the Typewriter, a finger tap types too: nobody reaches
+                            // for the pen to put a cursor somewhere.
+                            tapDownScreen = if (toolConfig.activeTool == ToolType.TYPEWRITER) Offset(screenX, screenY) else null
+                            tapDownCanvas = canvasPos
                         }
                         MotionEvent.ACTION_MOVE -> {
                             val last = lastFingerPanPosition
@@ -320,9 +339,14 @@ fun DrawingCanvas(
                                 onViewportChanged(viewportState.update(viewportState.panOffset + delta, viewportState.zoomScale))
                             }
                             lastFingerPanPosition = Offset(screenX, screenY)
+                            tapDownScreen?.let { if ((Offset(screenX, screenY) - it).getDistance() > TAP_SLOP_PX) tapDownScreen = null }
                         }
                         MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                             lastFingerPanPosition = null
+                            if (motionEvent.actionMasked == MotionEvent.ACTION_UP && tapDownScreen != null) {
+                                onTypewriterTap(tapDownCanvas.x, tapDownCanvas.y)
+                            }
+                            tapDownScreen = null
                         }
                     }
                     return@pointerInteropFilter true
@@ -406,6 +430,8 @@ fun DrawingCanvas(
                             shapeStart = Offset(x, y)
                             shapeEnd = Offset(x, y)
                         }
+                        tapDownScreen = if (activeTool == ToolType.TYPEWRITER) Offset(screenX, screenY) else null
+                        tapDownCanvas = Offset(x, y)
 
                         currentPoints.clear()
                         lassoPoints.clear()
@@ -415,7 +441,7 @@ fun DrawingCanvas(
                         if (activeTool == ToolType.ERASER) {
                             eraserCursor = Offset(x, y)
                             eraserCursorDown = true
-                            eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes, overlays, onEraseNatives) {
+                            eraseAt(Offset(x, y), eraserWidth, splitEraser, strokes, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
                                 if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
                             }
                         }
@@ -456,6 +482,12 @@ fun DrawingCanvas(
                                 shapeEnd = Offset(x, y)
                                 return@pointerInteropFilter true
                             }
+                            if (activeTool == ToolType.TYPEWRITER) {
+                                tapDownScreen?.let {
+                                    if ((Offset(screenX, screenY) - it).getDistance() > TAP_SLOP_PX) tapDownScreen = null
+                                }
+                                return@pointerInteropFilter true
+                            }
 
                             currentPoints.add(InkPoint(x, y, rawPressure))
                             lassoPoints.add(Offset(x, y))
@@ -463,7 +495,7 @@ fun DrawingCanvas(
                             if (activeTool == ToolType.ERASER) {
                                 eraserCursor = Offset(x, y)
                                 eraserCursorDown = true
-                                eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes, overlays, onEraseNatives) {
+                                eraseAt(Offset(x, y), eraserWidth, splitEraser, strokes, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
                                     if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
                                 }
                             }
@@ -483,6 +515,10 @@ fun DrawingCanvas(
                                     val polygon = lassoPoints.map { it.x to it.y }
                                     natives.clear()
                                     natives.addAll(nativeElements.filter { NativeEditing.insideLasso(it, polygon) })
+                                }
+                            } else if (activeTool == ToolType.TYPEWRITER) {
+                                if (action == MotionEvent.ACTION_UP && tapDownScreen != null) {
+                                    onTypewriterTap(tapDownCanvas.x, tapDownCanvas.y)
                                 }
                             } else if (activeTool == ToolType.SHAPER) {
                                 val start = shapeStart
@@ -515,6 +551,7 @@ fun DrawingCanvas(
                             lassoPoints.clear()
                         }
                         isDrawing = false
+                        tapDownScreen = null
                         shapeStart = null
                         shapeEnd = null
                         buttonEraserLatched = false
@@ -700,11 +737,23 @@ fun DrawingCanvas(
         // 8. Render the brush hover cursor (screen space). The eraser has its own
         // indicator above, drawn in canvas space because its size is a document size.
         hoverOffset?.let { hoverPos ->
-            drawCircle(
-                color = toolConfig.currentActiveColor,
-                radius = (toolConfig.currentActiveSize * viewportState.effectiveScale) / 2f,
-                center = hoverPos
-            )
+            if (toolConfig.activeTool == ToolType.TYPEWRITER) {
+                // A text cursor as tall as a line of the chosen size: tapping here puts the
+                // top-left of the new text box at the pen tip.
+                val height = toolConfig.textSize * 1.2f * viewportState.effectiveScale
+                drawLine(
+                    color = toolConfig.penColor,
+                    start = hoverPos,
+                    end = hoverPos + Offset(0f, height),
+                    strokeWidth = 2f
+                )
+            } else {
+                drawCircle(
+                    color = toolConfig.currentActiveColor,
+                    radius = (toolConfig.currentActiveSize * viewportState.effectiveScale) / 2f,
+                    center = hoverPos
+                )
+            }
         }
     }
 }
@@ -738,30 +787,41 @@ private val ERASER_FILL = Color(0xA0F66151)
 private val ERASER_PROXIMITY_FILL = Color(0x33F66151)
 
 /**
- * Trashes every stroke the eraser square touches, Rnote's default
- * `EraserStyle::TrashCollidingStrokes`. [onFirstHit] fires before the first removal of a
- * gesture, so the whole drag collapses into one undo step rather than one per frame.
+ * Rnote's two eraser styles. `TrashCollidingStrokes` (the default) removes every stroke
+ * the eraser square touches; `SplitCollidingStrokes` ([split]) cuts out only the part of
+ * each ink stroke under it. Shapes are removed whole either way, and text and images are
+ * left alone, as in Rnote. [onFirstHit] fires before the first change of a gesture, so
+ * the whole drag collapses into one undo step rather than one per frame.
  */
 private fun eraseAt(
     center: Offset,
     eraserWidth: Float,
+    split: Boolean,
     strokes: List<Stroke>,
     onEraseStrokes: (List<Stroke>) -> Unit,
+    onSplitStrokes: (Map<String, List<Stroke>>) -> Unit,
     overlays: List<NativeCanvasElement>,
     onEraseNatives: (List<NativeCanvasElement>) -> Unit,
     onFirstHit: () -> Unit
 ) {
     val bounds = EraserHitTest.eraserBounds(center, eraserWidth)
-    val hit = EraserHitTest.collidingStrokes(bounds, strokes)
-    // Like Rnote's trash eraser: ink and shapes go, text and images stay.
+    val hit = if (split) emptyList() else EraserHitTest.collidingStrokes(bounds, strokes)
+    val pieces = LinkedHashMap<String, List<Stroke>>()
+    if (split) {
+        for (stroke in strokes) EraserHitTest.splitStroke(bounds, stroke)?.let { pieces[stroke.id] = it }
+    }
     val hitShapes = overlays.filter {
         it is NativeShapeElement &&
             NativeEditing.eraserHits(it, bounds.left, bounds.top, bounds.right, bounds.bottom)
     }
-    if (hit.isNotEmpty() || hitShapes.isNotEmpty()) onFirstHit()
+    if (hit.isNotEmpty() || pieces.isNotEmpty() || hitShapes.isNotEmpty()) onFirstHit()
     if (hit.isNotEmpty()) onEraseStrokes(hit)
+    if (pieces.isNotEmpty()) onSplitStrokes(pieces)
     if (hitShapes.isNotEmpty()) onEraseNatives(hitShapes)
 }
+
+/** How far (screen px) a Typewriter tap may drift and still count as a tap. */
+private const val TAP_SLOP_PX = 24f
 
 /** What a page or image is rendered from; the key its bitmap is kept under. */
 private fun imageKey(el: NativeCanvasElement): Any? = when (el) {

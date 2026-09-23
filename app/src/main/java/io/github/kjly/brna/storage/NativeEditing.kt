@@ -2,6 +2,7 @@ package io.github.kjly.brna.storage
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
 import io.github.kjly.brna.model.EllipseShape
@@ -24,7 +25,7 @@ import kotlin.math.sin
 
 /**
  * Editing for the desktop elements this app used to only display — text, shapes, images,
- * PDF pages — and creating new shapes. Every element that carries the JSON it was read
+ * PDF pages — and creating new shapes and text. Every element that carries the JSON it was read
  * from ([NativeShapeElement.raw] etc.) gets that JSON changed along with it, so a moved
  * text box is written back moved and still has every attribute the model doesn't know.
  */
@@ -278,4 +279,174 @@ object NativeEditing {
         return RnoteNativeParser.parseElementJson("""{"shapestroke":{"shape":$shape,"style":$style}}""")
             as? NativeShapeElement
     }
+
+    // ── Text (the Typewriter) ─────────────────────────────────────────────────
+
+    /**
+     * How wide a new text box may grow before it wraps: Rnote's typewriter default of 600,
+     * narrowed so text typed on a page wraps at that page's right edge rather than running
+     * off it — unless that would leave a column too narrow to write in.
+     */
+    fun typewriterWrapWidth(x: Float, pageWidth: Float): Float {
+        if (pageWidth <= 0f) return TEXT_WIDTH_DEFAULT
+        val pageRight = (kotlin.math.floor(x / pageWidth) + 1f) * pageWidth
+        val room = pageRight - x - TEXT_PAGE_MARGIN
+        return if (room >= TEXT_WIDTH_MIN) minOf(TEXT_WIDTH_DEFAULT, room) else TEXT_WIDTH_DEFAULT
+    }
+
+    /**
+     * A new text box with its top-left corner at ([x], [y]), written the way desktop
+     * Rnote's typewriter writes one and read back through the normal parser. Null for
+     * text that is only whitespace, which Rnote doesn't keep either.
+     */
+    fun createText(
+        text: String,
+        x: Float, y: Float,
+        fontSize: Float,
+        color: RnoteNativeColor,
+        maxWidth: Float?
+    ): NativeTextElement? {
+        if (text.isBlank()) return null
+        val style = JsonObject().apply {
+            addProperty("font_family", TEXT_FONT_FAMILY)
+            addProperty("font_size", round3(fontSize.toDouble()))
+            addProperty("font_weight", 500)
+            addProperty("font_style", "regular")
+            add("color", colorJson(color))
+            if (maxWidth != null) addProperty("max_width", round3(maxWidth.toDouble()))
+            else add("max_width", JsonNull.INSTANCE)
+            addProperty("alignment", "start")
+            add("ranged_text_attributes", JsonArray())
+        }
+        val obj = JsonObject().apply {
+            addProperty("text", text)
+            add("transform", affineJson(floatArrayOf(1f, 0f, 0f, 1f, x, y)))
+            add("text_style", style)
+        }
+        return parseText(obj)
+    }
+
+    /**
+     * [el] with its text replaced, everything else kept — font, colour, position, and
+     * the bold/italic/underline ranges desktop Rnote put on parts of it, which are moved
+     * along with the text around the edit. Null when the new text is blank: the caller
+     * deletes the box, as Rnote does with an emptied one.
+     */
+    fun withText(el: NativeTextElement, newText: String): NativeTextElement? {
+        if (newText.isBlank()) return null
+        val obj = el.raw?.takeIf { it.isJsonObject }?.deepCopy()?.asJsonObject ?: textJson(el)
+        obj.addProperty("text", newText)
+        val style = obj.get("text_style")
+        if (style != null && style.isJsonObject) {
+            val ranges = style.asJsonObject.get("ranged_text_attributes")
+            if (ranges != null && ranges.isJsonArray) {
+                style.asJsonObject.add("ranged_text_attributes", shiftRanges(ranges.asJsonArray, el.text, newText))
+            }
+        }
+        return parseText(obj)
+    }
+
+    /** The topmost text box at ([x], [y]), if any; [slop] widens each box for a fingertip. */
+    fun textAt(elements: List<NativeCanvasElement>, x: Float, y: Float, slop: Float = 0f): NativeTextElement? =
+        elements.lastOrNull {
+            it is NativeTextElement &&
+                x >= it.minX - slop && x <= it.maxX + slop && y >= it.minY - slop && y <= it.maxY + slop
+        } as NativeTextElement?
+
+    /**
+     * Moves Rnote's `ranged_text_attributes` from [old] to [new]. Ranges are UTF-8 byte
+     * offsets (Rust string indices). The edit is taken to be the part between the two
+     * texts' common prefix and suffix: ranges before it stay, ranges after it shift,
+     * a range around it grows or shrinks with it, and whatever of a range lay inside the
+     * replaced part is dropped.
+     */
+    internal fun shiftRanges(ranges: JsonArray, old: String, new: String): JsonArray {
+        var p = 0
+        val maxP = minOf(old.length, new.length)
+        while (p < maxP && old[p] == new[p]) p++
+        // Never split a surrogate pair: back off to the start of the character.
+        if (p in 1 until old.length && Character.isLowSurrogate(old[p])) p--
+        var s = 0
+        val maxS = minOf(old.length, new.length) - p
+        while (s < maxS && old[old.length - 1 - s] == new[new.length - 1 - s]) s++
+        if (s > 0 && Character.isLowSurrogate(old[old.length - s])) s--
+
+        val prefixEnd = utf8Length(old, 0, p)
+        val oldChangeEnd = utf8Length(old, 0, old.length - s)
+        val newLength = utf8Length(new, 0, new.length)
+        val delta = newLength - utf8Length(old, 0, old.length)
+
+        val out = JsonArray()
+        for (item in ranges) {
+            if (!item.isJsonObject) continue
+            val range = item.asJsonObject.get("range")
+            if (range == null || !range.isJsonObject) { out.add(item); continue }
+            val a = range.asJsonObject.get("start")?.asInt ?: continue
+            val b = range.asJsonObject.get("end")?.asInt ?: continue
+            val na = when {
+                a <= prefixEnd -> a
+                a >= oldChangeEnd -> a + delta
+                else -> oldChangeEnd + delta
+            }.coerceIn(0, newLength)
+            val nb = when {
+                b <= prefixEnd -> b
+                b >= oldChangeEnd -> b + delta
+                else -> prefixEnd
+            }.coerceIn(0, newLength)
+            if (nb <= na) continue
+            val moved = item.asJsonObject.deepCopy()
+            moved.add("range", JsonObject().apply {
+                addProperty("start", na)
+                addProperty("end", nb)
+            })
+            out.add(moved)
+        }
+        return out
+    }
+
+    private fun utf8Length(s: String, from: Int, to: Int): Int =
+        s.substring(from, to).toByteArray(Charsets.UTF_8).size
+
+    /** JSON for a text element that came without the JSON it was read from. */
+    private fun textJson(el: NativeTextElement): JsonObject = JsonObject().apply {
+        addProperty("text", el.text)
+        add("transform", affineJson(el.transform))
+        add("text_style", JsonObject().apply {
+            addProperty("font_family", el.fontFamily)
+            addProperty("font_size", round3(el.fontSize.toDouble()))
+            addProperty("font_weight", el.fontWeight)
+            addProperty("font_style", if (el.italic) "italic" else "regular")
+            add("color", colorJson(el.color))
+            val w = el.maxWidth
+            if (w != null) addProperty("max_width", round3(w.toDouble())) else add("max_width", JsonNull.INSTANCE)
+            addProperty("alignment", el.alignment)
+            add("ranged_text_attributes", JsonArray())
+        })
+    }
+
+    private fun parseText(inner: JsonObject): NativeTextElement? {
+        val wrapper = JsonObject().apply { add("textstroke", inner) }
+        return RnoteNativeParser.parseElementJson(wrapper.toString()) as? NativeTextElement
+    }
+
+    /** Rnote's column-major 3×3 `affine` for our [a, b, c, d, tx, ty]. */
+    private fun affineJson(t: FloatArray) = JsonObject().apply {
+        add("affine", JsonArray().apply {
+            listOf(t[0], t[1], 0f, t[2], t[3], 0f, t[4], t[5], 1f).forEach { add(round3(it.toDouble())) }
+        })
+    }
+
+    private fun colorJson(c: RnoteNativeColor) = JsonObject().apply {
+        addProperty("r", round3(c.r.toDouble()))
+        addProperty("g", round3(c.g.toDouble()))
+        addProperty("b", round3(c.b.toDouble()))
+        addProperty("a", round3(c.a.toDouble()))
+    }
+
+    /** Rnote's `TextStyle::FONT_FAMILY_DEFAULT`. */
+    const val TEXT_FONT_FAMILY = "serif"
+    /** Rnote's typewriter `text_width` default. */
+    const val TEXT_WIDTH_DEFAULT = 600f
+    private const val TEXT_WIDTH_MIN = 150f
+    private const val TEXT_PAGE_MARGIN = 20f
 }

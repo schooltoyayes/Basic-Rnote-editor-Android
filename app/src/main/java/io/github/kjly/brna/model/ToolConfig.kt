@@ -4,9 +4,8 @@ import androidx.compose.ui.graphics.Color
 
 /**
  * Matches desktop Rnote's six "pens" (Brush, Shaper, Typewriter, Eraser,
- * Selector, Tools) — see penpicker.ui in the flxzt/rnote source. TOOLS has a UI slot
- * in [io.github.kjly.brna.ui.components.PenPicker] but no implementation yet;
- * selecting it is a no-op. See HANDOFF.md roadmap.
+ * Selector, Tools) — see penpicker.ui in the flxzt/rnote source. TOOLS is Rnote's
+ * vertical space tool (see [io.github.kjly.brna.ui.canvas.VerticalSpace]).
  */
 enum class ToolType(val isImplemented: Boolean = true) {
     BRUSH,
@@ -14,7 +13,7 @@ enum class ToolType(val isImplemented: Boolean = true) {
     TYPEWRITER,
     ERASER,
     SELECTOR,
-    TOOLS(isImplemented = false)
+    TOOLS
 }
 
 /**

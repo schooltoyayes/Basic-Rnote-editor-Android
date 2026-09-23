@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.CropSquare
+import androidx.compose.material.icons.filled.Height
 import androidx.compose.material.icons.filled.Highlight
 import androidx.compose.material.icons.filled.HorizontalRule
 import androidx.compose.material.icons.filled.NorthEast
@@ -109,7 +110,7 @@ fun PenConfigStrip(
                 )
                 ToolType.SHAPER -> ShaperConfigPage(toolConfig, onShapeKindSelected, onSizeChanged)
                 ToolType.TYPEWRITER -> TypewriterConfigPage(toolConfig, onSizeChanged)
-                ToolType.TOOLS -> StubConfigPage("Tools")
+                ToolType.TOOLS -> ToolsConfigPage()
             }
         }
     }
@@ -238,16 +239,23 @@ private fun SelectorConfigPage(
     StripIconToggle(GeneratedIcons.SelectionLockAspectRatio, "Lock Aspect Ratio", selected = lockAspectRatio, implemented = true, onClick = onLockAspectRatioToggled)
 }
 
-// ── Stub pages (Shaper / Typewriter / Tools) ────────────────────────────
+// ── Tools ────────────────────────────────────────────────────────────────
 
+/**
+ * Rnote's Tools pen. Of its four styles only Vertical Space, the default, is here; the
+ * others (Offset Camera, Zoom, Laser) are covered by pinch and pan or have no use yet.
+ */
 @Composable
-private fun StubConfigPage(name: String) {
+private fun ToolsConfigPage() {
+    StripIconToggle(Icons.Default.Height, "Vertical Space", selected = true, implemented = true) {}
+    StripDivider()
     Text(
-        text = "$name\ncoming\nsoon",
+        text = "Drag\ndown to\nmake\nroom",
         color = BrnaColors.TextSecondaryOnPanel,
         fontSize = 10.sp,
         lineHeight = 12.sp,
-        modifier = Modifier.padding(vertical = 8.dp)
+        textAlign = TextAlign.Center,
+        modifier = Modifier.padding(vertical = 4.dp)
     )
 }
 

@@ -84,6 +84,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import io.github.kjly.brna.ui.canvas.DrawingCanvas
+import io.github.kjly.brna.ui.canvas.SelectionManager
 import io.github.kjly.brna.ui.components.ColorPicker
 import io.github.kjly.brna.ui.components.ExportSheet
 import io.github.kjly.brna.ui.components.PageSettingsSheet
@@ -1223,6 +1224,21 @@ class MainActivity : ComponentActivity() {
                                 textEditTarget = TextEditTarget(
                                     x, y, NativeEditing.textAt(documentNativeElements, x, y, slop)
                                 )
+                            },
+                            onVerticalSpace = { dy, strokeIds, natives ->
+                                undoStack.add(snapshot())
+                                redoStack.clear()
+                                // In place, so every stroke keeps its position in the drawing order.
+                                val shift = Offset(0f, dy)
+                                for (i in strokes.indices) {
+                                    if (strokes[i].id in strokeIds) {
+                                        strokes[i] = SelectionManager.translateStrokes(listOf(strokes[i]), shift).single()
+                                    }
+                                }
+                                documentNativeElements = documentNativeElements.map {
+                                    if (it in natives) NativeEditing.translate(it, 0f, dy) else it
+                                }
+                                isModified = true
                             },
                         )
 

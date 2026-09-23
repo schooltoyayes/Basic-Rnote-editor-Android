@@ -1,0 +1,988 @@
+From 161892cc651ec4c51a8b1d53cbed017c0bec6e70 Mon Sep 17 00:00:00 2001
+From: claude <a@b>
+Date: Wed, 23 Sep 2026 15:45:14 +0000
+Subject: [PATCH] Shaper tool; select, move, delete and erase desktop elements;
+ undo covers them
+
+---
+ .../java/io/github/kjly/brna/MainActivity.kt  |  98 ++++--
+ .../io/github/kjly/brna/model/ToolConfig.kt   |  10 +-
+ .../kjly/brna/render/NativeElementRenderer.kt |  13 +-
+ .../github/kjly/brna/storage/NativeEditing.kt | 281 ++++++++++++++++++
+ .../kjly/brna/storage/RnoteNativeParser.kt    |  16 +
+ .../kjly/brna/ui/canvas/DrawingCanvas.kt      | 170 ++++++++---
+ .../kjly/brna/ui/components/PenConfigStrip.kt |  36 ++-
+ .../kjly/brna/storage/NativeEditingTest.kt    | 117 ++++++++
+ 8 files changed, 679 insertions(+), 62 deletions(-)
+ create mode 100644 app/src/main/java/io/github/kjly/brna/storage/NativeEditing.kt
+ create mode 100644 app/src/test/java/io/github/kjly/brna/storage/NativeEditingTest.kt
+
+diff --git a/app/src/main/java/io/github/kjly/brna/MainActivity.kt b/app/src/main/java/io/github/kjly/brna/MainActivity.kt
+index 39fa4ec..9fb898b 100644
+--- a/app/src/main/java/io/github/kjly/brna/MainActivity.kt
++++ b/app/src/main/java/io/github/kjly/brna/MainActivity.kt
+@@ -78,2 +78,8 @@ import io.github.kjly.brna.ui.theme.BabyRnoteTheme
+ 
++/**
++ * One undo step: the ink and the desktop elements together, so undoing a Clear Canvas
++ * or an erased shape brings back everything it took.
++ */
++private data class DocSnapshot(val strokes: List<Stroke>, val natives: List<NativeCanvasElement>)
++
+ class MainActivity : ComponentActivity() {
+@@ -548,4 +554,4 @@ class MainActivity : ComponentActivity() {
+             val strokes = remember { mutableStateListOf<Stroke>() }
+-            val undoStack = remember { mutableStateListOf<List<Stroke>>() }
+-            val redoStack = remember { mutableStateListOf<List<Stroke>>() }
++            val undoStack = remember { mutableStateListOf<DocSnapshot>() }
++            val redoStack = remember { mutableStateListOf<DocSnapshot>() }
+             val selectedStrokes = remember { mutableStateListOf<Stroke>() }
+@@ -554,2 +560,12 @@ class MainActivity : ComponentActivity() {
+             var documentNativeElements by remember { mutableStateOf<List<NativeCanvasElement>>(emptyList()) }
++            // Desktop elements (text, shapes, images) the selector holds, beside selectedStrokes.
++            val selectedNatives = remember { mutableStateListOf<NativeCanvasElement>() }
++            val snapshot = { DocSnapshot(strokes.toList(), documentNativeElements) }
++            val restore = { state: DocSnapshot ->
++                strokes.clear()
++                strokes.addAll(state.strokes)
++                documentNativeElements = state.natives
++                selectedStrokes.clear()
++                selectedNatives.clear()
++            }
+ 
+@@ -585,2 +601,3 @@ class MainActivity : ComponentActivity() {
+                 selectedStrokes.clear()
++                selectedNatives.clear()
+                 strokes.addAll(doc.strokes)
+@@ -621,2 +638,3 @@ class MainActivity : ComponentActivity() {
+                 selectedStrokes.clear()
++                selectedNatives.clear()
+                 documentNativeElements = emptyList()
+@@ -676,2 +694,4 @@ class MainActivity : ComponentActivity() {
+                 // Ahead of the rest: the document layer is drawn first, under everything.
++                undoStack.add(snapshot())
++                redoStack.clear()
+                 documentNativeElements = pages + documentNativeElements
+@@ -692,6 +712,4 @@ class MainActivity : ComponentActivity() {
+                 if (undoStack.isNotEmpty()) {
+-                    redoStack.add(strokes.toList())
+-                    val previousState = undoStack.removeAt(undoStack.lastIndex)
+-                    strokes.clear()
+-                    strokes.addAll(previousState)
++                    redoStack.add(snapshot())
++                    restore(undoStack.removeAt(undoStack.lastIndex))
+                     isModified = true
+@@ -702,6 +720,4 @@ class MainActivity : ComponentActivity() {
+                 if (redoStack.isNotEmpty()) {
+-                    undoStack.add(strokes.toList())
+-                    val nextState = redoStack.removeAt(redoStack.lastIndex)
+-                    strokes.clear()
+-                    strokes.addAll(nextState)
++                    undoStack.add(snapshot())
++                    restore(redoStack.removeAt(redoStack.lastIndex))
+                     isModified = true
+@@ -776,3 +792,3 @@ class MainActivity : ComponentActivity() {
+                                 if (strokes.isNotEmpty() || documentNativeElements.isNotEmpty()) {
+-                                    undoStack.add(strokes.toList())
++                                    undoStack.add(snapshot())
+                                     redoStack.clear()
+@@ -780,2 +796,3 @@ class MainActivity : ComponentActivity() {
+                                     selectedStrokes.clear()
++                                    selectedNatives.clear()
+                                     documentNativeElements = emptyList()
+@@ -804,3 +821,3 @@ class MainActivity : ComponentActivity() {
+                             onAddStroke = { newStroke ->
+-                                undoStack.add(strokes.toList())
++                                undoStack.add(snapshot())
+                                 redoStack.clear()
+@@ -813,3 +830,3 @@ class MainActivity : ComponentActivity() {
+                                 // rubbing out five strokes cost five undos to put back.
+-                                undoStack.add(strokes.toList())
++                                undoStack.add(snapshot())
+                                 redoStack.clear()
+@@ -822,3 +839,3 @@ class MainActivity : ComponentActivity() {
+                             onSelectionDragStart = {
+-                                undoStack.add(strokes.toList())
++                                undoStack.add(snapshot())
+                                 redoStack.clear()
+@@ -833,2 +850,21 @@ class MainActivity : ComponentActivity() {
+                             nativeElements = documentNativeElements,
++                            selectedNatives = selectedNatives,
++                            onAddShape = { shape ->
++                                undoStack.add(snapshot())
++                                redoStack.clear()
++                                documentNativeElements = documentNativeElements + shape
++                                isModified = true
++                            },
++                            onEraseNatives = { erased ->
++                                // The undo snapshot was taken by onEraseStart for the gesture.
++                                val gone = java.util.Collections.newSetFromMap(
++                                    java.util.IdentityHashMap<NativeCanvasElement, Boolean>()
++                                ).apply { addAll(erased) }
++                                documentNativeElements = documentNativeElements.filter { it !in gone }
++                                isModified = true
++                            },
++                            onNativesMoved = { moved ->
++                                documentNativeElements = documentNativeElements.map { moved[it] ?: it }
++                                isModified = true
++                            },
+                         )
+@@ -854,3 +890,3 @@ class MainActivity : ComponentActivity() {
+                             toolConfig = toolConfig,
+-                            hasActiveSelection = selectedStrokes.isNotEmpty(),
++                            hasActiveSelection = selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty(),
+                             onBrushStyleSelected = { style -> toolConfig = toolConfig.copy(brushStyle = style) },
+@@ -858,4 +894,4 @@ class MainActivity : ComponentActivity() {
+                             onDeleteSelection = {
+-                                if (selectedStrokes.isNotEmpty()) {
+-                                    undoStack.add(strokes.toList())
++                                if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
++                                    undoStack.add(snapshot())
+                                     redoStack.clear()
+@@ -863,3 +899,8 @@ class MainActivity : ComponentActivity() {
+                                     strokes.removeAll { it.id in ids }
++                                    val gone = java.util.Collections.newSetFromMap(
++                                        java.util.IdentityHashMap<NativeCanvasElement, Boolean>()
++                                    ).apply { addAll(selectedNatives) }
++                                    documentNativeElements = documentNativeElements.filter { it !in gone }
+                                     selectedStrokes.clear()
++                                    selectedNatives.clear()
+                                     isModified = true
+@@ -868,4 +909,4 @@ class MainActivity : ComponentActivity() {
+                             onDuplicateSelection = {
+-                                if (selectedStrokes.isNotEmpty()) {
+-                                    undoStack.add(strokes.toList())
++                                if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
++                                    undoStack.add(snapshot())
+                                     redoStack.clear()
+@@ -881,2 +922,8 @@ class MainActivity : ComponentActivity() {
+                                     selectedStrokes.addAll(duplicates)
++                                    val nativeCopies = selectedNatives.map {
++                                        io.github.kjly.brna.storage.NativeEditing.translate(it, offset, offset)
++                                    }
++                                    documentNativeElements = documentNativeElements + nativeCopies
++                                    selectedNatives.clear()
++                                    selectedNatives.addAll(nativeCopies)
+                                     isModified = true
+@@ -887,4 +934,10 @@ class MainActivity : ComponentActivity() {
+                                 selectedStrokes.addAll(strokes)
++                                selectedNatives.clear()
++                                selectedNatives.addAll(documentNativeElements.filter { it !is NativeBrushStroke })
+                             },
+-                            onDeselectAll = { selectedStrokes.clear() },
++                            onDeselectAll = {
++                                selectedStrokes.clear()
++                                selectedNatives.clear()
++                            },
++                            onShapeKindSelected = { kind -> toolConfig = toolConfig.copy(shapeKind = kind) },
+                             modifier = Modifier
+@@ -901,3 +954,6 @@ class MainActivity : ComponentActivity() {
+                                 toolConfig = toolConfig.copy(activeTool = newTool)
+-                                if (newTool != ToolType.SELECTOR) selectedStrokes.clear()
++                                if (newTool != ToolType.SELECTOR) {
++                                    selectedStrokes.clear()
++                                    selectedNatives.clear()
++                                }
+                             },
+diff --git a/app/src/main/java/io/github/kjly/brna/model/ToolConfig.kt b/app/src/main/java/io/github/kjly/brna/model/ToolConfig.kt
+index f214b6d..0f53cf3 100644
+--- a/app/src/main/java/io/github/kjly/brna/model/ToolConfig.kt
++++ b/app/src/main/java/io/github/kjly/brna/model/ToolConfig.kt
+@@ -12,3 +12,3 @@ enum class ToolType(val isImplemented: Boolean = true) {
+     BRUSH,
+-    SHAPER(isImplemented = false),
++    SHAPER,
+     TYPEWRITER(isImplemented = false),
+@@ -19,2 +19,5 @@ enum class ToolType(val isImplemented: Boolean = true) {
+ 
++/** The shapes the Shaper draws — the basic ones from desktop Rnote's shape picker. */
++enum class ShapeKind { LINE, ARROW, RECTANGLE, ELLIPSE }
++
+ /**
+@@ -67,2 +70,5 @@ data class ToolConfig(
+     val isPressureSensitive: Boolean = true,
++    /** The Shaper's current shape and width; Rnote's shaper defaults to a 2.0 line. */
++    val shapeKind: ShapeKind = ShapeKind.LINE,
++    val shaperWidth: Float = 2f,
+     /** When false (default), only stylus/S-Pen input can draw. Finger touch is reserved for pan & zoom. */
+@@ -76,2 +82,3 @@ data class ToolConfig(
+             activeTool == ToolType.ERASER -> eraserWidth
++            activeTool == ToolType.SHAPER -> shaperWidth
+             isMarker -> highlighterWidth
+@@ -94,2 +101,3 @@ data class ToolConfig(
+             activeTool == ToolType.ERASER -> copy(eraserWidth = clamped)
++            activeTool == ToolType.SHAPER -> copy(shaperWidth = clamped)
+             isMarker -> copy(highlighterWidth = clamped)
+diff --git a/app/src/main/java/io/github/kjly/brna/render/NativeElementRenderer.kt b/app/src/main/java/io/github/kjly/brna/render/NativeElementRenderer.kt
+index 4fd7169..e9526bf 100644
+--- a/app/src/main/java/io/github/kjly/brna/render/NativeElementRenderer.kt
++++ b/app/src/main/java/io/github/kjly/brna/render/NativeElementRenderer.kt
+@@ -62,4 +62,5 @@ class NativeElementRenderer {
+ 
+-    fun drawShape(canvas: Canvas, el: NativeShapeElement) {
+-        val path = shapePaths.getOrPut(el) { pathOf(el.shape) }
++    /** [cache] false for a shape drawn only once, like the Shaper's preview. */
++    fun drawShape(canvas: Canvas, el: NativeShapeElement, cache: Boolean = true) {
++        val path = if (cache) shapePaths.getOrPut(el) { pathOf(el.shape) } else pathOf(el.shape)
+         if (el.fillColor.a > 0f) {
+@@ -94,2 +95,10 @@ class NativeElementRenderer {
+ 
++    /** Drops cached layouts and paths of elements no longer in the document. */
++    fun retainOnly(elements: Collection<NativeCanvasElement>) {
++        val keep = java.util.Collections.newSetFromMap(IdentityHashMap<NativeCanvasElement, Boolean>())
++        keep.addAll(elements)
++        textLayouts.keys.retainAll(keep)
++        shapePaths.keys.retainAll(keep)
++    }
++
+     private fun buildLayout(el: NativeTextElement): StaticLayout {
+diff --git a/app/src/main/java/io/github/kjly/brna/storage/NativeEditing.kt b/app/src/main/java/io/github/kjly/brna/storage/NativeEditing.kt
+new file mode 100644
+index 0000000..2b6707c
+--- /dev/null
++++ b/app/src/main/java/io/github/kjly/brna/storage/NativeEditing.kt
+@@ -0,0 +1,281 @@
++package io.github.kjly.brna.storage
++
++import com.google.gson.JsonArray
++import com.google.gson.JsonElement
++import com.google.gson.JsonObject
++import com.google.gson.JsonPrimitive
++import io.github.kjly.brna.model.EllipseShape
++import io.github.kjly.brna.model.LineShape
++import io.github.kjly.brna.model.NativeBitmapElement
++import io.github.kjly.brna.model.NativeBrushStroke
++import io.github.kjly.brna.model.NativeCanvasElement
++import io.github.kjly.brna.model.NativeShapeElement
++import io.github.kjly.brna.model.NativeTextElement
++import io.github.kjly.brna.model.NativeVectorImageElement
++import io.github.kjly.brna.model.PathOp
++import io.github.kjly.brna.model.PathShape
++import io.github.kjly.brna.model.RectShape
++import io.github.kjly.brna.model.RnoteNativeColor
++import io.github.kjly.brna.model.ShapeKind
++import java.util.Locale
++import kotlin.math.abs
++import kotlin.math.cos
++import kotlin.math.sin
++
++/**
++ * Editing for the desktop elements this app used to only display — text, shapes, images,
++ * PDF pages — and creating new shapes. Every element that carries the JSON it was read
++ * from ([NativeShapeElement.raw] etc.) gets that JSON changed along with it, so a moved
++ * text box is written back moved and still has every attribute the model doesn't know.
++ */
++object NativeEditing {
++
++    // ── Moving ────────────────────────────────────────────────────────────────
++
++    /** [el] moved by ([dx], [dy]). Brush strokes are returned unchanged: they live in the stroke list. */
++    fun translate(el: NativeCanvasElement, dx: Float, dy: Float): NativeCanvasElement = when (el) {
++        is NativeTextElement -> el.copy(
++            transform = shifted(el.transform, dx, dy),
++            minX = el.minX + dx, minY = el.minY + dy, maxX = el.maxX + dx, maxY = el.maxY + dy,
++            raw = el.raw?.let { shiftTree(it, dx, dy) }
++        )
++        is NativeShapeElement -> el.copy(
++            shape = when (val s = el.shape) {
++                is LineShape -> LineShape(s.x1 + dx, s.y1 + dy, s.x2 + dx, s.y2 + dy)
++                is RectShape -> s.copy(transform = shifted(s.transform, dx, dy))
++                is EllipseShape -> s.copy(transform = shifted(s.transform, dx, dy))
++                is PathShape -> PathShape(s.ops.map { shiftOp(it, dx, dy) })
++            },
++            minX = el.minX + dx, minY = el.minY + dy, maxX = el.maxX + dx, maxY = el.maxY + dy,
++            raw = el.raw?.let { shiftTree(it, dx, dy) }
++        )
++        is NativeBitmapElement -> el.copy(
++            transform = shifted(el.transform, dx, dy),
++            rect = el.rect?.let { it.copy(transform = shifted(it.transform, dx, dy)) },
++            minX = el.minX + dx, minY = el.minY + dy, maxX = el.maxX + dx, maxY = el.maxY + dy,
++            raw = el.raw?.let { shiftTree(it, dx, dy) }
++        )
++        is NativeVectorImageElement -> NativeVectorImageElement(
++            el.svgData, el.intrinsicWidth, el.intrinsicHeight, el.halfExtentX, el.halfExtentY,
++            shifted(el.transform, dx, dy), el.layer,
++            el.minX + dx, el.minY + dy, el.maxX + dx, el.maxY + dy
++        )
++        is NativeBrushStroke -> el
++    }
++
++    private fun shifted(t: FloatArray, dx: Float, dy: Float) =
++        floatArrayOf(t[0], t[1], t[2], t[3], t[4] + dx, t[5] + dy)
++
++    private fun shiftOp(op: PathOp, dx: Float, dy: Float): PathOp = when (op) {
++        is PathOp.MoveTo -> PathOp.MoveTo(op.x + dx, op.y + dy)
++        is PathOp.LineTo -> PathOp.LineTo(op.x + dx, op.y + dy)
++        is PathOp.QuadTo -> PathOp.QuadTo(op.x1 + dx, op.y1 + dy, op.x + dx, op.y + dy)
++        is PathOp.CubicTo -> PathOp.CubicTo(op.x1 + dx, op.y1 + dy, op.x2 + dx, op.y2 + dy, op.x + dx, op.y + dy)
++        PathOp.Close -> op
++    }
++
++    /** Point fields of Rnote's shapes (and the legacy corner/centre forms). */
++    private val POINT_KEYS = setOf("start", "end", "tip", "cp", "cp1", "cp2", "top_left", "center")
++
++    /**
++     * A copy of an element's JSON with everything positional moved: every `affine`
++     * transform's translation, every named point, and the vertices of a polyline's or
++     * polygon's `path`. Colours, sizes and radii are left alone — nothing else in Rnote's
++     * element JSON is a position. Styles are skipped outright, so a stroke width is never
++     * mistaken for a coordinate.
++     */
++    private fun shiftTree(tree: JsonElement, dx: Float, dy: Float): JsonElement {
++        val copy = tree.deepCopy()
++        shiftIn(copy, dx, dy)
++        return copy
++    }
++
++    private fun shiftIn(node: JsonElement, dx: Float, dy: Float) {
++        if (!node.isJsonObject) return
++        val obj = node.asJsonObject
++        for ((key, value) in obj.entrySet()) {
++            when {
++                key == "style" || key == "text_style" -> Unit
++                key == "affine" && value.isJsonArray && value.asJsonArray.size() == 9 -> {
++                    val a = value.asJsonArray
++                    a.set(6, JsonPrimitive(round3(a[6].asDouble + dx)))
++                    a.set(7, JsonPrimitive(round3(a[7].asDouble + dy)))
++                }
++                key in POINT_KEYS && isPoint(value) -> shiftPoint(value.asJsonArray, dx, dy)
++                key == "path" && value.isJsonArray -> value.asJsonArray.forEach {
++                    if (isPoint(it)) shiftPoint(it.asJsonArray, dx, dy)
++                }
++                value.isJsonObject -> shiftIn(value, dx, dy)
++            }
++        }
++    }
++
++    private fun isPoint(e: JsonElement) =
++        e.isJsonArray && e.asJsonArray.size() == 2 &&
++            e.asJsonArray.all { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
++
++    private fun shiftPoint(p: JsonArray, dx: Float, dy: Float) {
++        p.set(0, JsonPrimitive(round3(p[0].asDouble + dx)))
++        p.set(1, JsonPrimitive(round3(p[1].asDouble + dy)))
++    }
++
++    /** Rnote writes coordinates to three decimals; so do we. */
++    private fun round3(v: Double) = Math.round(v * 1000.0) / 1000.0
++
++    // ── Hit testing ───────────────────────────────────────────────────────────
++
++    /**
++     * Whether the eraser square hits [el]'s outline — Rnote's eraser removes shapes the
++     * way it removes ink, and leaves text and images alone (`trash_colliding_strokes`).
++     */
++    fun eraserHits(el: NativeShapeElement, left: Float, top: Float, right: Float, bottom: Float): Boolean {
++        val pad = el.strokeWidth / 2f
++        if (el.maxX + pad < left || el.minX - pad > right || el.maxY + pad < top || el.minY - pad > bottom) {
++            return false
++        }
++        val l = left - pad; val t = top - pad; val r = right + pad; val b = bottom + pad
++        // A filled shape is hit anywhere inside it, as it looks.
++        if (el.fillColor.a > 0f && l <= el.maxX && r >= el.minX && t <= el.maxY && b >= el.minY) {
++            val cx = (l + r) / 2f; val cy = (t + b) / 2f
++            if (cx in el.minX..el.maxX && cy in el.minY..el.maxY) return true
++        }
++        for (polyline in outline(el.shape)) {
++            for (i in 1 until polyline.size) {
++                val (x1, y1) = polyline[i - 1]
++                val (x2, y2) = polyline[i]
++                if (segmentHitsBox(x1, y1, x2, y2, l, t, r, b)) return true
++            }
++            if (polyline.size == 1 && polyline[0].first in l..r && polyline[0].second in t..b) return true
++        }
++        return false
++    }
++
++    /** The shape's outline as polylines in document coordinates, curves flattened. */
++    fun outline(shape: io.github.kjly.brna.model.NativeShapeKind): List<List<Pair<Float, Float>>> = when (shape) {
++        is LineShape -> listOf(listOf(shape.x1 to shape.y1, shape.x2 to shape.y2))
++        is RectShape -> {
++            val t = shape.transform
++            val hx = shape.halfExtentX; val hy = shape.halfExtentY
++            listOf(listOf(-hx to -hy, hx to -hy, hx to hy, -hx to hy, -hx to -hy).map { (x, y) ->
++                (t[0] * x + t[2] * y + t[4]) to (t[1] * x + t[3] * y + t[5])
++            })
++        }
++        is EllipseShape -> {
++            val t = shape.transform
++            listOf((0..48).map { i ->
++                val a = i * 2.0 * Math.PI / 48
++                val x = shape.radiusX * cos(a).toFloat(); val y = shape.radiusY * sin(a).toFloat()
++                (t[0] * x + t[2] * y + t[4]) to (t[1] * x + t[3] * y + t[5])
++            })
++        }
++        is PathShape -> {
++            val lines = mutableListOf<MutableList<Pair<Float, Float>>>()
++            var cx = 0f; var cy = 0f; var sx = 0f; var sy = 0f
++            for (op in shape.ops) {
++                when (op) {
++                    is PathOp.MoveTo -> { lines += mutableListOf(op.x to op.y); cx = op.x; cy = op.y; sx = cx; sy = cy }
++                    is PathOp.LineTo -> { lines.lastOrNull()?.add(op.x to op.y); cx = op.x; cy = op.y }
++                    is PathOp.QuadTo -> {
++                        val line = lines.lastOrNull() ?: continue
++                        for (i in 1..16) {
++                            val u = i / 16f; val v = 1 - u
++                            line += (v * v * cx + 2 * v * u * op.x1 + u * u * op.x) to
++                                (v * v * cy + 2 * v * u * op.y1 + u * u * op.y)
++                        }
++                        cx = op.x; cy = op.y
++                    }
++                    is PathOp.CubicTo -> {
++                        val line = lines.lastOrNull() ?: continue
++                        for (i in 1..16) {
++                            val u = i / 16f; val v = 1 - u
++                            line += (v * v * v * cx + 3 * v * v * u * op.x1 + 3 * v * u * u * op.x2 + u * u * u * op.x) to
++                                (v * v * v * cy + 3 * v * v * u * op.y1 + 3 * v * u * u * op.y2 + u * u * u * op.y)
++                        }
++                        cx = op.x; cy = op.y
++                    }
++                    PathOp.Close -> { lines.lastOrNull()?.add(sx to sy); cx = sx; cy = sy }
++                }
++            }
++            lines
++        }
++    }
++
++    /** Liang–Barsky: does the segment cross the box? */
++    private fun segmentHitsBox(
++        x1: Float, y1: Float, x2: Float, y2: Float,
++        l: Float, t: Float, r: Float, b: Float
++    ): Boolean {
++        var t0 = 0f; var t1 = 1f
++        val dx = x2 - x1; val dy = y2 - y1
++        val p = floatArrayOf(-dx, dx, -dy, dy)
++        val q = floatArrayOf(x1 - l, r - x1, y1 - t, b - y1)
++        for (i in 0..3) {
++            if (p[i] == 0f) {
++                if (q[i] < 0f) return false
++            } else {
++                val u = q[i] / p[i]
++                if (p[i] < 0f) { if (u > t1) return false; if (u > t0) t0 = u }
++                else { if (u < t0) return false; if (u < t1) t1 = u }
++            }
++        }
++        return true
++    }
++
++    /**
++     * Whether [el] lies entirely inside the lasso. Entirely, not partly: a lasso drawn
++     * across an imported PDF page to catch the notes on it must not pick up the page.
++     */
++    fun insideLasso(el: NativeCanvasElement, polygon: List<Pair<Float, Float>>): Boolean {
++        if (el is NativeBrushStroke || polygon.size < 3) return false
++        return listOf(el.minX to el.minY, el.maxX to el.minY, el.maxX to el.maxY, el.minX to el.maxY)
++            .all { (x, y) -> pointInPolygon(x, y, polygon) }
++    }
++
++    private fun pointInPolygon(x: Float, y: Float, polygon: List<Pair<Float, Float>>): Boolean {
++        var inside = false
++        var j = polygon.size - 1
++        for (i in polygon.indices) {
++            val (xi, yi) = polygon[i]
++            val (xj, yj) = polygon[j]
++            if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside
++            j = i
++        }
++        return inside
++    }
++
++    // ── Creating shapes ───────────────────────────────────────────────────────
++
++    /**
++     * A new shape dragged from ([x1], [y1]) to ([x2], [y2]), built as the JSON desktop
++     * Rnote writes for its own shaper and read back through the normal parser, so a shape
++     * drawn here is exactly what the file will hold. Rectangles and ellipses fill the
++     * dragged box; null for a drag too short to be a shape.
++     */
++    fun createShape(
++        kind: ShapeKind,
++        x1: Float, y1: Float, x2: Float, y2: Float,
++        color: RnoteNativeColor,
++        strokeWidth: Float
++    ): NativeShapeElement? {
++        if (abs(x2 - x1) < 1f && abs(y2 - y1) < 1f) return null
++        fun n(v: Float) = String.format(Locale.ROOT, "%.3f", v)
++        fun point(x: Float, y: Float) = "[${n(x)},${n(y)}]"
++        fun affine(cx: Float, cy: Float) = """{"affine":[1.0,0.0,0.0,0.0,1.0,0.0,${n(cx)},${n(cy)},1.0]}"""
++        val cx = (x1 + x2) / 2f; val cy = (y1 + y2) / 2f
++        val hx = abs(x2 - x1) / 2f; val hy = abs(y2 - y1) / 2f
++        val shape = when (kind) {
++            ShapeKind.LINE -> """{"line":{"start":${point(x1, y1)},"end":${point(x2, y2)}}}"""
++            ShapeKind.ARROW -> """{"arrow":{"start":${point(x1, y1)},"tip":${point(x2, y2)}}}"""
++            ShapeKind.RECTANGLE ->
++                """{"rect":{"cuboid":{"half_extents":${point(hx, hy)}},"transform":${affine(cx, cy)}}}"""
++            ShapeKind.ELLIPSE ->
++                """{"ellipse":{"radii":${point(hx, hy)},"transform":${affine(cx, cy)}}}"""
++        }
++        fun color(c: RnoteNativeColor) = """{"r":${n(c.r)},"g":${n(c.g)},"b":${n(c.b)},"a":${n(c.a)}}"""
++        val style = """{"smooth":{"stroke_width":${n(strokeWidth)},"stroke_color":${color(color)},""" +
++            """"fill_color":${color(RnoteNativeColor.TRANSPARENT)},"pressure_curve":"const",""" +
++            """"line_style":"solid","line_cap":"straight"}}"""
++        return RnoteNativeParser.parseElementJson("""{"shapestroke":{"shape":$shape,"style":$style}}""")
++            as? NativeShapeElement
++    }
++}
+diff --git a/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeParser.kt b/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeParser.kt
+index aecf14d..fc5eb0d 100644
+--- a/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeParser.kt
++++ b/app/src/main/java/io/github/kjly/brna/storage/RnoteNativeParser.kt
+@@ -54,2 +54,12 @@ object RnoteNativeParser {
+ 
++    /**
++     * One stroke_components value, e.g. `{"shapestroke": {...}}`, read exactly as it would
++     * be from a file — which is how shapes drawn in this app are built.
++     */
++    fun parseElementJson(json: String): NativeCanvasElement? {
++        val reader = JsonReader(java.io.StringReader(json))
++        reader.isLenient = true
++        return parseElementValue(reader)
++    }
++
+     // ── Internal holder types ─────────────────────────────────────────────────
+@@ -1076,2 +1086,8 @@ object RnoteNativeParser {
+     private fun parseColor(reader: JsonReader): RnoteNativeColor {
++        // Rnote's shape colours are `Option<Color>`: null means "not drawn", which reads
++        // as transparent. Reading it as an object threw, and took the whole file with it.
++        if (reader.peek() == JsonToken.NULL) {
++            reader.nextNull()
++            return RnoteNativeColor.TRANSPARENT
++        }
+         var r = 0f; var g = 0f; var b = 0f; var a = 1f
+diff --git a/app/src/main/java/io/github/kjly/brna/ui/canvas/DrawingCanvas.kt b/app/src/main/java/io/github/kjly/brna/ui/canvas/DrawingCanvas.kt
+index 15d6fde..2f4e0d1 100644
+--- a/app/src/main/java/io/github/kjly/brna/ui/canvas/DrawingCanvas.kt
++++ b/app/src/main/java/io/github/kjly/brna/ui/canvas/DrawingCanvas.kt
+@@ -38,2 +38,3 @@ import io.github.kjly.brna.model.NativeVectorImageElement
+ import io.github.kjly.brna.model.PaperStyle
++import io.github.kjly.brna.model.RnoteNativeColor
+ import io.github.kjly.brna.model.PressureCurve
+@@ -46,2 +47,3 @@ import io.github.kjly.brna.render.NativeElementRenderer
+ import io.github.kjly.brna.render.VectorImageRenderer
++import io.github.kjly.brna.storage.NativeEditing
+ import io.github.kjly.brna.render.composeStrokePath
+@@ -86,3 +88,11 @@ fun DrawingCanvas(
+     nativeElements: List<NativeCanvasElement> = emptyList(),
+-    modifier: Modifier = Modifier
++    modifier: Modifier = Modifier,
++    /** The desktop elements (text, shapes, images) the selector currently holds. */
++    selectedNatives: SnapshotStateList<NativeCanvasElement>? = null,
++    /** A shape the Shaper just finished drawing. */
++    onAddShape: (NativeShapeElement) -> Unit = {},
++    /** Shapes the eraser went over; part of the same gesture as [onEraseStrokes]. */
++    onEraseNatives: (List<NativeCanvasElement>) -> Unit = {},
++    /** Desktop elements the selector moved: old instance -> moved copy. */
++    onNativesMoved: (IdentityHashMap<NativeCanvasElement, NativeCanvasElement>) -> Unit = {}
+ ) {
+@@ -90,6 +100,6 @@ fun DrawingCanvas(
+     val overlays = remember(nativeElements) { nativeElements.filter(NativeElementRenderer::isOverlay) }
+-    val nativeRenderer = remember(nativeElements) {
+-        VectorImageRenderer.clearCache()
+-        NativeElementRenderer()
+-    }
++    // One renderer for the canvas's lifetime: its caches are per element, and editing
++    // replaces only the elements that changed.
++    val nativeRenderer = remember { NativeElementRenderer() }
++    LaunchedEffect(overlays) { nativeRenderer.retainOnly(overlays) }
+ 
+@@ -97,5 +107,11 @@ fun DrawingCanvas(
+     // (a PDF page can be megabytes of SVG). Until then a page shows as a blank sheet.
+-    val underlayBitmaps = remember(underlays) { mutableStateMapOf<Int, android.graphics.Bitmap>() }
++    // Keyed by the image data, not the element: moving a page makes a new element around
++    // the same data, and that must not be rendered all over again.
++    val underlayBitmaps = remember { mutableStateMapOf<Any, android.graphics.Bitmap>() }
+     LaunchedEffect(underlays) {
+-        underlays.forEachIndexed { i, el ->
++        val wanted = underlays.mapNotNull(::imageKey).toSet()
++        (underlayBitmaps.keys - wanted).forEach { underlayBitmaps.remove(it) }
++        for (el in underlays) {
++            val key = imageKey(el) ?: continue
++            if (key in underlayBitmaps) continue
+             val bitmap = withContext(Dispatchers.Default) {
+@@ -107,3 +123,3 @@ fun DrawingCanvas(
+             }
+-            if (bitmap != null) underlayBitmaps[i] = bitmap
++            if (bitmap != null) underlayBitmaps[key] = bitmap
+         }
+@@ -112,5 +128,5 @@ fun DrawingCanvas(
+     // Sharper renders of the visible part of each PDF page, made once the view has come
+-    // to rest at a zoom the one-off bitmap can't resolve. Keyed like underlayBitmaps.
++    // to rest at a zoom the one-off bitmap can't resolve.
+     var viewSize by remember { mutableStateOf(IntSize.Zero) }
+-    val detailTiles = remember(underlays) { mutableStateMapOf<Int, VectorImageRenderer.DetailTile>() }
++    val detailTiles = remember { mutableStateMapOf<NativeCanvasElement, VectorImageRenderer.DetailTile>() }
+     // underlayBitmaps.size is a key so a page whose base bitmap arrives while the view is
+@@ -125,9 +141,9 @@ fun DrawingCanvas(
+         val viewBottom = viewTop + viewSize.height / scale
+-        val wanted = HashMap<Int, VectorImageRenderer.DetailTile>()
+-        underlays.forEachIndexed { i, el ->
+-            if (el !is NativeVectorImageElement) return@forEachIndexed
+-            val base = underlayBitmaps[i] ?: return@forEachIndexed
++        val wanted = HashMap<NativeCanvasElement, VectorImageRenderer.DetailTile>()
++        underlays.forEach { el ->
++            if (el !is NativeVectorImageElement) return@forEach
++            val base = underlayBitmaps[el.svgData] ?: return@forEach
+             // Device pixels per document unit the base bitmap has to offer.
+             val basePxPerUnit = base.width / (el.maxX - el.minX).coerceAtLeast(1f)
+-            if (scale <= basePxPerUnit * 1.25f) return@forEachIndexed
++            if (scale <= basePxPerUnit * 1.25f) return@forEach
+             val l = maxOf(el.minX, viewLeft)
+@@ -136,7 +152,7 @@ fun DrawingCanvas(
+             val b = minOf(el.maxY, viewBottom)
+-            if (r <= l || b <= t) return@forEachIndexed
+-            val existing = detailTiles[i]
++            if (r <= l || b <= t) return@forEach
++            val existing = detailTiles[el]
+             if (existing != null && existing.pxPerUnit == scale && existing.covers(l, t, r, b)) {
+-                wanted[i] = existing
+-                return@forEachIndexed
++                wanted[el] = existing
++                return@forEach
+             }
+@@ -144,4 +160,4 @@ fun DrawingCanvas(
+                 VectorImageRenderer.renderRegion(el, l, t, r, b, scale)
+-            } ?: return@forEachIndexed
+-            wanted[i] = tile
++            } ?: return@forEach
++            wanted[el] = tile
+         }
+@@ -158,2 +174,6 @@ fun DrawingCanvas(
+ 
++    // The Shaper's drag, in canvas units; null when no shape is being drawn.
++    var shapeStart by remember { mutableStateOf<Offset?>(null) }
++    var shapeEnd by remember { mutableStateOf<Offset?>(null) }
++
+     val currentPoints = remember { mutableStateListOf<InkPoint>() }
+@@ -367,3 +387,3 @@ fun DrawingCanvas(
+ 
+-                        val boundingBox = SelectionManager.calculateBoundingBox(selectedStrokes)
++                        val boundingBox = selectionBounds(selectedStrokes, selectedNatives)
+                         if (activeTool == ToolType.SELECTOR && boundingBox != null) {
+@@ -380,2 +400,3 @@ fun DrawingCanvas(
+                                 selectedStrokes.clear()
++                                selectedNatives?.clear()
+                             }
+@@ -383,2 +404,7 @@ fun DrawingCanvas(
+ 
++                        if (activeTool == ToolType.SHAPER) {
++                            shapeStart = Offset(x, y)
++                            shapeEnd = Offset(x, y)
++                        }
++
+                         currentPoints.clear()
+@@ -391,3 +417,3 @@ fun DrawingCanvas(
+                             eraserCursorDown = true
+-                            eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes) {
++                            eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes, overlays, onEraseNatives) {
+                                 if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
+@@ -400,3 +426,6 @@ fun DrawingCanvas(
+                         if (isDrawing) {
+-                            if (isMovingSelection && selectedStrokes.isNotEmpty()) {
++                            val natives = selectedNatives
++                            if (isMovingSelection &&
++                                (selectedStrokes.isNotEmpty() || !natives.isNullOrEmpty())
++                            ) {
+                                 if (!selectionMoveSnapshotTaken) {
+@@ -407,6 +436,22 @@ fun DrawingCanvas(
+                                 selectionDragStart = Offset(x, y)
+-                                val updated = SelectionManager.translateStrokes(selectedStrokes, delta)
+-                                selectedStrokes.clear()
+-                                selectedStrokes.addAll(updated)
+-                                onStrokesModified(updated)
++                                if (selectedStrokes.isNotEmpty()) {
++                                    val updated = SelectionManager.translateStrokes(selectedStrokes, delta)
++                                    selectedStrokes.clear()
++                                    selectedStrokes.addAll(updated)
++                                    onStrokesModified(updated)
++                                }
++                                if (!natives.isNullOrEmpty()) {
++                                    val moved = IdentityHashMap<NativeCanvasElement, NativeCanvasElement>()
++                                    val updated = natives.map { old ->
++                                        NativeEditing.translate(old, delta.x, delta.y).also { moved[old] = it }
++                                    }
++                                    natives.clear()
++                                    natives.addAll(updated)
++                                    onNativesMoved(moved)
++                                }
++                                return@pointerInteropFilter true
++                            }
++
++                            if (activeTool == ToolType.SHAPER && shapeStart != null) {
++                                shapeEnd = Offset(x, y)
+                                 return@pointerInteropFilter true
+@@ -420,3 +465,3 @@ fun DrawingCanvas(
+                                 eraserCursorDown = true
+-                                eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes) {
++                                eraseAt(Offset(x, y), eraserWidth, strokes, onEraseStrokes, overlays, onEraseNatives) {
+                                     if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
+@@ -436,2 +481,16 @@ fun DrawingCanvas(
+                                 selectedStrokes.addAll(found)
++                                selectedNatives?.let { natives ->
++                                    val polygon = lassoPoints.map { it.x to it.y }
++                                    natives.clear()
++                                    natives.addAll(nativeElements.filter { NativeEditing.insideLasso(it, polygon) })
++                                }
++                            } else if (activeTool == ToolType.SHAPER) {
++                                val start = shapeStart
++                                val end = shapeEnd
++                                if (start != null && end != null) {
++                                    NativeEditing.createShape(
++                                        toolConfig.shapeKind, start.x, start.y, end.x, end.y,
++                                        nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth
++                                    )?.let(onAddShape)
++                                }
+                             } else if (activeTool == ToolType.BRUSH && currentPoints.isNotEmpty()) {
+@@ -458,2 +517,4 @@ fun DrawingCanvas(
+                         isDrawing = false
++                        shapeStart = null
++                        shapeEnd = null
+                         buttonEraserLatched = false
+@@ -488,4 +549,4 @@ fun DrawingCanvas(
+                     val nc = canvas.nativeCanvas
+-                    underlays.forEachIndexed { i, el ->
+-                        val bitmap = underlayBitmaps[i]
++                    underlays.forEach { el ->
++                        val bitmap = imageKey(el)?.let { underlayBitmaps[it] }
+                         when (el) {
+@@ -500,3 +561,3 @@ fun DrawingCanvas(
+                                 nc.restore()
+-                                detailTiles[i]?.let { tile ->
++                                detailTiles[el]?.let { tile ->
+                                     nc.drawBitmap(
+@@ -562,2 +623,14 @@ fun DrawingCanvas(
+ 
++            // 3b. Shape being dragged out with the Shaper.
++            val previewStart = shapeStart
++            val previewEnd = shapeEnd
++            if (isDrawing && activeTool == ToolType.SHAPER && previewStart != null && previewEnd != null) {
++                NativeEditing.createShape(
++                    toolConfig.shapeKind, previewStart.x, previewStart.y, previewEnd.x, previewEnd.y,
++                    nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth
++                )?.let { preview ->
++                    drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, preview, cache = false) }
++                }
++            }
++
+             // 4. Render lasso polygon preview
+@@ -580,3 +653,3 @@ fun DrawingCanvas(
+             // 5. Render selection bounding box
+-            val bbox = SelectionManager.calculateBoundingBox(selectedStrokes)
++            val bbox = selectionBounds(selectedStrokes, selectedNatives)
+             bbox?.let { box ->
+@@ -676,2 +749,4 @@ private fun eraseAt(
+     onEraseStrokes: (List<Stroke>) -> Unit,
++    overlays: List<NativeCanvasElement>,
++    onEraseNatives: (List<NativeCanvasElement>) -> Unit,
+     onFirstHit: () -> Unit
+@@ -680,6 +755,29 @@ private fun eraseAt(
+     val hit = EraserHitTest.collidingStrokes(bounds, strokes)
+-    if (hit.isNotEmpty()) {
+-        onFirstHit()
+-        onEraseStrokes(hit)
++    // Like Rnote's trash eraser: ink and shapes go, text and images stay.
++    val hitShapes = overlays.filter {
++        it is NativeShapeElement &&
++            NativeEditing.eraserHits(it, bounds.left, bounds.top, bounds.right, bounds.bottom)
++    }
++    if (hit.isNotEmpty() || hitShapes.isNotEmpty()) onFirstHit()
++    if (hit.isNotEmpty()) onEraseStrokes(hit)
++    if (hitShapes.isNotEmpty()) onEraseNatives(hitShapes)
++}
++
++/** What a page or image is rendered from; the key its bitmap is kept under. */
++private fun imageKey(el: NativeCanvasElement): Any? = when (el) {
++    is NativeVectorImageElement -> el.svgData
++    is NativeBitmapElement -> el.rgbaBase64 ?: el.pixels
++    else -> null
++}
++
++private fun nativeColorOf(c: Color) = RnoteNativeColor(c.red, c.green, c.blue, c.alpha)
++
++/** The box around everything selected, ink and desktop elements alike; null if nothing is. */
++private fun selectionBounds(strokes: List<Stroke>, natives: List<NativeCanvasElement>?): Rect? {
++    var box = SelectionManager.calculateBoundingBox(strokes)
++    natives?.forEach { el ->
++        val r = Rect(el.minX, el.minY, el.maxX, el.maxY)
++        box = box?.let { Rect(minOf(it.left, r.left), minOf(it.top, r.top), maxOf(it.right, r.right), maxOf(it.bottom, r.bottom)) } ?: r
+     }
++    return box
+ }
+diff --git a/app/src/main/java/io/github/kjly/brna/ui/components/PenConfigStrip.kt b/app/src/main/java/io/github/kjly/brna/ui/components/PenConfigStrip.kt
+index c2e9247..4ae6a42 100644
+--- a/app/src/main/java/io/github/kjly/brna/ui/components/PenConfigStrip.kt
++++ b/app/src/main/java/io/github/kjly/brna/ui/components/PenConfigStrip.kt
+@@ -21,3 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.filled.CropSquare
+ import androidx.compose.material.icons.filled.Highlight
++import androidx.compose.material.icons.filled.HorizontalRule
++import androidx.compose.material.icons.filled.NorthEast
++import androidx.compose.material.icons.filled.RadioButtonUnchecked
+ import androidx.compose.material3.HorizontalDivider
+@@ -73,3 +77,4 @@ fun PenConfigStrip(
+     onDeselectAll: () -> Unit,
+-    modifier: Modifier = Modifier
++    modifier: Modifier = Modifier,
++    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit = {}
+ ) {
+@@ -92,3 +97,3 @@ fun PenConfigStrip(
+                 )
+-                ToolType.SHAPER -> StubConfigPage("Shaper")
++                ToolType.SHAPER -> ShaperConfigPage(toolConfig, onShapeKindSelected, onSizeChanged)
+                 ToolType.TYPEWRITER -> StubConfigPage("Typewriter")
+@@ -122,2 +127,29 @@ private fun BrushConfigPage(
+ 
++// ── Shaper ───────────────────────────────────────────────────────────────
++
++@Composable
++private fun ShaperConfigPage(
++    toolConfig: ToolConfig,
++    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit,
++    onSizeChanged: (Float) -> Unit
++) {
++    val kind = toolConfig.shapeKind
++    StripIconToggle(Icons.Default.HorizontalRule, "Line", kind == io.github.kjly.brna.model.ShapeKind.LINE, true) {
++        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.LINE)
++    }
++    StripIconToggle(Icons.Default.NorthEast, "Arrow", kind == io.github.kjly.brna.model.ShapeKind.ARROW, true) {
++        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.ARROW)
++    }
++    StripIconToggle(Icons.Default.CropSquare, "Rectangle", kind == io.github.kjly.brna.model.ShapeKind.RECTANGLE, true) {
++        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.RECTANGLE)
++    }
++    StripIconToggle(Icons.Default.RadioButtonUnchecked, "Ellipse", kind == io.github.kjly.brna.model.ShapeKind.ELLIPSE, true) {
++        onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.ELLIPSE)
++    }
++    StripDivider()
++    // Rnote's shaper shares the brush's 2 / 6 / 12 width presets.
++    val presets = BrushSizePreset.entries.map { it to it.brushSolidPx }
++    StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = 64f, onSizeChanged)
++}
++
+ // ── Eraser ───────────────────────────────────────────────────────────────
+diff --git a/app/src/test/java/io/github/kjly/brna/storage/NativeEditingTest.kt b/app/src/test/java/io/github/kjly/brna/storage/NativeEditingTest.kt
+new file mode 100644
+index 0000000..99e371a
+--- /dev/null
++++ b/app/src/test/java/io/github/kjly/brna/storage/NativeEditingTest.kt
+@@ -0,0 +1,117 @@
++package io.github.kjly.brna.storage
++
++import io.github.kjly.brna.model.NativeBitmapElement
++import io.github.kjly.brna.model.NativeShapeElement
++import io.github.kjly.brna.model.NativeTextElement
++import io.github.kjly.brna.model.PathShape
++import io.github.kjly.brna.model.RectShape
++import io.github.kjly.brna.model.RnoteNativeColor
++import io.github.kjly.brna.model.ShapeKind
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class NativeEditingTest {
++
++    private val black = RnoteNativeColor(0f, 0f, 0f, 1f)
++
++    @Test
++    fun `a dragged rectangle fills the dragged box`() {
++        val rect = NativeEditing.createShape(ShapeKind.RECTANGLE, 10f, 20f, 110f, 70f, black, 2f)!!
++        val shape = rect.shape as RectShape
++        assertEquals(50f, shape.halfExtentX, 1e-3f)
++        assertEquals(25f, shape.halfExtentY, 1e-3f)
++        assertEquals(60f, shape.transform[4], 1e-3f)
++        assertEquals(45f, shape.transform[5], 1e-3f)
++        assertEquals(10f, rect.minX, 1e-3f)
++        assertEquals(70f, rect.maxY, 1e-3f)
++    }
++
++    @Test
++    fun `a new arrow is written as Rnote's arrow, not a polyline`() {
++        val arrow = NativeEditing.createShape(ShapeKind.ARROW, 0f, 0f, 100f, 0f, black, 2f)!!
++        assertTrue(arrow.shape is PathShape)
++        val raw = arrow.raw!!.asJsonObject.getAsJsonObject("shape")
++        assertTrue(raw.has("arrow"))
++    }
++
++    @Test
++    fun `a tap is not a shape`() {
++        assertNull(NativeEditing.createShape(ShapeKind.LINE, 5f, 5f, 5.2f, 5.1f, black, 2f))
++    }
++
++    @Test
++    fun `moving a shape moves its written JSON too, but not its style`() {
++        val line = NativeEditing.createShape(ShapeKind.LINE, 0f, 0f, 10f, 0f, black, 3f)!!
++        val moved = NativeEditing.translate(line, 5f, 7f) as NativeShapeElement
++        val shape = moved.raw!!.asJsonObject.getAsJsonObject("shape").getAsJsonObject("line")
++        assertEquals(5.0, shape.getAsJsonArray("start")[0].asDouble, 1e-6)
++        assertEquals(7.0, shape.getAsJsonArray("start")[1].asDouble, 1e-6)
++        assertEquals(15.0, shape.getAsJsonArray("end")[0].asDouble, 1e-6)
++        val style = moved.raw!!.asJsonObject.getAsJsonObject("style").getAsJsonObject("smooth")
++        assertEquals(3.0, style.get("stroke_width").asDouble, 1e-6)
++        // The original is untouched: undo keeps pointing at it.
++        assertEquals(0.0, line.raw!!.asJsonObject.getAsJsonObject("shape")
++            .getAsJsonObject("line").getAsJsonArray("start")[0].asDouble, 1e-6)
++    }
++
++    @Test
++    fun `moving a text box shifts its transform and keeps its style`() {
++        val json = """{"textstroke":{"text":"Hi","transform":{"affine":[1.0,0.0,0.0,0.0,1.0,0.0,10.0,20.0,1.0]},""" +
++            """"text_style":{"font_family":"serif","font_size":32.0,"font_weight":700,"font_style":"regular",""" +
++            """"color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0},"max_width":null,"alignment":"start","ranged_text_attributes":[]}}}"""
++        val text = RnoteNativeParser.parseElementJson(json) as NativeTextElement
++        val moved = NativeEditing.translate(text, 100f, 50f) as NativeTextElement
++        assertEquals(110f, moved.transform[4], 1e-3f)
++        assertEquals(70f, moved.transform[5], 1e-3f)
++        val affine = moved.raw!!.asJsonObject.getAsJsonObject("transform").getAsJsonArray("affine")
++        assertEquals(110.0, affine[6].asDouble, 1e-6)
++        assertEquals(70.0, affine[7].asDouble, 1e-6)
++        assertEquals(32.0, moved.raw!!.asJsonObject.getAsJsonObject("text_style").get("font_size").asDouble, 1e-6)
++    }
++
++    @Test
++    fun `moving an image moves both of its rectangles`() {
++        val rect = """{"cuboid":{"half_extents":[50.0,50.0]},"transform":{"affine":[1.0,0.0,0.0,0.0,1.0,0.0,300.0,300.0,1.0]}}"""
++        val json = """{"bitmapimage":{"image":{"data":"AAAAAAAAAAAAAAAAAAAAAA==","rectangle":$rect,""" +
++            """"pixel_width":2,"pixel_height":2,"memory_format":"R8g8b8a8Premultiplied"},"rectangle":$rect}}"""
++        val image = RnoteNativeParser.parseElementJson(json) as NativeBitmapElement
++        val moved = NativeEditing.translate(image, -100f, 10f) as NativeBitmapElement
++        assertEquals(200f, moved.rect!!.transform[4], 1e-3f)
++        val raw = moved.raw!!.asJsonObject
++        for (r in listOf(raw.getAsJsonObject("rectangle"), raw.getAsJsonObject("image").getAsJsonObject("rectangle"))) {
++            val affine = r.getAsJsonObject("transform").getAsJsonArray("affine")
++            assertEquals(200.0, affine[6].asDouble, 1e-6)
++            assertEquals(310.0, affine[7].asDouble, 1e-6)
++            assertEquals(50.0, r.getAsJsonObject("cuboid").getAsJsonArray("half_extents")[0].asDouble, 1e-6)
++        }
++    }
++
++    @Test
++    fun `the eraser hits a rectangle's outline but not its empty inside`() {
++        val rect = NativeEditing.createShape(ShapeKind.RECTANGLE, 0f, 0f, 100f, 100f, black, 2f)!!
++        assertTrue(NativeEditing.eraserHits(rect, -3f, 40f, 3f, 46f))
++        assertFalse(NativeEditing.eraserHits(rect, 45f, 45f, 55f, 55f))
++        assertFalse(NativeEditing.eraserHits(rect, 200f, 200f, 210f, 210f))
++    }
++
++    @Test
++    fun `the lasso takes only what lies wholly inside it`() {
++        val small = NativeEditing.createShape(ShapeKind.RECTANGLE, 10f, 10f, 20f, 20f, black, 2f)!!
++        val big = NativeEditing.createShape(ShapeKind.RECTANGLE, 0f, 0f, 500f, 500f, black, 2f)!!
++        val lasso = listOf(0f to 0f, 100f to 0f, 100f to 100f, 0f to 100f)
++        assertTrue(NativeEditing.insideLasso(small, lasso))
++        assertFalse(NativeEditing.insideLasso(big, lasso))
++    }
++
++    @Test
++    fun `a shape without colours is read as transparent rather than failing`() {
++        val json = """{"shapestroke":{"shape":{"line":{"start":[0.0,0.0],"end":[5.0,5.0]}},""" +
++            """"style":{"smooth":{"stroke_width":2.0,"stroke_color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0},""" +
++            """"fill_color":null,"pressure_curve":"const","line_style":"solid","line_cap":"straight"}}}}"""
++        val shape = RnoteNativeParser.parseElementJson(json) as NativeShapeElement
++        assertEquals(0f, shape.fillColor.a, 0f)
++    }
++}
+-- 
+2.43.0
+

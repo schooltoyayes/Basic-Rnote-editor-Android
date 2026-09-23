@@ -5,8 +5,10 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -20,10 +22,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke as CanvasStrokeStyle
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.InkPoint
+import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.PressureCurve
 import io.github.kjly.brna.model.Stroke
@@ -31,7 +36,10 @@ import io.github.kjly.brna.model.StrokePoint
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.ViewportState
+import io.github.kjly.brna.render.VectorImageRenderer
 import io.github.kjly.brna.render.composeStrokePath
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.IdentityHashMap
 import kotlin.math.hypot
 
@@ -50,8 +58,26 @@ fun DrawingCanvas(
     onStrokesModified: (List<Stroke>) -> Unit,
     /** Called once per eraser gesture, before the first stroke of it is removed. */
     onEraseStart: () -> Unit = {},
+    /** Imported PDF pages from a desktop .rnote; drawn under the strokes, not editable. */
+    vectorImages: List<NativeVectorImageElement> = emptyList(),
     modifier: Modifier = Modifier
 ) {
+    // Vector images are rasterised once, off the main thread, one at a time (a PDF page
+    // can be megabytes of SVG). Until its bitmap is ready a page shows as a blank sheet.
+    val vectorBitmaps = remember(vectorImages) { mutableStateMapOf<Int, android.graphics.Bitmap>() }
+    LaunchedEffect(vectorImages) {
+        vectorImages.forEachIndexed { i, el ->
+            val bitmap = withContext(Dispatchers.Default) { VectorImageRenderer.rasterize(el) }
+            if (bitmap != null) vectorBitmaps[i] = bitmap
+        }
+    }
+    val vectorPaint = remember {
+        android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG or android.graphics.Paint.ANTI_ALIAS_FLAG)
+    }
+    val placeholderPaint = remember {
+        android.graphics.Paint().apply { color = android.graphics.Color.WHITE }
+    }
+
     val currentPoints = remember { mutableStateListOf<InkPoint>() }
     /** Memoised stroke outlines, keyed by Stroke identity. See the draw block below. */
     val outlineCache = remember { IdentityHashMap<Stroke, Path>() }
@@ -377,6 +403,24 @@ fun DrawingCanvas(
             translate(viewportState.panOffset.x, viewportState.panOffset.y)
             scale(viewportState.effectiveScale, viewportState.effectiveScale, Offset.Zero)
         }) {
+            // 1b. Imported PDF pages (Rnote's document/image layers), beneath all ink.
+            if (vectorImages.isNotEmpty()) {
+                drawIntoCanvas { canvas ->
+                    val nc = canvas.nativeCanvas
+                    vectorImages.forEachIndexed { i, el ->
+                        val dst = android.graphics.RectF(
+                            -el.halfExtentX, -el.halfExtentY, el.halfExtentX, el.halfExtentY
+                        )
+                        nc.save()
+                        nc.concat(VectorImageRenderer.matrixFor(el))
+                        val bitmap = vectorBitmaps[i]
+                        if (bitmap != null) nc.drawBitmap(bitmap, null, dst, vectorPaint)
+                        else nc.drawRect(dst, placeholderPaint)
+                        nc.restore()
+                    }
+                }
+            }
+
             // 2. Render existing strokes.
             // Filled variable-width outlines, not constant-width stroked paths — see
             // StrokeOutline for why that's the only way the width can match desktop.

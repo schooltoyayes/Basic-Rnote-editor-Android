@@ -62,6 +62,8 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
 
     implementation("com.google.code.gson:gson:2.10.1")
+    // Renders the SVG of PDF pages imported in desktop Rnote (vectorimage strokes).
+    implementation("com.caverock:androidsvg-aar:1.4")
 
     debugImplementation(libs.androidx.ui.tooling)
 

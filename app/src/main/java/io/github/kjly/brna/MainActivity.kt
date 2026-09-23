@@ -41,6 +41,7 @@ import io.github.kjly.brna.export.ExportPrefs
 import io.github.kjly.brna.export.ExportScope
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.NativeCanvasElement
+import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.Stroke
@@ -336,6 +337,9 @@ class MainActivity : ComponentActivity() {
             // Non-stroke elements (text/shapes/images) preserved from an imported native file.
             // Carried through save/export so they aren't silently dropped from opened .rnote files.
             var documentNativeElements by remember { mutableStateOf<List<NativeCanvasElement>>(emptyList()) }
+            val documentVectorImages = remember(documentNativeElements) {
+                documentNativeElements.filterIsInstance<NativeVectorImageElement>()
+            }
 
             // ── Page indicator (2D grid position) ────────────────────────────────
             val currentPage: Int? = if (paperStyle.pageSize.isInfinite) null else {
@@ -547,6 +551,7 @@ class MainActivity : ComponentActivity() {
                                 }
                                 isModified = true
                             },
+                            vectorImages = documentVectorImages,
                         )
 
                         // Top-center: stroke color + palette (matches Rnote's colorpicker.ui)

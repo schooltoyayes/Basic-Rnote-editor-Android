@@ -45,7 +45,9 @@ import io.github.kjly.brna.export.ExportFormat
 import io.github.kjly.brna.export.ExportPrefs
 import io.github.kjly.brna.export.ExportScope
 import io.github.kjly.brna.model.BrushStyle
+import io.github.kjly.brna.model.NativeBrushStroke
 import io.github.kjly.brna.model.NativeCanvasElement
+import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.Stroke
@@ -55,6 +57,7 @@ import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.ViewportState
 import io.github.kjly.brna.storage.DocumentUri
 import io.github.kjly.brna.storage.FileManager
+import io.github.kjly.brna.storage.PdfImporter
 import io.github.kjly.brna.storage.Recovery
 import io.github.kjly.brna.storage.SettingsManager
 import kotlin.math.floor
@@ -173,6 +176,50 @@ class MainActivity : ComponentActivity() {
     private val createRnoteLauncher = registerForActivityResult(
         CreateDocumentNear("application/octet-stream")
     ) { uri -> uri?.let { finishSaveAs(it, asRnote = true) } }
+
+    /** Where imported PDF pages go: page width, format height, and the top of the first. */
+    private class PdfImportTarget(val pageWidth: Float, val formatHeight: Float, val startY: Float)
+
+    /** Installed by the UI, which knows the note's format and where its content ends. */
+    private var pdfImportTarget: (() -> PdfImportTarget)? = null
+
+    /** Installed by the UI: adds imported pages to the open note. */
+    private var onPdfImported: ((List<NativeVectorImageElement>) -> Unit)? = null
+
+    private val importPdfLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { importPdf(it) } }
+
+    /** Renders the PDF's pages off the main thread and adds them to the open note. */
+    private fun importPdf(uri: Uri) {
+        val target = pdfImportTarget?.invoke() ?: return
+        if (busyMessage != null) return
+        busyMessage = "Importing PDF…"
+        lifecycleScope.launch {
+            val pages = withContext(Dispatchers.IO) {
+                try {
+                    PdfImporter.import(
+                        this@MainActivity, uri, target.pageWidth, target.formatHeight, target.startY
+                    )
+                } catch (e: Throwable) {
+                    // A password-protected or broken PDF, or one too big to render.
+                    e.printStackTrace()
+                    null
+                }
+            }
+            busyMessage = null
+            if (pages.isNullOrEmpty()) {
+                Toast.makeText(this@MainActivity, "Could not import the PDF", Toast.LENGTH_LONG).show()
+            } else {
+                onPdfImported?.invoke(pages)
+                Toast.makeText(
+                    this@MainActivity,
+                    if (pages.size == 1) "Imported 1 page" else "Imported ${pages.size} pages",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
 
     private val openDocumentLauncher = registerForActivityResult(
         OpenDocumentNear()
@@ -611,6 +658,33 @@ class MainActivity : ComponentActivity() {
             }
             onTitleAdopted = { name -> documentTitle = name }
 
+            // ── PDF import ─────────────────────────────────────────────────────────
+            pdfImportTarget = {
+                val pageW = paperStyle.effectivePageWidthPx.takeIf { it > 0f } ?: 793.7f
+                val pageH = paperStyle.effectivePageHeightPx.takeIf { it > 0f } ?: 1122.5f
+                val others = documentNativeElements.filter { it !is NativeBrushStroke }
+                val hasContent = strokes.isNotEmpty() || others.isNotEmpty()
+                // Below everything already in the note, starting on the next whole page.
+                val bottom = maxOf(
+                    strokes.maxOfOrNull { s -> s.points.maxOfOrNull { it.y } ?: 0f } ?: 0f,
+                    others.maxOfOrNull { it.maxY } ?: 0f
+                )
+                val startY = if (hasContent) (floor(bottom / pageH) + 1f) * pageH else 0f
+                PdfImportTarget(pageW, pageH, startY)
+            }
+            onPdfImported = { pages ->
+                // Ahead of the rest: the document layer is drawn first, under everything.
+                documentNativeElements = pages + documentNativeElements
+                isModified = true
+                // Bring the first imported page into view at the current zoom.
+                viewportState = viewportState.copy(
+                    panOffset = androidx.compose.ui.geometry.Offset(
+                        ViewportState.ORIGIN_MARGIN_PX,
+                        ViewportState.ORIGIN_MARGIN_PX - pages.first().minY * viewportState.effectiveScale
+                    )
+                )
+            }
+
             // ── S-Pen Air Action remote shortcuts ─────────────────────────────────
             performUndoAction = {
                 // Gated on undoStack, not `strokes` — an empty canvas can still have undo
@@ -689,6 +763,7 @@ class MainActivity : ComponentActivity() {
                             onOpenDocument = {
                                 openDocumentLauncher.launch(arrayOf("*/*", "application/json"))
                             },
+                            onImportPdf = { importPdfLauncher.launch(arrayOf("application/pdf")) },
                             onNewDocument = {
                                 if (isModified) {
                                     showNewDocumentDialog = true

@@ -2,6 +2,7 @@ package io.github.kjly.brna.export
 
 import androidx.compose.ui.graphics.Color
 import io.github.kjly.brna.model.LayoutMode
+import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PageSize
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.Stroke
@@ -101,6 +102,46 @@ class ExportLayoutTest {
     fun `nothing to bound is null, not an empty rect at the origin`() {
         assertNull(ExportLayout.contentBounds(emptyList()))
         assertNull(ExportLayout.selectionBounds(emptyList(), 12f))
+    }
+
+    /** An imported page covering left..right × top..bottom, as Rnote places one. */
+    private fun importedPage(left: Float, top: Float, right: Float, bottom: Float): NativeVectorImageElement {
+        val hx = (right - left) / 2f
+        val hy = (bottom - top) / 2f
+        return NativeVectorImageElement(
+            "<svg/>", 2 * hx, 2 * hy, hx, hy,
+            floatArrayOf(1f, 0f, 0f, 1f, left + hx, top + hy), "document",
+            left, top, right, bottom
+        )
+    }
+
+    @Test
+    fun `imported PDF pages become the export pages, widened for the notes beside them`() {
+        val pages = ExportLayout.pageRects(
+            paper(LayoutMode.SEMI_INFINITE),
+            // A note to the right of the second page, level with it.
+            listOf(dot(700f, 1500f)),
+            nativeElements = listOf(
+                importedPage(0f, 1000f, 500f, 2000f),
+                importedPage(0f, 0f, 500f, 1000f)
+            ),
+            followImportedPages = true
+        )
+        assertEquals(2, pages.size)
+        // Reading order, whatever order the file listed them in.
+        assertEquals(0f, pages[0].top, 0f)
+        assertEquals(500f, pages[0].right, 0f)
+        assertEquals(1000f, pages[1].top, 0f)
+        assertEquals(724f, pages[1].right, 0f)
+    }
+
+    @Test
+    fun `without imported pages the format grid is used as before`() {
+        val grid = ExportLayout.pageRects(paper(LayoutMode.INFINITE), listOf(dot(150f, 250f)))
+        val following = ExportLayout.pageRects(
+            paper(LayoutMode.INFINITE), listOf(dot(150f, 250f)), followImportedPages = true
+        )
+        assertEquals(grid, following)
     }
 
     @Test

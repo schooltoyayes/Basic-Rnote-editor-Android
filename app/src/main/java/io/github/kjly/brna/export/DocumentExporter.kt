@@ -26,8 +26,13 @@ object DocumentExporter {
     /** The pages this document has, in the order [prefs] asks for. Empty if it has none. */
     fun pagesFor(document: NoteDocument, prefs: ExportPrefs): List<Rect> =
         ExportLayout.pageRects(
-            document.paperStyle, document.strokes, prefs.pageOrder, document.nativeElements
+            document.paperStyle, document.strokes, prefs.pageOrder, document.nativeElements,
+            followImportedPages = prefs.pagesFromImportedPdf
         )
+
+    /** Whether the document has imported PDF pages, which [ExportPrefs.pagesFromImportedPdf] follows. */
+    fun hasImportedPages(document: NoteDocument): Boolean =
+        document.nativeElements.any { it is io.github.kjly.brna.model.NativeVectorImageElement }
 
     /** The suggested file name for a single-file export, extension included. */
     fun fileNameFor(baseName: String, prefs: ExportPrefs): String =

@@ -75,8 +75,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest dist/basic-rnote.apk \
-            --title "Neueste APK (${GITHUB_SHA::7})" \
-            --notes "Automatisch gebaut aus Commit ${GITHUB_SHA::7}." \
-            --prerelease \
-            --target "$GITHUB_SHA"
+          for i in 1 2 3 4 5; do
+            gh release create latest dist/basic-rnote.apk \
+              --title "Neueste APK (${GITHUB_SHA::7})" \
+              --notes "Automatisch gebaut aus Commit ${GITHUB_SHA::7}." \
+              --prerelease \
+              --target "$GITHUB_SHA" && exit 0
+            echo "Versuch $i fehlgeschlagen, warte..."
+            sleep 10
+          done
+          exit 1

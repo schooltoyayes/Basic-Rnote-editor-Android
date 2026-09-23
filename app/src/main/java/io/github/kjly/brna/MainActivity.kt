@@ -1,6 +1,7 @@
 package io.github.kjly.brna
 
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -47,9 +48,11 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import io.github.kjly.brna.export.DocumentExporter
 import io.github.kjly.brna.export.ExportFormat
+import io.github.kjly.brna.export.ExportLayout
 import io.github.kjly.brna.export.ExportPrefs
 import io.github.kjly.brna.export.ExportScope
 import io.github.kjly.brna.export.PageThumbnails
+import io.github.kjly.brna.export.ShareTarget
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.LayoutMode
 import io.github.kjly.brna.model.NativeBitmapElement
@@ -130,6 +133,9 @@ private const val PASTE_OFFSET = 20f
 
 /** How far in from the view's corner an inserted image lands, in document units at 100%. */
 private const val IMPORT_OFFSET = 32f
+
+/** How long a shared file is kept for the app it went to, in ms. */
+private const val SHARED_FILE_LIFETIME_MS = 60 * 60 * 1000L
 
 /** Where the Typewriter was tapped, and the text box it hit there, if any. */
 private class TextEditTarget(val x: Float, val y: Float, val existing: NativeTextElement?)
@@ -593,7 +599,8 @@ class MainActivity : ComponentActivity() {
         val document: NoteDocument,
         val selection: List<Stroke>,
         val prefs: ExportPrefs,
-        val baseName: String
+        val baseName: String,
+        val selectedNatives: List<NativeCanvasElement> = emptyList()
     )
 
     private var pendingExport: PendingExport? = null
@@ -642,7 +649,9 @@ class MainActivity : ComponentActivity() {
         val request = pendingExport ?: return
         pendingExport = null
         runExport {
-            FileManager.exportToUri(this, uri, request.document, request.selection, request.prefs)
+            FileManager.exportToUri(
+                this, uri, request.document, request.selection, request.prefs, request.selectedNatives
+            )
         }
     }
 
@@ -673,6 +682,52 @@ class MainActivity : ComponentActivity() {
             }
             busyMessage = null
             reportExport(result)
+        }
+    }
+
+    /**
+     * Exports into a private file with [export] and offers it to other apps through
+     * Android's share sheet, under [fileName], which is what the receiving app shows.
+     */
+    private fun shareExport(fileName: String, mimeType: String, export: (Uri) -> DocumentExporter.Result) {
+        if (busyMessage != null) return
+        busyMessage = "Preparing to share…"
+        lifecycleScope.launch {
+            val shared = withContext(Dispatchers.IO) {
+                try {
+                    val dir = java.io.File(cacheDir, "share").apply { mkdirs() }
+                    // Earlier shares are left for a while: the app they went to may still be
+                    // reading one, as a mail draft does its attachment.
+                    val stale = System.currentTimeMillis() - SHARED_FILE_LIFETIME_MS
+                    dir.listFiles()?.filter { it.lastModified() < stale }?.forEach { it.delete() }
+                    val uri = FileProvider.getUriForFile(
+                        this@MainActivity, "$packageName.fileprovider", java.io.File(dir, fileName)
+                    )
+                    uri to export(uri)
+                } catch (e: Throwable) {
+                    // OutOfMemoryError included, as for any export.
+                    e.printStackTrace()
+                    null
+                }
+            }
+            busyMessage = null
+            val (uri, result) = shared ?: (null to DocumentExporter.Result.Failure("Could not share"))
+            if (uri == null || result !is DocumentExporter.Result.Success) {
+                reportExport(result)
+                return@launch
+            }
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(Intent.EXTRA_STREAM, uri)
+                // Carries the read grant through the chooser, and gives it a preview.
+                clipData = ClipData.newRawUri(fileName, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            try {
+                startActivity(Intent.createChooser(send, null))
+            } catch (e: ActivityNotFoundException) {
+                Toast.makeText(this@MainActivity, "No app to share with", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -927,6 +982,57 @@ class MainActivity : ComponentActivity() {
                 isModified = true
             }
 
+            // ── Share ─────────────────────────────────────────────────────────────
+            val shareNote: (ShareTarget) -> Unit = { target ->
+                val document = NoteDocument(
+                    title = documentTitle,
+                    paperStyle = paperStyle,
+                    strokes = strokes.toList(),
+                    nativeElements = documentNativeElements
+                )
+                val format = target.format
+                when (target) {
+                    ShareTarget.PAGE_PNG, ShareTarget.PAGE_PDF -> {
+                        val view = androidx.compose.ui.geometry.Rect(
+                            viewportState.screenToCanvas(Offset.Zero),
+                            viewportState.screenToCanvas(
+                                Offset(canvasSize.width.toFloat(), canvasSize.height.toFloat())
+                            )
+                        )
+                        var prefs = exportPrefs.copy(format = format)
+                        val pages = DocumentExporter.pagesFor(document, prefs)
+                        val index = ExportLayout.pageInView(pages, view)
+                        val detail = if (index != null) {
+                            String.format(java.util.Locale.ROOT, "page %02d", index + 1)
+                        } else {
+                            // No page in view, or none at all: what is on screen, at the
+                            // resolution it is on screen.
+                            prefs = prefs.copy(bitmapScaleFactor = viewportState.effectiveScale)
+                            "view"
+                        }
+                        val region = index?.let { pages[it] } ?: view
+                        val sharePrefs = prefs
+                        shareExport(DocumentExporter.sharedFileName(documentTitle, detail, format), format.mimeType) { uri ->
+                            DocumentExporter.exportRegion(this@MainActivity, uri, document, region, sharePrefs)
+                        }
+                    }
+                    ShareTarget.SELECTION_PNG -> {
+                        val prefs = exportPrefs.copy(scope = ExportScope.SELECTION, format = format)
+                        val selection = selectedStrokes.toList()
+                        val natives = selectedNatives.toList()
+                        shareExport(DocumentExporter.sharedFileName(documentTitle, "selection", format), format.mimeType) { uri ->
+                            DocumentExporter.exportSingle(this@MainActivity, uri, document, selection, prefs, natives)
+                        }
+                    }
+                    ShareTarget.NOTE_PDF -> {
+                        val prefs = exportPrefs.copy(scope = ExportScope.DOCUMENT, format = format)
+                        shareExport(DocumentExporter.sharedFileName(documentTitle, null, format), format.mimeType) { uri ->
+                            DocumentExporter.exportSingle(this@MainActivity, uri, document, emptyList(), prefs)
+                        }
+                    }
+                }
+            }
+
             // ── S-Pen Air Action remote shortcuts ─────────────────────────────────
             performUndoAction = {
                 // Gated on undoStack, not `strokes` — an empty canvas can still have undo
@@ -1009,6 +1115,9 @@ class MainActivity : ComponentActivity() {
                             },
                             canTakePhoto = hasCamera,
                             onTakePhoto = { takePhoto() },
+                            hasPages = ExportLayout.hasPages(paperStyle),
+                            hasSelection = selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty(),
+                            onShare = shareNote,
                             onShowRecent = { showRecent = true },
                             onShowPages = { showPages = true },
                             onNewDocument = {
@@ -1315,7 +1424,7 @@ class MainActivity : ComponentActivity() {
                             paperStyle = paperStyle,
                             prefs = exportPrefs,
                             pageCount = DocumentExporter.pagesFor(exportDocument, exportPrefs).size,
-                            hasSelection = selectedStrokes.isNotEmpty(),
+                            hasSelection = selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty(),
                             hasImportedPages = DocumentExporter.hasImportedPages(exportDocument),
                             onPrefsChanged = { exportPrefs = it },
                             onDismiss = { showExportSheet = false },
@@ -1326,7 +1435,8 @@ class MainActivity : ComponentActivity() {
                                         document = exportDocument,
                                         selection = selectedStrokes.toList(),
                                         prefs = exportPrefs,
-                                        baseName = documentTitle
+                                        baseName = documentTitle,
+                                        selectedNatives = selectedNatives.toList()
                                     )
                                 )
                             }

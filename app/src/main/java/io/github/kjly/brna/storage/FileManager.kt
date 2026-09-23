@@ -9,6 +9,7 @@ import io.github.kjly.brna.model.PaperPattern
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.PageSize
 import io.github.kjly.brna.model.NativeBrushStroke
+import io.github.kjly.brna.model.NativeCanvasElement
 import io.github.kjly.brna.model.RnoteNativeDocument
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
@@ -129,9 +130,10 @@ object FileManager {
         uri: Uri,
         document: NoteDocument,
         selection: List<Stroke>,
-        prefs: ExportPrefs
+        prefs: ExportPrefs,
+        selectedNatives: List<NativeCanvasElement> = emptyList()
     ): DocumentExporter.Result =
-        DocumentExporter.exportSingle(context, uri, document, selection, prefs)
+        DocumentExporter.exportSingle(context, uri, document, selection, prefs, selectedNatives)
 
     /** A page-per-file export into the folder the user picked. */
     fun exportPagesToTree(

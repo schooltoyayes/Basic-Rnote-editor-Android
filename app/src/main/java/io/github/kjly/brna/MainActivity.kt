@@ -1,7 +1,9 @@
 package io.github.kjly.brna
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
@@ -9,6 +11,7 @@ import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -40,6 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import io.github.kjly.brna.export.DocumentExporter
 import io.github.kjly.brna.export.ExportFormat
@@ -47,6 +51,8 @@ import io.github.kjly.brna.export.ExportPrefs
 import io.github.kjly.brna.export.ExportScope
 import io.github.kjly.brna.export.PageThumbnails
 import io.github.kjly.brna.model.BrushStyle
+import io.github.kjly.brna.model.LayoutMode
+import io.github.kjly.brna.model.NativeBitmapElement
 import io.github.kjly.brna.model.NativeBrushStroke
 import io.github.kjly.brna.model.NativeCanvasElement
 import io.github.kjly.brna.model.NativeTextElement
@@ -61,6 +67,7 @@ import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.ViewportState
 import io.github.kjly.brna.storage.DocumentUri
 import io.github.kjly.brna.storage.FileManager
+import io.github.kjly.brna.storage.ImageImport
 import io.github.kjly.brna.storage.NativeEditing
 import io.github.kjly.brna.storage.PdfImporter
 import io.github.kjly.brna.storage.RecentFiles
@@ -120,6 +127,9 @@ private const val THUMBNAIL_WIDTH_PX = 320
 
 /** How far a paste lands from the original when both are in view, as Duplicate does. */
 private const val PASTE_OFFSET = 20f
+
+/** How far in from the view's corner an inserted image lands, in document units at 100%. */
+private const val IMPORT_OFFSET = 32f
 
 /** Where the Typewriter was tapped, and the text box it hit there, if any. */
 private class TextEditTarget(val x: Float, val y: Float, val existing: NativeTextElement?)
@@ -268,6 +278,71 @@ class MainActivity : ComponentActivity() {
                     if (pages.size == 1) "Imported 1 page" else "Imported ${pages.size} pages",
                     Toast.LENGTH_SHORT
                 ).show()
+            }
+        }
+    }
+
+    /** Installed by the UI: where an image of this many pixels goes in the current view. */
+    private var imagePlacement: ((Int, Int) -> NativeEditing.ImagePlacement)? = null
+
+    /** Installed by the UI: adds an inserted image to the open note. */
+    private var onImageInserted: ((NativeBitmapElement) -> Unit)? = null
+
+    /** The system photo picker, or a plain image picker where there is none. */
+    private val pickImageLauncher = registerForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri -> uri?.let { insertImage(it) } }
+
+    private val takePhotoLauncher = registerForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { taken -> if (taken) insertImage(cameraPhotoUri(), isCameraPhoto = true) }
+
+    /**
+     * The one file the camera app writes into. Always the same, so nothing has to survive
+     * the app being reclaimed while the camera is open.
+     */
+    private fun cameraPhotoFile() = java.io.File(java.io.File(cacheDir, "camera").apply { mkdirs() }, "photo.jpg")
+
+    private fun cameraPhotoUri(): Uri =
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", cameraPhotoFile())
+
+    private fun takePhoto() {
+        try {
+            takePhotoLauncher.launch(cameraPhotoUri())
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, "No camera app found", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /**
+     * Reads the picture off the main thread and adds it to the open note where desktop
+     * Rnote would put it (see [NativeEditing.placeImage]).
+     */
+    private fun insertImage(uri: Uri, isCameraPhoto: Boolean = false) {
+        val place = imagePlacement ?: return
+        if (busyMessage != null) return
+        busyMessage = "Inserting image…"
+        lifecycleScope.launch {
+            val pixels = withContext(Dispatchers.IO) {
+                try {
+                    ImageImport.read(this@MainActivity, uri)
+                } catch (e: Throwable) {
+                    // OutOfMemoryError included: an image too big to read is a failed insert.
+                    e.printStackTrace()
+                    null
+                } finally {
+                    // The photo is in the note now (or unusable); no need to keep megabytes of it.
+                    if (isCameraPhoto) cameraPhotoFile().delete()
+                }
+            }
+            busyMessage = null
+            val image = pixels?.let {
+                NativeEditing.createImage(it.rgbaBase64, it.width, it.height, place(it.width, it.height))
+            }
+            if (image == null) {
+                Toast.makeText(this@MainActivity, "Could not insert the image", Toast.LENGTH_LONG).show()
+            } else {
+                onImageInserted?.invoke(image)
             }
         }
     }
@@ -820,6 +895,38 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
+            // ── Inserted images ───────────────────────────────────────────────────
+            val hasCamera = remember { packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY) }
+            imagePlacement = { width, height ->
+                val topLeft = viewportState.screenToCanvas(Offset.Zero)
+                val bottomRight = viewportState.screenToCanvas(
+                    Offset(canvasSize.width.toFloat(), canvasSize.height.toFloat())
+                )
+                val layout = paperStyle.layoutMode
+                val fixedWidth = layout == LayoutMode.FIXED_SIZE || layout == LayoutMode.CONTINUOUS_VERTICAL
+                NativeEditing.placeImage(
+                    width, height,
+                    topLeft.x, topLeft.y, bottomRight.x, bottomRight.y,
+                    // Rnote's `Stroke::IMPORT_OFFSET_DEFAULT`: 32 px on its screen, which is
+                    // 32 document units at 100%.
+                    offset = IMPORT_OFFSET / viewportState.zoomScale,
+                    fixedPageWidth = paperStyle.effectivePageWidthPx.takeIf { fixedWidth && it > 0f },
+                    clampToOrigin = layout != LayoutMode.INFINITE
+                )
+            }
+            onImageInserted = { image ->
+                undoStack.add(snapshot())
+                redoStack.clear()
+                // Last, so on top of the images already there, as a new stroke is in Rnote.
+                documentNativeElements = documentNativeElements + image
+                // Selected, as desktop Rnote leaves an imported image: ready to move or resize.
+                toolConfig = toolConfig.copy(activeTool = ToolType.SELECTOR)
+                selectedStrokes.clear()
+                selectedNatives.clear()
+                selectedNatives.add(image)
+                isModified = true
+            }
+
             // ── S-Pen Air Action remote shortcuts ─────────────────────────────────
             performUndoAction = {
                 // Gated on undoStack, not `strokes` — an empty canvas can still have undo
@@ -895,6 +1002,13 @@ class MainActivity : ComponentActivity() {
                                 openDocumentLauncher.launch(arrayOf("*/*", "application/json"))
                             },
                             onImportPdf = { importPdfLauncher.launch(arrayOf("application/pdf")) },
+                            onInsertImage = {
+                                pickImageLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            canTakePhoto = hasCamera,
+                            onTakePhoto = { takePhoto() },
                             onShowRecent = { showRecent = true },
                             onShowPages = { showPages = true },
                             onNewDocument = {

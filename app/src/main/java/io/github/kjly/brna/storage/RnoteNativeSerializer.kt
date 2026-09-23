@@ -51,8 +51,8 @@ object RnoteNativeSerializer {
 
     fun serialize(outputStream: OutputStream, doc: RnoteNativeDocument) {
         GZIPOutputStream(outputStream).use { gzip ->
-            OutputStreamWriter(gzip, Charsets.UTF_8).use { writer ->
-                writer.write(buildJson(doc))
+            OutputStreamWriter(gzip, Charsets.UTF_8).buffered(WRITE_BUFFER_CHARS).use { writer ->
+                writeJson(doc, writer)
             }
         }
     }
@@ -190,7 +190,12 @@ object RnoteNativeSerializer {
 
     // ── JSON builder ──────────────────────────────────────────────────────────
 
-    private fun buildJson(doc: RnoteNativeDocument): String {
+    /**
+     * Writes the whole file to [out]. Built piecewise rather than as one string: an image
+     * is megabytes of base64, and a note holding a few photos, built up as a single
+     * string and then copied out of it, ran autosave out of memory.
+     */
+    private fun writeJson(doc: RnoteNativeDocument, out: java.io.Writer) {
         val sb = StringBuilder()
         sb.append("""{"version":"0.14.2","data":{"engine_snapshot":{""")
         sb.append(""""document":""")
@@ -203,8 +208,22 @@ object RnoteNativeSerializer {
         sb.append(""","stroke_components":[{"value":null,"version":0}""")
         doc.elements.forEach { el ->
             sb.append(",{\"value\":")
-            sb.appendElement(el)
+            val rawImage = (el as? NativeBitmapElement)?.raw
+            if (rawImage != null) {
+                // Straight into the stream, the pixels never copied into the builder.
+                out.append(sb)
+                sb.setLength(0)
+                out.write("{\"bitmapimage\":")
+                writeTree(rawImage, out)
+                out.write("}")
+            } else {
+                sb.appendElement(el)
+            }
             sb.append(""","version":1}""")
+            if (sb.length >= WRITE_BUFFER_CHARS) {
+                out.append(sb)
+                sb.setLength(0)
+            }
         }
 
         sb.append("""],"chrono_components":[{"value":null,"version":0}""")
@@ -222,7 +241,19 @@ object RnoteNativeSerializer {
             sb.append(""",{"value":{"t":${i + 1},"layer":$layer},"version":1}""")
         }
         sb.append("""],"chrono_counter":${doc.elements.size}}}}""")
-        return sb.toString()
+        out.append(sb)
+    }
+
+    /** How much is gathered before it goes to the stream, in chars. */
+    private const val WRITE_BUFFER_CHARS = 64 * 1024
+
+    private val treeAdapter = com.google.gson.Gson().getAdapter(com.google.gson.JsonElement::class.java)
+
+    /** [tree] as [com.google.gson.JsonElement.toString] writes it, byte for byte, but streamed. */
+    private fun writeTree(tree: com.google.gson.JsonElement, out: java.io.Writer) {
+        val writer = com.google.gson.stream.JsonWriter(out)
+        writer.isLenient = true
+        treeAdapter.write(writer, tree)
     }
 
     // ── Document block ────────────────────────────────────────────────────────

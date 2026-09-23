@@ -431,6 +431,90 @@ object NativeEditing {
             as? NativeShapeElement
     }
 
+    // ── Images ────────────────────────────────────────────────────────────────
+
+    /** Where a new image goes: its top-left corner, and document units per image pixel. */
+    data class ImagePlacement(val x: Float, val y: Float, val scale: Float)
+
+    /**
+     * Desktop Rnote's placement of an imported image (`determine_stroke_import_pos` and
+     * `calculate_resize_ratio`): the top-left corner [offset] in from the top-left of the
+     * view, never above or left of the origin on a layout that has one; one document unit
+     * per pixel, shrunk — never grown — until the image fits in the view and, on a layout
+     * of fixed width, on the page. The view is in document units; [offset] is too, and is
+     * also kept free on the right and at the bottom, where Rnote lets the image touch the
+     * edge but the pen picker would sit on top of it here.
+     */
+    fun placeImage(
+        pixelWidth: Int, pixelHeight: Int,
+        viewLeft: Float, viewTop: Float, viewRight: Float, viewBottom: Float,
+        offset: Float,
+        fixedPageWidth: Float?,
+        clampToOrigin: Boolean
+    ): ImagePlacement {
+        var x = viewLeft + offset
+        var y = viewTop + offset
+        if (clampToOrigin) {
+            x = x.coerceAtLeast(0f)
+            y = y.coerceAtLeast(0f)
+        }
+        val w = pixelWidth.coerceAtLeast(1).toFloat()
+        val h = pixelHeight.coerceAtLeast(1).toFloat()
+        var scale = 1f
+        val roomX = viewRight - offset - x
+        val roomY = viewBottom - offset - y
+        if (roomX > 0f) scale = minOf(scale, roomX / w)
+        if (roomY > 0f) scale = minOf(scale, roomY / h)
+        if (fixedPageWidth != null && fixedPageWidth > x) scale = minOf(scale, (fixedPageWidth - x) / w)
+        return ImagePlacement(x, y, scale.coerceAtLeast(IMAGE_SCALE_MIN))
+    }
+
+    /**
+     * A new image, built as desktop Rnote's `BitmapImage::from_image_bytes` builds one and
+     * read back through the normal parser, so the element holds exactly what the file will:
+     * a rectangle of the image's own pixel size, with [ImagePlacement.scale] and the
+     * position in its transform. [rgbaBase64] is standard base64 of [pixelWidth] ×
+     * [pixelHeight] pixels of premultiplied RGBA, Rnote's only memory format. Null for an
+     * image without pixels.
+     */
+    fun createImage(
+        rgbaBase64: String,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        placement: ImagePlacement
+    ): NativeBitmapElement? {
+        if (pixelWidth <= 0 || pixelHeight <= 0 || placement.scale <= 0f) return null
+        val hx = pixelWidth / 2.0
+        val hy = pixelHeight / 2.0
+        fun rectangle(scale: Double, tx: Double, ty: Double) = JsonObject().apply {
+            add("cuboid", JsonObject().apply {
+                add("half_extents", JsonArray().apply { add(hx); add(hy) })
+            })
+            add("transform", JsonObject().apply {
+                add("affine", JsonArray().apply {
+                    listOf(scale, 0.0, 0.0, 0.0, scale, 0.0, tx, ty, 1.0).forEach { add(it) }
+                })
+            })
+        }
+        val image = JsonObject().apply {
+            addProperty("data", rgbaBase64)
+            // Rnote's `Image::from(DynamicImage)`: the pixel grid itself, at the origin.
+            add("rectangle", rectangle(1.0, hx, hy))
+            addProperty("pixel_width", pixelWidth)
+            addProperty("pixel_height", pixelHeight)
+            addProperty("memory_format", "R8g8b8a8Premultiplied")
+        }
+        val s = placement.scale.toDouble()
+        val placed = rectangle(s, round3(placement.x + hx * s), round3(placement.y + hy * s))
+        val tree = JsonObject().apply {
+            add("bitmapimage", JsonObject().apply {
+                add("image", image)
+                add("rectangle", placed)
+            })
+        }
+        return RnoteNativeParser.parseElementTree(tree) as? NativeBitmapElement
+    }
+
     // ── Text (the Typewriter) ─────────────────────────────────────────────────
 
     /**
@@ -600,4 +684,6 @@ object NativeEditing {
     const val TEXT_WIDTH_DEFAULT = 600f
     private const val TEXT_WIDTH_MIN = 150f
     private const val TEXT_PAGE_MARGIN = 20f
+    /** Keeps an image placed in a sliver of a view from collapsing to nothing. */
+    private const val IMAGE_SCALE_MIN = 0.01f
 }

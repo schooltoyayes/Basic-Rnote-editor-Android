@@ -19,6 +19,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Highlight
 import androidx.compose.material.icons.filled.HorizontalRule
@@ -78,7 +81,12 @@ fun PenConfigStrip(
     onDeselectAll: () -> Unit,
     modifier: Modifier = Modifier,
     onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit = {},
-    onEraserModeSelected: (EraserMode) -> Unit = {}
+    onEraserModeSelected: (EraserMode) -> Unit = {},
+    canPaste: Boolean = false,
+    onCopySelection: () -> Unit = {},
+    onCutSelection: () -> Unit = {},
+    onPaste: () -> Unit = {},
+    onLockAspectRatioToggled: () -> Unit = {}
 ) {
     Surface(
         modifier = modifier.width(60.dp),
@@ -95,7 +103,9 @@ fun PenConfigStrip(
                 ToolType.BRUSH -> BrushConfigPage(toolConfig, onBrushStyleSelected, onSizeChanged)
                 ToolType.ERASER -> EraserConfigPage(toolConfig, onEraserModeSelected, onSizeChanged)
                 ToolType.SELECTOR -> SelectorConfigPage(
-                    hasActiveSelection, onDeleteSelection, onDuplicateSelection, onSelectAll, onDeselectAll
+                    hasActiveSelection, onDeleteSelection, onDuplicateSelection, onSelectAll, onDeselectAll,
+                    canPaste, onCopySelection, onCutSelection, onPaste,
+                    toolConfig.lockAspectRatio, onLockAspectRatioToggled
                 )
                 ToolType.SHAPER -> ShaperConfigPage(toolConfig, onShapeKindSelected, onSizeChanged)
                 ToolType.TYPEWRITER -> TypewriterConfigPage(toolConfig, onSizeChanged)
@@ -206,7 +216,13 @@ private fun SelectorConfigPage(
     onDeleteSelection: () -> Unit,
     onDuplicateSelection: () -> Unit,
     onSelectAll: () -> Unit,
-    onDeselectAll: () -> Unit
+    onDeselectAll: () -> Unit,
+    canPaste: Boolean,
+    onCopySelection: () -> Unit,
+    onCutSelection: () -> Unit,
+    onPaste: () -> Unit,
+    lockAspectRatio: Boolean,
+    onLockAspectRatioToggled: () -> Unit
 ) {
     StripIconToggle(GeneratedIcons.SelectorPolygon, "Select With a Polygon", selected = true, implemented = true) {}
     StripDivider()
@@ -215,8 +231,11 @@ private fun SelectorConfigPage(
     StripActionButton(GeneratedIcons.SelectionDuplicate, "Duplicate Selection", enabled = hasActiveSelection, onClick = onDuplicateSelection)
     StripActionButton(GeneratedIcons.SelectionDelete, "Delete Selection", enabled = hasActiveSelection, tint = BrnaColors.DestructiveTint, onClick = onDeleteSelection)
     StripDivider()
-    StripIconToggle(GeneratedIcons.SelectionInvertColor, "Invert Color Brightness (coming soon)", selected = false, implemented = false) {}
-    StripIconToggle(GeneratedIcons.SelectionLockAspectRatio, "Lock Aspect Ratio (coming soon)", selected = false, implemented = false) {}
+    StripActionButton(Icons.Default.ContentCopy, "Copy", enabled = hasActiveSelection, onClick = onCopySelection)
+    StripActionButton(Icons.Default.ContentCut, "Cut", enabled = hasActiveSelection, onClick = onCutSelection)
+    StripActionButton(Icons.Default.ContentPaste, "Paste", enabled = canPaste, onClick = onPaste)
+    StripDivider()
+    StripIconToggle(GeneratedIcons.SelectionLockAspectRatio, "Lock Aspect Ratio", selected = lockAspectRatio, implemented = true, onClick = onLockAspectRatioToggled)
 }
 
 // ── Stub pages (Shaper / Typewriter / Tools) ────────────────────────────

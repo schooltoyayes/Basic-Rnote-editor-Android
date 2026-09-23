@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -28,6 +29,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
+import io.github.kjly.brna.model.Affine
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.EraserMode
 import io.github.kjly.brna.model.InkPoint
@@ -53,6 +55,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.IdentityHashMap
+import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.hypot
 
 /**
@@ -198,6 +202,8 @@ fun DrawingCanvas(
     // actual movement — not one per ACTION_MOVE frame, and not on a drag that
     // starts but never moves.
     var selectionMoveSnapshotTaken by remember { mutableStateOf(false) }
+    // A scale or rotate by one of the selection's handles; null when there is none.
+    var transformDrag by remember { mutableStateOf<TransformDrag?>(null) }
     // Latched at ACTION_DOWN: a gesture that began with the S-Pen side button held (or
     // with the pen's eraser end) erases for its whole duration, even if the button is
     // released halfway through. Deciding per-event instead would switch tools mid-stroke.
@@ -242,6 +248,7 @@ fun DrawingCanvas(
                 // ── 2-Finger Pan & Pinch-to-Zoom ─────────────────────────────────────
                 if (motionEvent.pointerCount == 2) {
                     tapDownScreen = null
+                    transformDrag = null
                     // Cancel any in-progress single-finger stroke
                     if (isDrawing) {
                         isDrawing = false
@@ -411,6 +418,29 @@ fun DrawingCanvas(
 
                         val boundingBox = selectionBounds(selectedStrokes, selectedNatives)
                         if (activeTool == ToolType.SELECTOR && boundingBox != null) {
+                            val handle = handleAt(boundingBox, viewportState, Offset(screenX, screenY))
+                            if (handle != null) {
+                                val corners = listOf(
+                                    Offset(boundingBox.left, boundingBox.top),
+                                    Offset(boundingBox.right, boundingBox.top),
+                                    Offset(boundingBox.right, boundingBox.bottom),
+                                    Offset(boundingBox.left, boundingBox.bottom)
+                                )
+                                val natives = selectedNatives?.toList() ?: emptyList()
+                                transformDrag = TransformDrag(
+                                    rotate = handle == ROTATE_HANDLE,
+                                    pivot = if (handle == ROTATE_HANDLE) {
+                                        Offset((boundingBox.left + boundingBox.right) / 2f, (boundingBox.top + boundingBox.bottom) / 2f)
+                                    } else corners[(handle + 2) % 4],
+                                    corner = if (handle == ROTATE_HANDLE) Offset.Zero else corners[handle],
+                                    start = Offset(x, y),
+                                    strokes = selectedStrokes.toList(),
+                                    natives = natives,
+                                    current = natives
+                                )
+                                selectionMoveSnapshotTaken = false
+                                return@pointerInteropFilter true
+                            }
                             val screenBoundingBox = Rect(
                                 viewportState.canvasToScreen(boundingBox.topLeft),
                                 viewportState.canvasToScreen(boundingBox.bottomRight)
@@ -450,6 +480,31 @@ fun DrawingCanvas(
 
                     MotionEvent.ACTION_MOVE -> {
                         if (isDrawing) {
+                            val drag = transformDrag
+                            if (drag != null) {
+                                if (!selectionMoveSnapshotTaken) {
+                                    onSelectionDragStart()
+                                    selectionMoveSnapshotTaken = true
+                                }
+                                val m = dragTransform(drag, Offset(x, y), toolConfig.lockAspectRatio)
+                                if (drag.strokes.isNotEmpty()) {
+                                    val updated = SelectionManager.transformStrokes(drag.strokes, m)
+                                    selectedStrokes.clear()
+                                    selectedStrokes.addAll(updated)
+                                    onStrokesModified(updated)
+                                }
+                                val selected = selectedNatives
+                                if (selected != null && drag.natives.isNotEmpty()) {
+                                    val next = drag.natives.map { NativeEditing.transform(it, m) }
+                                    val moved = IdentityHashMap<NativeCanvasElement, NativeCanvasElement>()
+                                    drag.current.forEachIndexed { i, el -> moved[el] = next[i] }
+                                    drag.current = next
+                                    selected.clear()
+                                    selected.addAll(next)
+                                    onNativesMoved(moved)
+                                }
+                                return@pointerInteropFilter true
+                            }
                             val natives = selectedNatives
                             if (isMovingSelection &&
                                 (selectedStrokes.isNotEmpty() || !natives.isNullOrEmpty())
@@ -504,7 +559,9 @@ fun DrawingCanvas(
                     }
 
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        if (isMovingSelection) {
+                        if (transformDrag != null) {
+                            transformDrag = null
+                        } else if (isMovingSelection) {
                             isMovingSelection = false
                         } else if (isDrawing) {
                             if (activeTool == ToolType.SELECTOR && lassoPoints.size >= 3) {
@@ -690,17 +747,39 @@ fun DrawingCanvas(
             // 5. Render selection bounding box
             val bbox = selectionBounds(selectedStrokes, selectedNatives)
             bbox?.let { box ->
-                val inflated = box.inflate(12f / viewportState.effectiveScale)
+                val scale = viewportState.effectiveScale
+                val inflated = box.inflate(HANDLE_INFLATE_PX / scale)
                 drawRoundRect(
-                    color = Color(0xFF82AAFF),
+                    color = SELECTION_COLOR,
                     topLeft = inflated.topLeft,
                     size = inflated.size,
                     cornerRadius = CornerRadius(8f, 8f),
                     style = CanvasStrokeStyle(
-                        width = 2.5f / viewportState.effectiveScale,
+                        width = 2.5f / scale,
                         pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 12f), 0f)
                     )
                 )
+                // Handles, a fixed size on screen: the corners scale, the knob above rotates.
+                if (toolConfig.activeTool == ToolType.SELECTOR) {
+                    val handles = handlePositions(box, scale)
+                    val half = HANDLE_SIZE_PX / 2f / scale
+                    val outline = CanvasStrokeStyle(width = 2f / scale)
+                    val knob = handles[ROTATE_HANDLE]
+                    drawLine(
+                        color = SELECTION_COLOR,
+                        start = Offset(knob.x, inflated.top),
+                        end = knob,
+                        strokeWidth = 2f / scale
+                    )
+                    for (i in 0 until 4) {
+                        val topLeft = handles[i] - Offset(half, half)
+                        val size = Size(half * 2f, half * 2f)
+                        drawRect(color = Color.White, topLeft = topLeft, size = size)
+                        drawRect(color = SELECTION_COLOR, topLeft = topLeft, size = size, style = outline)
+                    }
+                    drawCircle(color = Color.White, radius = half * 1.2f, center = knob)
+                    drawCircle(color = SELECTION_COLOR, radius = half * 1.2f, center = knob, style = outline)
+                }
             }
 
             // 6. Render the eraser square, in canvas space so it scales with zoom exactly
@@ -818,6 +897,98 @@ private fun eraseAt(
     if (hit.isNotEmpty()) onEraseStrokes(hit)
     if (pieces.isNotEmpty()) onSplitStrokes(pieces)
     if (hitShapes.isNotEmpty()) onEraseNatives(hitShapes)
+}
+
+/**
+ * A drag on one of the selection's handles. The transform is worked out afresh from
+ * where the drag began and applied to the selection as it was then, every frame —
+ * adding up small per-frame steps instead would drift and put the rounding into the file.
+ */
+private class TransformDrag(
+    val rotate: Boolean,
+    /** Scaling: the corner opposite the one dragged. Rotating: the selection's centre. */
+    val pivot: Offset,
+    /** Scaling: the selection corner being dragged. */
+    val corner: Offset,
+    /** Where the drag began, in canvas units. */
+    val start: Offset,
+    val strokes: List<Stroke>,
+    val natives: List<NativeCanvasElement>,
+    /** The desktop elements as the document holds them now, in the order of [natives]. */
+    var current: List<NativeCanvasElement>
+)
+
+private val SELECTION_COLOR = Color(0xFF82AAFF)
+
+/** The dashed box sits this far (screen px) outside the selection; the handles on its corners. */
+private const val HANDLE_INFLATE_PX = 12f
+private const val HANDLE_SIZE_PX = 14f
+/** How close (screen px) the pen has to come to a handle to take it. */
+private const val HANDLE_HIT_PX = 32f
+/** How far (screen px) the rotate knob stands above the box. */
+private const val ROTATE_HANDLE_OFFSET_PX = 36f
+/** Index of the rotate knob in [handlePositions]; 0–3 are the corners, clockwise from top-left. */
+private const val ROTATE_HANDLE = 4
+/** Rnote won't scale a selection flat or inside out; nor will this. */
+private const val MIN_SCALE = 0.02f
+private const val MAX_SCALE = 50f
+
+/** Where the handles of a selection with bounds [box] are drawn, in canvas units. */
+private fun handlePositions(box: Rect, scale: Float): List<Offset> {
+    val r = box.inflate(HANDLE_INFLATE_PX / scale)
+    return listOf(
+        Offset(r.left, r.top), Offset(r.right, r.top), Offset(r.right, r.bottom), Offset(r.left, r.bottom),
+        Offset((r.left + r.right) / 2f, r.top - ROTATE_HANDLE_OFFSET_PX / scale)
+    )
+}
+
+/**
+ * The handle nearest the screen point [screen], if one is within reach. A touch inside the
+ * selection itself is never a handle: it moves the selection, however small that is.
+ */
+private fun handleAt(box: Rect, viewport: ViewportState, screen: Offset): Int? {
+    val topLeft = viewport.canvasToScreen(Offset(box.left, box.top))
+    val bottomRight = viewport.canvasToScreen(Offset(box.right, box.bottom))
+    if (screen.x in topLeft.x..bottomRight.x && screen.y in topLeft.y..bottomRight.y) return null
+    var best: Int? = null
+    var bestDistance = HANDLE_HIT_PX
+    handlePositions(box, viewport.effectiveScale).forEachIndexed { i, p ->
+        val d = (viewport.canvasToScreen(p) - screen).getDistance()
+        if (d <= bestDistance) { best = i; bestDistance = d }
+    }
+    return best
+}
+
+/**
+ * The transform a handle drag at [pos] stands for. Scaling moves the dragged corner with
+ * the pen and keeps the opposite one where it is — uniformly with [lockAspect], as Rnote's
+ * "Lock Aspect Ratio" does. Rotating turns about the centre by the angle swept since the
+ * drag began.
+ */
+private fun dragTransform(drag: TransformDrag, pos: Offset, lockAspect: Boolean): FloatArray {
+    val p = drag.pivot
+    if (drag.rotate) {
+        val from = atan2(drag.start.y - p.y, drag.start.x - p.x)
+        val to = atan2(pos.y - p.y, pos.x - p.x)
+        return Affine.rotateAbout(p.x, p.y, to - from)
+    }
+    val moved = drag.corner + (pos - drag.start)
+    val w0 = drag.corner.x - p.x
+    val h0 = drag.corner.y - p.y
+    var sx: Float
+    var sy: Float
+    if (lockAspect) {
+        val len2 = w0 * w0 + h0 * h0
+        val s = if (len2 > 0.25f) ((moved.x - p.x) * w0 + (moved.y - p.y) * h0) / len2 else 1f
+        sx = s; sy = s
+    } else {
+        // A selection with no width (a vertical line) can't be stretched sideways, and so on.
+        sx = if (abs(w0) > 0.5f) (moved.x - p.x) / w0 else 1f
+        sy = if (abs(h0) > 0.5f) (moved.y - p.y) / h0 else 1f
+    }
+    sx = sx.coerceIn(MIN_SCALE, MAX_SCALE)
+    sy = sy.coerceIn(MIN_SCALE, MAX_SCALE)
+    return Affine.scaleAbout(p.x, p.y, sx, sy)
 }
 
 /** How far (screen px) a Typewriter tap may drift and still count as a tap. */

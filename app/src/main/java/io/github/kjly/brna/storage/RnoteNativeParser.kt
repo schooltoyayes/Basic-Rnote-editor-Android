@@ -62,6 +62,12 @@ object RnoteNativeParser {
         return parseElementValue(reader)
     }
 
+    /**
+     * As [parseElementJson], for JSON already in memory. No detour through a string, which
+     * for an image would be tens of megabytes written out and read back in.
+     */
+    fun parseElementTree(tree: JsonElement): NativeCanvasElement? = parseElementValue(JsonTreeReader(tree))
+
     // ── Internal holder types ─────────────────────────────────────────────────
 
     private data class FormatConfig(

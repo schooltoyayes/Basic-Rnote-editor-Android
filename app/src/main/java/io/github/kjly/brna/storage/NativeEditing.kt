@@ -5,6 +5,7 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
+import io.github.kjly.brna.model.Affine
 import io.github.kjly.brna.model.EllipseShape
 import io.github.kjly.brna.model.LineShape
 import io.github.kjly.brna.model.NativeBitmapElement
@@ -122,6 +123,156 @@ object NativeEditing {
 
     /** Rnote writes coordinates to three decimals; so do we. */
     private fun round3(v: Double) = Math.round(v * 1000.0) / 1000.0
+
+    // ── Scaling and rotating ──────────────────────────────────────────────────
+
+    /**
+     * [el] with the affine [m] applied — how the selector scales and rotates. Mirrors
+     * Rnote's `Transformable` impls: points are mapped, every placement transform (a
+     * rect's, an ellipse's, a text box's, an image's) has [m] composed onto it, and a
+     * shape's line width is scaled by [Affine.widthFactor], as Rnote's `ShapeStroke::scale`
+     * does. Text keeps its font size and is scaled through its transform instead, as in
+     * Rnote. Brush strokes are returned unchanged: they live in the stroke list.
+     */
+    fun transform(el: NativeCanvasElement, m: FloatArray): NativeCanvasElement {
+        val widthFactor = Affine.widthFactor(m)
+        return when (el) {
+            is NativeTextElement -> {
+                val tree = (el.raw?.takeIf { it.isJsonObject } ?: textJson(el)).deepCopy()
+                transformIn(tree, m, 1.0)
+                RnoteNativeParser.parseElementTree(JsonObject().apply { add("textstroke", tree) })
+                    as? NativeTextElement ?: el
+            }
+            is NativeShapeElement -> {
+                val raw = el.raw
+                if (raw != null) {
+                    val tree = raw.deepCopy()
+                    transformIn(tree, m, widthFactor.toDouble())
+                    RnoteNativeParser.parseElementTree(JsonObject().apply { add("shapestroke", tree) })
+                        as? NativeShapeElement ?: el
+                } else {
+                    val shape = mapShape(el.shape, m)
+                    val b = outlineBounds(shape) ?: floatArrayOf(el.minX, el.minY, el.maxX, el.maxY)
+                    el.copy(shape = shape, strokeWidth = el.strokeWidth * widthFactor,
+                        minX = b[0], minY = b[1], maxX = b[2], maxY = b[3])
+                }
+            }
+            is NativeBitmapElement -> {
+                // Not re-read from its JSON: an older file's image would be decoded all
+                // over again on every frame of the drag.
+                val rect = el.rect?.let { it.copy(transform = Affine.compose(m, it.transform)) }
+                val b = if (rect != null) boxBounds(rect.transform, rect.halfExtentX, rect.halfExtentY)
+                else mappedBounds(m, el.minX, el.minY, el.maxX, el.maxY)
+                el.copy(
+                    transform = Affine.compose(m, el.transform), rect = rect,
+                    minX = b[0], minY = b[1], maxX = b[2], maxY = b[3],
+                    raw = el.raw?.deepCopy()?.also { transformIn(it, m, 1.0) }
+                )
+            }
+            is NativeVectorImageElement -> {
+                val t = Affine.compose(m, el.transform)
+                val b = boxBounds(t, el.halfExtentX, el.halfExtentY)
+                NativeVectorImageElement(
+                    el.svgData, el.intrinsicWidth, el.intrinsicHeight, el.halfExtentX, el.halfExtentY,
+                    t, el.layer, b[0], b[1], b[2], b[3]
+                )
+            }
+            is NativeBrushStroke -> el
+        }
+    }
+
+    /** Applies [m] to every position in an element's JSON; see [shiftTree] for what counts. */
+    private fun transformIn(node: JsonElement, m: FloatArray, widthFactor: Double) {
+        if (!node.isJsonObject) return
+        for ((key, value) in node.asJsonObject.entrySet()) {
+            when {
+                key == "text_style" -> Unit
+                key == "style" -> if (widthFactor != 1.0) scaleWidths(value, widthFactor)
+                key == "affine" && value.isJsonArray && value.asJsonArray.size() == 9 -> {
+                    val a = value.asJsonArray
+                    // Composed in double precision and written unrounded: a rotation's
+                    // cosines rounded to three places would visibly shrink a large page.
+                    val t = doubleArrayOf(a[0].asDouble, a[1].asDouble, a[3].asDouble, a[4].asDouble, a[6].asDouble, a[7].asDouble)
+                    val r = composeD(m, t)
+                    a.set(0, JsonPrimitive(r[0])); a.set(1, JsonPrimitive(r[1]))
+                    a.set(3, JsonPrimitive(r[2])); a.set(4, JsonPrimitive(r[3]))
+                    a.set(6, JsonPrimitive(r[4])); a.set(7, JsonPrimitive(r[5]))
+                }
+                key in POINT_KEYS && isPoint(value) -> mapPoint(value.asJsonArray, m)
+                key == "path" && value.isJsonArray -> value.asJsonArray.forEach {
+                    if (isPoint(it)) mapPoint(it.asJsonArray, m)
+                }
+                value.isJsonObject -> transformIn(value, m, widthFactor)
+            }
+        }
+    }
+
+    /** Multiplies every `stroke_width` in a style (Rnote's smooth, rough and textured all have one). */
+    private fun scaleWidths(node: JsonElement, factor: Double) {
+        if (!node.isJsonObject) return
+        val obj = node.asJsonObject
+        for ((key, value) in obj.entrySet()) {
+            if (key == "stroke_width" && value.isJsonPrimitive && value.asJsonPrimitive.isNumber) {
+                obj.add(key, JsonPrimitive(round3(value.asDouble * factor)))
+            } else if (value.isJsonObject) {
+                scaleWidths(value, factor)
+            }
+        }
+    }
+
+    private fun composeD(m: FloatArray, t: DoubleArray): DoubleArray {
+        val m0 = m[0].toDouble(); val m1 = m[1].toDouble(); val m2 = m[2].toDouble()
+        val m3 = m[3].toDouble(); val m4 = m[4].toDouble(); val m5 = m[5].toDouble()
+        return doubleArrayOf(
+            m0 * t[0] + m2 * t[1], m1 * t[0] + m3 * t[1],
+            m0 * t[2] + m2 * t[3], m1 * t[2] + m3 * t[3],
+            m0 * t[4] + m2 * t[5] + m4, m1 * t[4] + m3 * t[5] + m5
+        )
+    }
+
+    private fun mapPoint(p: JsonArray, m: FloatArray) {
+        val x = p[0].asDouble; val y = p[1].asDouble
+        p.set(0, JsonPrimitive(round3(m[0] * x + m[2] * y + m[4])))
+        p.set(1, JsonPrimitive(round3(m[1] * x + m[3] * y + m[5])))
+    }
+
+    private fun mapShape(shape: io.github.kjly.brna.model.NativeShapeKind, m: FloatArray) = when (shape) {
+        is LineShape -> LineShape(
+            Affine.mapX(m, shape.x1, shape.y1), Affine.mapY(m, shape.x1, shape.y1),
+            Affine.mapX(m, shape.x2, shape.y2), Affine.mapY(m, shape.x2, shape.y2)
+        )
+        is RectShape -> shape.copy(transform = Affine.compose(m, shape.transform))
+        is EllipseShape -> shape.copy(transform = Affine.compose(m, shape.transform))
+        is PathShape -> PathShape(shape.ops.map { op ->
+            fun x(px: Float, py: Float) = Affine.mapX(m, px, py)
+            fun y(px: Float, py: Float) = Affine.mapY(m, px, py)
+            when (op) {
+                is PathOp.MoveTo -> PathOp.MoveTo(x(op.x, op.y), y(op.x, op.y))
+                is PathOp.LineTo -> PathOp.LineTo(x(op.x, op.y), y(op.x, op.y))
+                is PathOp.QuadTo -> PathOp.QuadTo(x(op.x1, op.y1), y(op.x1, op.y1), x(op.x, op.y), y(op.x, op.y))
+                is PathOp.CubicTo -> PathOp.CubicTo(
+                    x(op.x1, op.y1), y(op.x1, op.y1), x(op.x2, op.y2), y(op.x2, op.y2), x(op.x, op.y), y(op.x, op.y)
+                )
+                PathOp.Close -> op
+            }
+        })
+    }
+
+    private fun outlineBounds(shape: io.github.kjly.brna.model.NativeShapeKind): FloatArray? {
+        val pts = outline(shape).flatten()
+        if (pts.isEmpty()) return null
+        return floatArrayOf(pts.minOf { it.first }, pts.minOf { it.second }, pts.maxOf { it.first }, pts.maxOf { it.second })
+    }
+
+    /** Axis-aligned bounds of the box ±([hx], [hy]) placed by [t]. */
+    private fun boxBounds(t: FloatArray, hx: Float, hy: Float): FloatArray =
+        mappedBounds(t, -hx, -hy, hx, hy)
+
+    private fun mappedBounds(m: FloatArray, l: Float, t: Float, r: Float, b: Float): FloatArray {
+        val xs = floatArrayOf(Affine.mapX(m, l, t), Affine.mapX(m, r, t), Affine.mapX(m, r, b), Affine.mapX(m, l, b))
+        val ys = floatArrayOf(Affine.mapY(m, l, t), Affine.mapY(m, r, t), Affine.mapY(m, r, b), Affine.mapY(m, l, b))
+        return floatArrayOf(xs.min(), ys.min(), xs.max(), ys.max())
+    }
 
     // ── Hit testing ───────────────────────────────────────────────────────────
 

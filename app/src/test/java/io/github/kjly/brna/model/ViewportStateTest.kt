@@ -109,4 +109,24 @@ class ViewportStateTest {
         assertEquals(ViewportState.ORIGIN_MARGIN_PX, onScreen.x, eps)
         assertEquals(ViewportState.ORIGIN_MARGIN_PX, onScreen.y, eps)
     }
+
+    @Test
+    fun `jumping to a page centres it at the top, at the same zoom`() {
+        val viewport = ViewportState(panOffset = Offset(-5000f, 300f), zoomScale = 0.5f, displayScale = 2f)
+        // Page 3 of an A4 column: top at 2 * 1122.5, 800 wide at an effective scale of 1.
+        val shown = viewport.showingPage(0f, 2245f, 800f, viewportWidthPx = 2000f)
+        assertOffsetEquals(Offset(600f, ViewportState.ORIGIN_MARGIN_PX - 2245f), shown.panOffset)
+        assertEquals(0.5f, shown.zoomScale, eps)
+        assertOffsetEquals(Offset(600f, ViewportState.ORIGIN_MARGIN_PX), shown.canvasToScreen(Offset(0f, 2245f)))
+    }
+
+    @Test
+    fun `jumping to a page to the right of the origin brings its left edge in`() {
+        val viewport = ViewportState(zoomScale = 2f)
+        val shown = viewport.showingPage(800f, 0f, 800f, viewportWidthPx = 1000f)
+        assertOffsetEquals(
+            Offset(ViewportState.ORIGIN_MARGIN_PX, ViewportState.ORIGIN_MARGIN_PX),
+            shown.canvasToScreen(Offset(800f, 0f))
+        )
+    }
 }

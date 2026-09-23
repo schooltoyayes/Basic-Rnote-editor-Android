@@ -7,6 +7,8 @@ import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FilterCenterFocus
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NoteAdd
@@ -64,7 +66,11 @@ fun RnoteTopBar(
     onClearCanvas: () -> Unit,
     onOpenPageSettings: () -> Unit,
     /** Desktop Rnote's "Import PDF": the pages go into the open note. */
-    onImportPdf: () -> Unit = {}
+    onImportPdf: () -> Unit = {},
+    /** The notes opened or saved last. */
+    onShowRecent: () -> Unit = {},
+    /** Thumbnails of every page, to jump to one. */
+    onShowPages: () -> Unit = {}
 ) {
     var showOverflowMenu by remember { mutableStateOf(false) }
     val iconTint = if (paperStyle.isDarkMode) Color.White else Color(0xFF1E1E24)
@@ -132,6 +138,11 @@ fun RnoteTopBar(
                 )
             }
 
+            // Page overview: thumbnails of every page, tap one to go there.
+            IconButton(onClick = onShowPages) {
+                Icon(Icons.Default.GridView, contentDescription = "Pages", tint = iconTint)
+            }
+
             // Page settings
             IconButton(onClick = onOpenPageSettings) {
                 Icon(Icons.Default.Article, contentDescription = "Page Settings", tint = iconTint)
@@ -154,6 +165,11 @@ fun RnoteTopBar(
                         leadingIcon = { Icon(Icons.Default.FolderOpen, null) },
                         text = { Text("Open…") },
                         onClick = { showOverflowMenu = false; onOpenDocument() }
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Default.History, null) },
+                        text = { Text("Recent…") },
+                        onClick = { showOverflowMenu = false; onShowRecent() }
                     )
                     // Save writes straight back over the note's own file; picking a new
                     // name or folder is what Save As is for.

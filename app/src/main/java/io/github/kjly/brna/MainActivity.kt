@@ -45,6 +45,7 @@ import io.github.kjly.brna.export.DocumentExporter
 import io.github.kjly.brna.export.ExportFormat
 import io.github.kjly.brna.export.ExportPrefs
 import io.github.kjly.brna.export.ExportScope
+import io.github.kjly.brna.export.PageThumbnails
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.NativeBrushStroke
 import io.github.kjly.brna.model.NativeCanvasElement
@@ -62,6 +63,7 @@ import io.github.kjly.brna.storage.DocumentUri
 import io.github.kjly.brna.storage.FileManager
 import io.github.kjly.brna.storage.NativeEditing
 import io.github.kjly.brna.storage.PdfImporter
+import io.github.kjly.brna.storage.RecentFiles
 import io.github.kjly.brna.storage.Recovery
 import io.github.kjly.brna.storage.SettingsManager
 import kotlin.math.floor
@@ -78,6 +80,8 @@ import io.github.kjly.brna.ui.components.PageSettingsSheet
 import io.github.kjly.brna.ui.components.PenConfigStrip
 import io.github.kjly.brna.ui.components.PenPicker
 import io.github.kjly.brna.ui.components.RnoteTopBar
+import io.github.kjly.brna.ui.components.PageOverviewDialog
+import io.github.kjly.brna.ui.components.RecentFilesDialog
 import io.github.kjly.brna.ui.components.TextEntryDialog
 import io.github.kjly.brna.ui.theme.BabyRnoteTheme
 
@@ -110,6 +114,9 @@ private class Clip(val strokes: List<Stroke>, val natives: List<NativeCanvasElem
 private object SelectionClipboard {
     var clip by mutableStateOf<Clip?>(null)
 }
+
+/** Width of a page picture in the page overview, in px. */
+private const val THUMBNAIL_WIDTH_PX = 320
 
 /** How far a paste lands from the original when both are in view, as Duplicate does. */
 private const val PASTE_OFFSET = 20f
@@ -270,7 +277,7 @@ class MainActivity : ComponentActivity() {
      * Reads [uri] off the main thread and hands the note to the UI. Shared by the Open
      * picker and by "Open with" from other apps.
      */
-    private fun openDocument(uri: Uri) {
+    private fun openDocument(uri: Uri, fromRecent: Boolean = false) {
         if (busyMessage != null) return
         busyMessage = "Opening…"
         lifecycleScope.launch {
@@ -297,9 +304,17 @@ class MainActivity : ComponentActivity() {
                 // The bytes decide the format it saves back as. The old test was the
                 // "Imported Note" placeholder title, which said nothing about the file.
                 saveAsRnote = loaded.isNativeRnote
-                adoptDocumentUri(uri)
+                adoptDocumentUri(uri, title)
                 incomingDocument = loaded.document.copy(title = title)
                 Toast.makeText(this@MainActivity, "Opened: $title", Toast.LENGTH_SHORT).show()
+            } else if (fromRecent) {
+                // Moved, deleted, or its access withdrawn: an entry that can only fail goes.
+                RecentFiles.remove(this@MainActivity, uri.toString())
+                Toast.makeText(
+                    this@MainActivity,
+                    "Could not open it — it may have been moved or deleted. Try Open…",
+                    Toast.LENGTH_LONG
+                ).show()
             } else {
                 Toast.makeText(this@MainActivity, "Could not open file", Toast.LENGTH_SHORT).show()
             }
@@ -313,10 +328,30 @@ class MainActivity : ComponentActivity() {
     }
 
     /** This uri is now the note's home: save over it, and start the picker beside it. */
-    private fun adoptDocumentUri(uri: Uri) {
+    private fun adoptDocumentUri(uri: Uri, title: String) {
         DocumentUri.takePersistablePermission(this, uri)
         currentDocumentUri = uri
         pickerStartUri = uri
+        RecentFiles.add(this, uri, title)
+    }
+
+    /** Opens a note from the recent list, securing the open one first as leaving for the picker does. */
+    private fun openRecent(uri: Uri) {
+        if (busyMessage != null) return
+        lifecycleScope.launch {
+            val secured = autosaveNow()
+            if (!secured && currentDocumentUri != null) {
+                // Changed elsewhere, or the write failed: don't bury the changes under
+                // another note. Saving now shows why (and offers a copy).
+                Toast.makeText(
+                    this@MainActivity,
+                    "This note couldn't be saved automatically — save it first",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            openDocument(uri, fromRecent = true)
+        }
     }
 
     /** Writes back over the file the note came from. False when it has no file yet. */
@@ -374,21 +409,29 @@ class MainActivity : ComponentActivity() {
      * question for the next manual save.
      */
     private fun autosave() {
-        val document = unsavedDocument?.invoke() ?: return
+        lifecycleScope.launch { autosaveNow() }
+    }
+
+    /**
+     * [autosave], finishing before it returns: for when another note is about to be opened.
+     * True when the note's file now holds everything — nothing was unsaved, or it was
+     * written — and false when the changes are only in the recovery copy.
+     */
+    private suspend fun autosaveNow(): Boolean {
+        val document = unsavedDocument?.invoke() ?: return true
         val target = currentDocumentUri
         val asRnote = saveAsRnote
-        lifecycleScope.launch {
-            val wrote = withContext(Dispatchers.IO) {
-                try {
-                    Recovery.write(this@MainActivity, document, target, asRnote)
-                } catch (e: Throwable) {
-                    e.printStackTrace()
-                }
-                target != null && busyMessage == null && !changedElsewhere(target) &&
-                    writeLock.withLock { writeDocument(target, document, asRnote) }
+        val wrote = withContext(Dispatchers.IO) {
+            try {
+                Recovery.write(this@MainActivity, document, target, asRnote)
+            } catch (e: Throwable) {
+                e.printStackTrace()
             }
-            if (wrote && target != null) afterSave(target, document)
+            target != null && busyMessage == null && !changedElsewhere(target) &&
+                writeLock.withLock { writeDocument(target, document, asRnote) }
         }
+        if (wrote && target != null) afterSave(target, document)
+        return wrote
     }
 
     /** One write to a file at a time: autosave and a manual save can otherwise overlap. */
@@ -425,11 +468,11 @@ class MainActivity : ComponentActivity() {
                 return@launch
             }
             saveAsRnote = asRnote
-            adoptDocumentUri(uri)
             // The picker lets the name be edited, so the note takes the name it was actually
             // saved under — otherwise the title in the bar and the file on disk disagree.
-            DocumentUri.displayName(this@MainActivity, uri)
-                ?.let { onTitleAdopted?.invoke(DocumentUri.titleFrom(it)) }
+            val savedTitle = DocumentUri.displayName(this@MainActivity, uri)?.let(DocumentUri::titleFrom)
+            adoptDocumentUri(uri, savedTitle ?: document.title)
+            savedTitle?.let { onTitleAdopted?.invoke(it) }
             afterSave(uri, document)
             Toast.makeText(
                 this@MainActivity,
@@ -596,6 +639,8 @@ class MainActivity : ComponentActivity() {
             // Desktop elements (text, shapes, images) the selector holds, beside selectedStrokes.
             val selectedNatives = remember { mutableStateListOf<NativeCanvasElement>() }
             var textEditTarget by remember { mutableStateOf<TextEditTarget?>(null) }
+            var showRecent by remember { mutableStateOf(false) }
+            var showPages by remember { mutableStateOf(false) }
             val snapshot = { DocSnapshot(strokes.toList(), documentNativeElements) }
             val restore = { state: DocSnapshot ->
                 strokes.clear()
@@ -816,6 +861,8 @@ class MainActivity : ComponentActivity() {
                                 openDocumentLauncher.launch(arrayOf("*/*", "application/json"))
                             },
                             onImportPdf = { importPdfLauncher.launch(arrayOf("application/pdf")) },
+                            onShowRecent = { showRecent = true },
+                            onShowPages = { showPages = true },
                             onNewDocument = {
                                 if (isModified) {
                                     showNewDocumentDialog = true
@@ -1135,6 +1182,56 @@ class MainActivity : ComponentActivity() {
                                     )
                                 )
                             }
+                        )
+                    }
+
+                    // ── Recently opened notes ─────────────────────────────────────
+                    if (showRecent) {
+                        val entries = remember { RecentFiles.list(this@MainActivity) }
+                        RecentFilesDialog(
+                            entries = entries,
+                            currentUri = currentDocumentUri?.toString(),
+                            unsavedNewNote = isModified && currentDocumentUri == null,
+                            onOpen = { entry ->
+                                showRecent = false
+                                openRecent(Uri.parse(entry.uri))
+                            },
+                            onDismiss = { showRecent = false }
+                        )
+                    }
+
+                    // ── Page overview ──────────────────────────────────────────────
+                    if (showPages) {
+                        // The note as it is when the overview opens; its pictures show that.
+                        val overviewDocument = remember {
+                            NoteDocument(
+                                title = documentTitle,
+                                paperStyle = paperStyle,
+                                strokes = strokes.toList(),
+                                nativeElements = documentNativeElements
+                            )
+                        }
+                        val pages = remember { DocumentExporter.pagesFor(overviewDocument, ExportPrefs()) }
+                        val current = remember {
+                            val centre = viewportState.screenToCanvas(
+                                Offset(canvasSize.width / 2f, canvasSize.height / 2f)
+                            )
+                            pages.indexOfFirst { it.contains(centre) }.takeIf { it >= 0 }
+                        }
+                        PageOverviewDialog(
+                            pages = pages,
+                            currentPage = current,
+                            renderThumbnail = { page ->
+                                PageThumbnails.render(overviewDocument, page, THUMBNAIL_WIDTH_PX)
+                            },
+                            onPageSelected = { index ->
+                                showPages = false
+                                val page = pages[index]
+                                viewportState = viewportState.showingPage(
+                                    page.left, page.top, page.width, canvasSize.width.toFloat()
+                                )
+                            },
+                            onDismiss = { showPages = false }
                         )
                     }
 

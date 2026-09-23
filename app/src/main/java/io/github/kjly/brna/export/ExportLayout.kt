@@ -2,6 +2,8 @@ package io.github.kjly.brna.export
 
 import androidx.compose.ui.geometry.Rect
 import io.github.kjly.brna.model.LayoutMode
+import io.github.kjly.brna.model.NativeBrushStroke
+import io.github.kjly.brna.model.NativeCanvasElement
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.Stroke
 import kotlin.math.floor
@@ -36,7 +38,11 @@ object ExportLayout {
      * The bounding box of [strokes], widened by each stroke's nominal half-width so the
      * outline isn't clipped at the edge. Null when there is nothing to bound.
      */
-    fun contentBounds(strokes: List<Stroke>): Rect? {
+    fun contentBounds(
+        strokes: List<Stroke>,
+        /** Desktop elements (PDF pages, images, text, shapes) that count as content too. */
+        nativeElements: List<NativeCanvasElement> = emptyList()
+    ): Rect? {
         var minX = Float.POSITIVE_INFINITY
         var minY = Float.POSITIVE_INFINITY
         var maxX = Float.NEGATIVE_INFINITY
@@ -53,6 +59,15 @@ object ExportLayout {
                 if (p.y + half > maxY) maxY = p.y + half
             }
         }
+        for (el in nativeElements) {
+            // Brush strokes are already in [strokes], edited or erased since they were read.
+            if (el is NativeBrushStroke) continue
+            seen = true
+            if (el.minX < minX) minX = el.minX
+            if (el.minY < minY) minY = el.minY
+            if (el.maxX > maxX) maxX = el.maxX
+            if (el.maxY > maxY) maxY = el.maxY
+        }
         return if (seen) Rect(minX, minY, maxX, maxY) else null
     }
 
@@ -66,13 +81,14 @@ object ExportLayout {
     fun pageRects(
         paperStyle: PaperStyle,
         strokes: List<Stroke>,
-        order: SplitOrder = SplitOrder.ROW_MAJOR
+        order: SplitOrder = SplitOrder.ROW_MAJOR,
+        nativeElements: List<NativeCanvasElement> = emptyList()
     ): List<Rect> {
         if (!hasPages(paperStyle)) return emptyList()
 
         val pageW = paperStyle.effectivePageWidthPx
         val pageH = paperStyle.effectivePageHeightPx
-        val content = contentBounds(strokes)
+        val content = contentBounds(strokes, nativeElements)
 
         var firstCol = 0; var lastCol = 0
         var firstRow = 0; var lastRow = 0
@@ -109,8 +125,12 @@ object ExportLayout {
      * The region a whole-document export covers: the union of its pages, or — with no
      * page grid — the content plus a margin.
      */
-    fun documentBounds(paperStyle: PaperStyle, strokes: List<Stroke>): Rect {
-        val pages = pageRects(paperStyle, strokes)
+    fun documentBounds(
+        paperStyle: PaperStyle,
+        strokes: List<Stroke>,
+        nativeElements: List<NativeCanvasElement> = emptyList()
+    ): Rect {
+        val pages = pageRects(paperStyle, strokes, nativeElements = nativeElements)
         if (pages.isNotEmpty()) {
             return pages.reduce { acc, r ->
                 Rect(
@@ -119,7 +139,7 @@ object ExportLayout {
                 )
             }
         }
-        val content = contentBounds(strokes)
+        val content = contentBounds(strokes, nativeElements)
             ?: return Rect(0f, 0f, EMPTY_DOC_SIDE_PX, EMPTY_DOC_SIDE_PX)
         return content.inflate(UNPAGED_MARGIN_PX)
     }

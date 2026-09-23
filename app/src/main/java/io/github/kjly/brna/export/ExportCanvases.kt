@@ -5,7 +5,21 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import io.github.kjly.brna.model.EllipseShape
+import io.github.kjly.brna.model.LineShape
+import io.github.kjly.brna.model.NativeBitmapElement
+import io.github.kjly.brna.model.NativeBrushStroke
+import io.github.kjly.brna.model.NativeCanvasElement
+import io.github.kjly.brna.model.NativeShapeElement
+import io.github.kjly.brna.model.NativeTextElement
+import io.github.kjly.brna.model.NativeVectorImageElement
+import io.github.kjly.brna.model.PathOp
+import io.github.kjly.brna.model.PathShape
+import io.github.kjly.brna.model.RectShape
+import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.Stroke
+import io.github.kjly.brna.render.NativeElementRenderer
+import io.github.kjly.brna.render.VectorImageRenderer
 import io.github.kjly.brna.render.androidStrokePath
 import io.github.kjly.brna.render.svgStrokePathData
 import java.util.Locale
@@ -66,6 +80,22 @@ class AndroidExportCanvas(private val canvas: android.graphics.Canvas) : ExportC
             androidStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve),
             fillPaint
         )
+    }
+
+    private val nativeRenderer = NativeElementRenderer()
+
+    override fun drawNative(element: NativeCanvasElement) {
+        when (element) {
+            // Drawn as vectors, so a PDF export keeps an imported page's text sharp.
+            is NativeVectorImageElement -> VectorImageRenderer.renderVector(canvas, element)
+            // Not recycled: a PDF page canvas may still be holding on to it until the page
+            // is finished.
+            is NativeBitmapElement -> NativeElementRenderer.decodeBitmap(element)
+                ?.let { nativeRenderer.drawBitmap(canvas, element, it) }
+            is NativeTextElement -> nativeRenderer.drawText(canvas, element)
+            is NativeShapeElement -> nativeRenderer.drawShape(canvas, element)
+            is NativeBrushStroke -> Unit
+        }
     }
 
     override fun clipped(rect: Rect, block: () -> Unit) {
@@ -130,6 +160,123 @@ class SvgExportCanvas(private val sb: StringBuilder) : ExportCanvas {
         sb.append("  <path d=\"$pathData\" fill=\"${hex(stroke.color)}\" fill-rule=\"nonzero\"")
             .append(opacityAttr(stroke.color, "fill-opacity"))
             .append(" />\n")
+    }
+
+    override fun drawNative(element: NativeCanvasElement) {
+        when (element) {
+            is NativeVectorImageElement -> svgVectorImage(element)
+            is NativeBitmapElement -> svgBitmap(element)
+            is NativeTextElement -> svgText(element)
+            is NativeShapeElement -> svgShape(element)
+            is NativeBrushStroke -> Unit
+        }
+    }
+
+    private fun matrixAttr(t: FloatArray) =
+        "matrix(${n(t[0])} ${n(t[1])} ${n(t[2])} ${n(t[3])} ${n(t[4])} ${n(t[5])})"
+
+    private fun hexOf(c: RnoteNativeColor) =
+        String.format(Locale.ROOT, "#%06X", 0xFFFFFF and NativeElementRenderer.argb(c))
+
+    private fun esc(text: String) = text
+        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+
+    /**
+     * The page's own SVG nested in place, exactly as Rnote's `VectorImage::gen_svg` builds
+     * it: stretched over the rectangle, then transformed.
+     */
+    private fun svgVectorImage(el: NativeVectorImageElement) {
+        val data = el.svgData.trimStart().let { if (it.startsWith("<?xml")) it.substringAfter("?>") else it }
+        sb.append("  <g transform=\"${matrixAttr(el.transform)}\">")
+            .append("<svg x=\"${n(-el.halfExtentX)}\" y=\"${n(-el.halfExtentY)}\" ")
+            .append("width=\"${n(2f * el.halfExtentX)}\" height=\"${n(2f * el.halfExtentY)}\" ")
+            .append("viewBox=\"0 0 ${n(el.intrinsicWidth)} ${n(el.intrinsicHeight)}\" preserveAspectRatio=\"none\">")
+            .append(data)
+            .append("</svg></g>\n")
+    }
+
+    private fun svgBitmap(el: NativeBitmapElement) {
+        val bitmap = NativeElementRenderer.decodeBitmap(el) ?: return
+        val png = java.io.ByteArrayOutputStream()
+        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, png)
+        bitmap.recycle()
+        val b64 = android.util.Base64.encodeToString(png.toByteArray(), android.util.Base64.NO_WRAP)
+        val rect = el.rect
+        if (rect != null) {
+            sb.append("  <image transform=\"${matrixAttr(rect.transform)}\" ")
+                .append("x=\"${n(-rect.halfExtentX)}\" y=\"${n(-rect.halfExtentY)}\" ")
+                .append("width=\"${n(2f * rect.halfExtentX)}\" height=\"${n(2f * rect.halfExtentY)}\" ")
+        } else {
+            sb.append("  <image x=\"${n(el.minX)}\" y=\"${n(el.minY)}\" ")
+                .append("width=\"${n(el.maxX - el.minX)}\" height=\"${n(el.maxY - el.minY)}\" ")
+        }
+        sb.append("preserveAspectRatio=\"none\" href=\"data:image/png;base64,").append(b64).append("\" />\n")
+    }
+
+    /** One `tspan` per line; wrapping at the text box's width is left to the viewer. */
+    private fun svgText(el: NativeTextElement) {
+        val width = el.maxWidth
+        val (anchor, x) = when {
+            width != null && el.alignment == "center" -> "middle" to width / 2f
+            width != null && el.alignment == "end" -> "end" to width
+            else -> "start" to 0f
+        }
+        sb.append("  <text transform=\"${matrixAttr(el.transform)}\" xml:space=\"preserve\" ")
+            .append("font-family=\"${esc(el.fontFamily)}\" font-size=\"${n(el.fontSize)}\" ")
+            .append("font-weight=\"${el.fontWeight}\" font-style=\"${if (el.italic) "italic" else "normal"}\" ")
+            .append("text-anchor=\"$anchor\" fill=\"${hexOf(el.color)}\"")
+        if (el.color.a < 1f) sb.append(" fill-opacity=\"${n(el.color.a)}\"")
+        sb.append(">")
+        el.text.split('\n').forEachIndexed { i, line ->
+            sb.append("<tspan x=\"${n(x)}\" dy=\"${if (i == 0) "1em" else "1.25em"}\">")
+                .append(esc(line))
+                .append("</tspan>")
+        }
+        sb.append("</text>\n")
+    }
+
+    private fun svgShape(el: NativeShapeElement) {
+        val shape = el.shape
+        val geometry = when (shape) {
+            is LineShape ->
+                "<path d=\"M ${n(shape.x1)} ${n(shape.y1)} L ${n(shape.x2)} ${n(shape.y2)}\""
+            is RectShape ->
+                "<rect transform=\"${matrixAttr(shape.transform)}\" " +
+                    "x=\"${n(-shape.halfExtentX)}\" y=\"${n(-shape.halfExtentY)}\" " +
+                    "width=\"${n(2f * shape.halfExtentX)}\" height=\"${n(2f * shape.halfExtentY)}\""
+            is EllipseShape ->
+                "<ellipse transform=\"${matrixAttr(shape.transform)}\" cx=\"0\" cy=\"0\" " +
+                    "rx=\"${n(shape.radiusX)}\" ry=\"${n(shape.radiusY)}\""
+            is PathShape -> {
+                val d = shape.ops.joinToString(" ") { op ->
+                    when (op) {
+                        is PathOp.MoveTo -> "M ${n(op.x)} ${n(op.y)}"
+                        is PathOp.LineTo -> "L ${n(op.x)} ${n(op.y)}"
+                        is PathOp.QuadTo -> "Q ${n(op.x1)} ${n(op.y1)} ${n(op.x)} ${n(op.y)}"
+                        is PathOp.CubicTo ->
+                            "C ${n(op.x1)} ${n(op.y1)} ${n(op.x2)} ${n(op.y2)} ${n(op.x)} ${n(op.y)}"
+                        PathOp.Close -> "Z"
+                    }
+                }
+                "<path d=\"$d\""
+            }
+        }
+        sb.append("  ").append(geometry)
+        if (el.fillColor.a > 0f) {
+            sb.append(" fill=\"${hexOf(el.fillColor)}\"")
+            if (el.fillColor.a < 1f) sb.append(" fill-opacity=\"${n(el.fillColor.a)}\"")
+        } else {
+            sb.append(" fill=\"none\"")
+        }
+        if (el.strokeWidth > 0f && el.color.a > 0f) {
+            sb.append(" stroke=\"${hexOf(el.color)}\" stroke-width=\"${n(el.strokeWidth)}\"")
+            if (el.color.a < 1f) sb.append(" stroke-opacity=\"${n(el.color.a)}\"")
+            sb.append(" stroke-linejoin=\"round\" stroke-linecap=\"${if (el.roundCap) "round" else "butt"}\"")
+            NativeElementRenderer.dashPattern(el.lineStyle, el.strokeWidth, el.roundCap)?.let {
+                sb.append(" stroke-dasharray=\"${n(it[0])} ${n(it[1])}\"")
+            }
+        }
+        sb.append(" />\n")
     }
 
     override fun clipped(rect: Rect, block: () -> Unit) {

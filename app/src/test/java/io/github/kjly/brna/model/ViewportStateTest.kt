@@ -41,6 +41,18 @@ class ViewportStateTest {
     }
 
     @Test
+    fun `zooming about a point keeps that point where it is on screen`() {
+        val view = ViewportState(panOffset = Offset(30f, -40f), zoomScale = 1.5f, displayScale = 2f)
+        val middle = Offset(400f, 300f)
+        val under = view.screenToCanvas(middle)
+        val zoomed = view.zoomedAround(middle, 1.5f * 1.1f)
+        assertEquals(1.65f, zoomed.zoomScale, eps)
+        assertOffsetEquals(middle, zoomed.canvasToScreen(under))
+        // Clamped to Rnote's limits like any other zoom.
+        assertEquals(ViewportState.ZOOM_MAX, view.zoomedAround(middle, 100f).zoomScale, eps)
+    }
+
+    @Test
     fun `update clamps zoom to Rnote's camera limits and leaves pan alone`() {
         val viewport = ViewportState()
         assertEquals(ViewportState.ZOOM_MAX, viewport.update(Offset.Zero, 99f).zoomScale, eps)

@@ -52,17 +52,22 @@ import io.github.kjly.brna.ui.icons.GeneratedIcons
 import io.github.kjly.brna.ui.theme.BrnaColors
 
 /**
- * Top-center floating bar matching desktop Rnote's colorpicker.ui: a
- * Stroke/Fill color-pad toggle (Fill has a UI slot but no strokes model
- * support yet — see UI_REDESIGN.md), quick-access palette swatches, and a
- * button that opens the full palette. There is no width control here —
- * that lives in [PenConfigStrip], matching where Rnote puts it.
+ * Top-center floating bar matching desktop Rnote's colorpicker.ui: the Stroke and
+ * Fill color pads, quick-access palette swatches, and a button that opens the full
+ * palette. The palette sets the color of whichever pad is active, as in Rnote; the
+ * fill goes on shapes, and the palette's transparent swatch is "no fill". There is no
+ * width control here — that lives in [PenConfigStrip], matching where Rnote puts it.
  */
 @Composable
 fun ColorPicker(
     activeColor: Color,
     onColorSelected: (Color) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    fillColor: Color = Color.Transparent,
+    /** Whether the palette sets the fill rather than the stroke color. */
+    fillPadActive: Boolean = false,
+    onPadSelected: (fill: Boolean) -> Unit = {},
+    onFillColorSelected: (Color) -> Unit = {}
 ) {
     Surface(
         modifier = modifier,
@@ -79,15 +84,17 @@ fun ColorPicker(
                 icon = GeneratedIcons.StrokeColorPad,
                 label = "Stroke Color",
                 swatchColor = activeColor,
-                selected = true,
-                enabled = true
+                selected = !fillPadActive,
+                enabled = true,
+                onClick = { onPadSelected(false) }
             )
             ColorPad(
                 icon = GeneratedIcons.FillColorPad,
-                label = "Fill Color (coming soon)",
-                swatchColor = Color.Transparent,
-                selected = false,
-                enabled = false
+                label = "Fill Color",
+                swatchColor = fillColor,
+                selected = fillPadActive,
+                enabled = true,
+                onClick = { onPadSelected(true) }
             )
 
             VerticalDivider(modifier = Modifier.height(32.dp), color = BrnaColors.PanelInactive)
@@ -95,8 +102,8 @@ fun ColorPicker(
             // The bar is wrap-content and sized to hold the palette in one line, so it
             // takes the un-wrapped form; the sheet, which is narrow, takes the other.
             PaletteQuickPicker(
-                activeColor = activeColor,
-                onColorSelected = onColorSelected,
+                activeColor = if (fillPadActive) fillColor else activeColor,
+                onColorSelected = if (fillPadActive) onFillColorSelected else onColorSelected,
                 wrap = false
             )
         }
@@ -177,13 +184,15 @@ private fun ColorPad(
     label: String,
     swatchColor: Color,
     selected: Boolean,
-    enabled: Boolean
+    enabled: Boolean,
+    onClick: () -> Unit = {}
 ) {
     Box(
         modifier = Modifier
             .size(32.dp)
             .clip(CircleShape)
             .background(if (selected) BrnaColors.PanelInactive else Color.Transparent)
+            .clickable(enabled = enabled, onClickLabel = label, onClick = onClick)
     ) {
         Icon(
             imageVector = icon,

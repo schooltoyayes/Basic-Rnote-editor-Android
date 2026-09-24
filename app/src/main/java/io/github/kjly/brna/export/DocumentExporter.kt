@@ -130,6 +130,19 @@ object DocumentExporter {
     }
 
     /**
+     * The pages printing sends, as Rnote's "Print" sends them: the document's pages, or
+     * a canvas without any as a single page of everything on it.
+     */
+    fun printPages(document: NoteDocument, prefs: ExportPrefs): List<Rect> =
+        pagesFor(document, prefs).ifEmpty {
+            listOf(ExportLayout.documentBounds(document.paperStyle, document.strokes, document.nativeElements))
+        }
+
+    /** [pages] of [document] as a PDF into [out], which is left open. False on failure. */
+    fun writePdf(document: NoteDocument, pages: List<Rect>, prefs: ExportPrefs, out: OutputStream): Boolean =
+        PdfExporter.export(document.paperStyle, document.strokes, pages, prefs, out, document.nativeElements)
+
+    /**
      * The name a shared file goes out under, which is what the receiving app shows:
      * "<note> - page 03.png", "<note> - selection.png", or "<note>.pdf" without [detail].
      */

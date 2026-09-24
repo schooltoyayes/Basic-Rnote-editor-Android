@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.print.PrintManager
 import android.provider.DocumentsContract
 import android.view.KeyEvent
 import android.widget.Toast
@@ -67,6 +68,7 @@ import io.github.kjly.brna.export.ExportFormat
 import io.github.kjly.brna.export.ExportLayout
 import io.github.kjly.brna.export.ExportPrefs
 import io.github.kjly.brna.export.ExportScope
+import io.github.kjly.brna.export.NotePrintAdapter
 import io.github.kjly.brna.export.PageThumbnails
 import io.github.kjly.brna.export.ShareTarget
 import io.github.kjly.brna.model.BrushStyle
@@ -74,6 +76,7 @@ import io.github.kjly.brna.model.LayoutMode
 import io.github.kjly.brna.model.NativeBitmapElement
 import io.github.kjly.brna.model.NativeBrushStroke
 import io.github.kjly.brna.model.NativeCanvasElement
+import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.NativeTextElement
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.NativeVectorImageElement
@@ -110,6 +113,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import io.github.kjly.brna.ui.canvas.DrawingCanvas
+import io.github.kjly.brna.ui.KeyboardShortcuts
+import io.github.kjly.brna.ui.Shortcut
 import io.github.kjly.brna.ui.canvas.SelectionManager
 import io.github.kjly.brna.ui.components.ColorPicker
 import io.github.kjly.brna.ui.components.ExportSheet
@@ -303,6 +308,34 @@ class MainActivity : ComponentActivity() {
     private val importPdfLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri -> uri?.let { importPdf(it) } }
+
+    /** Rnote's "Import" (Ctrl+Shift+I): a PDF or a picture, each into the open note its own way. */
+    private val importFileLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { importFile(it) } }
+
+    private fun importFile(uri: Uri) {
+        val type = contentResolver.getType(uri)
+        val name = DocumentUri.displayName(this, uri).orEmpty().lowercase()
+        if (type == "application/pdf" || name.endsWith(".pdf")) importPdf(uri) else insertImage(uri)
+    }
+
+    /**
+     * Rnote's "Print" (Ctrl+P): the note to Android's print dialog, where the printer,
+     * the pages and the paper are chosen.
+     */
+    private fun printDocument(document: NoteDocument) {
+        val manager = getSystemService(PrintManager::class.java) ?: return
+        try {
+            manager.print(document.title.ifBlank { "Note" }, NotePrintAdapter(document), null)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(this, "Printing isn't available", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Installed by the UI: carries out a keyboard shortcut; false when there was nothing to do. */
+    private var shortcutHandler: ((Shortcut) -> Boolean)? = null
 
     /** Renders the PDF's pages off the main thread and adds them to the open note. */
     private fun importPdf(uri: Uri) {
@@ -1383,6 +1416,51 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            // ── What the top bar and the keyboard both do ─────────────────────────
+            val currentNote: () -> NoteDocument = {
+                NoteDocument(
+                    title = documentTitle,
+                    paperStyle = paperStyle,
+                    strokes = strokes.toList(),
+                    nativeElements = documentNativeElements
+                )
+            }
+            val saveDocument: () -> Unit = {
+                val currentDoc = currentNote()
+                // Straight back over the file it came from; only a note
+                // that has never been written asks where to go.
+                if (!saveInPlace(currentDoc)) launchSavePicker(currentDoc)
+            }
+            val saveDocumentAs: () -> Unit = { launchSavePicker(currentNote()) }
+            val newDocument: () -> Unit = {
+                if (isModified) {
+                    showNewDocumentDialog = true
+                } else {
+                    startNewDocument()
+                }
+            }
+            val clearCanvas: () -> Unit = {
+                textSession = null
+                if (strokes.isNotEmpty() || documentNativeElements.isNotEmpty()) {
+                    undoStack.add(snapshot())
+                    redoStack.clear()
+                    strokes.clear()
+                    selectedStrokes.clear()
+                    selectedNatives.clear()
+                    documentNativeElements = emptyList()
+                    isModified = true
+                }
+            }
+            val selectTool: (ToolType) -> Unit = { newTool ->
+                toolConfig = toolConfig.copy(activeTool = newTool)
+                if (newTool != ToolType.SELECTOR) {
+                    selectedStrokes.clear()
+                    selectedNatives.clear()
+                }
+            }
+            // Which of the colour picker's two pads the palette sets; Rnote's starts on the stroke.
+            var fillPadActive by remember { mutableStateOf(false) }
+
             BabyRnoteTheme(darkTheme = paperStyle.isDarkMode) {
                 Scaffold(
                     topBar = {
@@ -1414,27 +1492,9 @@ class MainActivity : ComponentActivity() {
                                     this, paperStyle, toolConfig.allowFingerDrawing
                                 )
                             },
-                            onSaveDocument = {
-                                val currentDoc = NoteDocument(
-                                    title = documentTitle,
-                                    paperStyle = paperStyle,
-                                    strokes = strokes.toList(),
-                                    nativeElements = documentNativeElements
-                                )
-                                // Straight back over the file it came from; only a note
-                                // that has never been written asks where to go.
-                                if (!saveInPlace(currentDoc)) launchSavePicker(currentDoc)
-                            },
-                            onSaveDocumentAs = {
-                                launchSavePicker(
-                                    NoteDocument(
-                                        title = documentTitle,
-                                        paperStyle = paperStyle,
-                                        strokes = strokes.toList(),
-                                        nativeElements = documentNativeElements
-                                    )
-                                )
-                            },
+                            onSaveDocument = saveDocument,
+                            onSaveDocumentAs = saveDocumentAs,
+                            onPrint = { printDocument(currentNote()) },
                             onOpenDocument = {
                                 openDocumentLauncher.launch(arrayOf("*/*", "application/json"))
                             },
@@ -1451,26 +1511,9 @@ class MainActivity : ComponentActivity() {
                             onShare = shareNote,
                             onShowRecent = { showRecent = true },
                             onShowPages = { showPages = true },
-                            onNewDocument = {
-                                if (isModified) {
-                                    showNewDocumentDialog = true
-                                } else {
-                                    startNewDocument()
-                                }
-                            },
+                            onNewDocument = newDocument,
                             onExport = { showExportSheet = true },
-                            onClearCanvas = {
-                                textSession = null
-                                if (strokes.isNotEmpty() || documentNativeElements.isNotEmpty()) {
-                                    undoStack.add(snapshot())
-                                    redoStack.clear()
-                                    strokes.clear()
-                                    selectedStrokes.clear()
-                                    selectedNatives.clear()
-                                    documentNativeElements = emptyList()
-                                    isModified = true
-                                }
-                            },
+                            onClearCanvas = clearCanvas,
                             onOpenPageSettings = { showPageSettings = true },
                             filesOpen = showFiles,
                             onToggleFiles = { showFiles = !showFiles }
@@ -1619,7 +1662,43 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        // Top-center: stroke color + palette (matches Rnote's colorpicker.ui)
+                        // Rnote's colour picker also recolours the selection while the
+                        // selector is out: its lines and text, or its shapes' fill.
+                        val recolorSelection: (Color, Boolean) -> Unit = { color, fill ->
+                            // Only ink, shapes and text have a colour; only shapes a fill.
+                            val affected = if (fill) {
+                                selectedNatives.any { it is NativeShapeElement }
+                            } else {
+                                selectedStrokes.isNotEmpty() ||
+                                    selectedNatives.any { it is NativeShapeElement || it is NativeTextElement }
+                            }
+                            if (toolConfig.activeTool == ToolType.SELECTOR && affected) {
+                                undoStack.add(snapshot())
+                                redoStack.clear()
+                                val native = RnoteNativeColor(color.red, color.green, color.blue, color.alpha)
+                                if (!fill) {
+                                    val recolored = SelectionManager.recolored(selectedStrokes.toList(), color)
+                                    val byId = recolored.associateBy { it.id }
+                                    for (i in strokes.indices) {
+                                        byId[strokes[i].id]?.let { strokes[i] = it }
+                                    }
+                                    selectedStrokes.clear()
+                                    selectedStrokes.addAll(recolored)
+                                }
+                                val swapped = java.util.IdentityHashMap<NativeCanvasElement, NativeCanvasElement>()
+                                for (el in selectedNatives) {
+                                    swapped[el] = if (fill) NativeEditing.withFillColor(el, native)
+                                        else NativeEditing.withStrokeColor(el, native)
+                                }
+                                documentNativeElements = documentNativeElements.map { swapped[it] ?: it }
+                                val kept = selectedNatives.map { swapped[it] ?: it }
+                                selectedNatives.clear()
+                                selectedNatives.addAll(kept)
+                                isModified = true
+                            }
+                        }
+
+                        // Top-center: stroke and fill color + palette (matches Rnote's colorpicker.ui)
                         ColorPicker(
                             activeColor = toolConfig.currentActiveColor,
                             onColorSelected = { newColor ->
@@ -1628,6 +1707,14 @@ class MainActivity : ComponentActivity() {
                                 } else {
                                     toolConfig.copy(penColor = newColor)
                                 }
+                                recolorSelection(newColor, false)
+                            },
+                            fillColor = toolConfig.fillColor,
+                            fillPadActive = fillPadActive,
+                            onPadSelected = { fill -> fillPadActive = fill },
+                            onFillColorSelected = { newColor ->
+                                toolConfig = toolConfig.copy(fillColor = newColor)
+                                recolorSelection(newColor, true)
                             },
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
@@ -1694,6 +1781,93 @@ class MainActivity : ComponentActivity() {
                             isModified = true
                         }
 
+                        val duplicateSelection: () -> Unit = {
+                            if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
+                                undoStack.add(snapshot())
+                                redoStack.clear()
+                                val offset = 20f
+                                val duplicates = selectedStrokes.map { s ->
+                                    s.copy(
+                                        id = java.util.UUID.randomUUID().toString(),
+                                        points = s.points.map { p -> StrokePoint(p.x + offset, p.y + offset, p.pressure) }
+                                    )
+                                }
+                                strokes.addAll(duplicates)
+                                selectedStrokes.clear()
+                                selectedStrokes.addAll(duplicates)
+                                val nativeCopies = selectedNatives.map {
+                                    io.github.kjly.brna.storage.NativeEditing.translate(it, offset, offset)
+                                }
+                                documentNativeElements = documentNativeElements + nativeCopies
+                                selectedNatives.clear()
+                                selectedNatives.addAll(nativeCopies)
+                                isModified = true
+                            }
+                        }
+                        val selectAll: () -> Unit = {
+                            selectedStrokes.clear()
+                            selectedStrokes.addAll(strokes)
+                            selectedNatives.clear()
+                            selectedNatives.addAll(documentNativeElements.filter { it !is NativeBrushStroke })
+                        }
+                        val deselectAll: () -> Unit = {
+                            selectedStrokes.clear()
+                            selectedNatives.clear()
+                        }
+                        /** Zoomed by [factor] about the middle of the view, as Rnote's zoom keys do. */
+                        val zoomBy: (Float) -> Unit = { factor ->
+                            val middle = Offset(canvasSize.width / 2f, canvasSize.height / 2f)
+                            viewportState = viewportState.zoomedAround(middle, viewportState.zoomScale * factor)
+                        }
+
+                        // ── Keyboard shortcuts (see KeyboardShortcuts) ─────────────────
+                        shortcutHandler = handler@{ shortcut ->
+                            val hasSelection = selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()
+                            val selecting = toolConfig.activeTool == ToolType.SELECTOR
+                            when (shortcut) {
+                                Shortcut.OPEN -> openDocumentLauncher.launch(arrayOf("*/*", "application/json"))
+                                Shortcut.SAVE -> saveDocument()
+                                Shortcut.SAVE_AS -> saveDocumentAs()
+                                Shortcut.NEW -> newDocument()
+                                Shortcut.PRINT -> printDocument(currentNote())
+                                Shortcut.IMPORT -> importFileLauncher.launch(IMPORTABLE_TYPES)
+                                Shortcut.CLEAR -> clearCanvas()
+                                Shortcut.PAGE_OVERVIEW -> showPages = true
+                                Shortcut.UNDO -> performUndoAction?.invoke()
+                                Shortcut.REDO -> performRedoAction?.invoke()
+                                Shortcut.COPY -> if (hasSelection) copySelection() else return@handler false
+                                Shortcut.CUT -> if (hasSelection) {
+                                    copySelection()
+                                    deleteSelection()
+                                } else {
+                                    return@handler false
+                                }
+                                Shortcut.PASTE -> {
+                                    if (SelectionClipboard.clip == null) return@handler false
+                                    // What is pasted comes in selected, so the selector has to be out.
+                                    selectTool(ToolType.SELECTOR)
+                                    pasteClipboard()
+                                }
+                                Shortcut.SELECT_ALL -> {
+                                    selectTool(ToolType.SELECTOR)
+                                    selectAll()
+                                }
+                                Shortcut.DUPLICATE -> if (selecting && hasSelection) duplicateSelection() else return@handler false
+                                Shortcut.DELETE_SELECTION -> if (selecting && hasSelection) deleteSelection() else return@handler false
+                                Shortcut.DESELECT -> if (selecting && hasSelection) deselectAll() else return@handler false
+                                Shortcut.ZOOM_IN -> zoomBy(1f + ViewportState.ZOOM_STEP)
+                                Shortcut.ZOOM_OUT -> zoomBy(1f / (1f + ViewportState.ZOOM_STEP))
+                                Shortcut.ZOOM_RESET -> zoomBy(1f / viewportState.zoomScale)
+                                Shortcut.BRUSH -> selectTool(ToolType.BRUSH)
+                                Shortcut.SHAPER -> selectTool(ToolType.SHAPER)
+                                Shortcut.TYPEWRITER -> selectTool(ToolType.TYPEWRITER)
+                                Shortcut.ERASER -> selectTool(ToolType.ERASER)
+                                Shortcut.SELECTOR -> selectTool(ToolType.SELECTOR)
+                                Shortcut.TOOLS -> selectTool(ToolType.TOOLS)
+                            }
+                            true
+                        }
+
                         // Left edge, vertically centered: per-pen config (matches RnPensSideBar).
                         // Hidden below the width breakpoint (see isCompactWidth, top of file).
                         if (!isCompactWidth) PenConfigStrip(
@@ -1702,39 +1876,9 @@ class MainActivity : ComponentActivity() {
                             onBrushStyleSelected = { style -> toolConfig = toolConfig.copy(brushStyle = style) },
                             onSizeChanged = { newSize -> toolConfig = toolConfig.updateActiveSize(newSize) },
                             onDeleteSelection = deleteSelection,
-                            onDuplicateSelection = {
-                                if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
-                                    undoStack.add(snapshot())
-                                    redoStack.clear()
-                                    val offset = 20f
-                                    val duplicates = selectedStrokes.map { s ->
-                                        s.copy(
-                                            id = java.util.UUID.randomUUID().toString(),
-                                            points = s.points.map { p -> StrokePoint(p.x + offset, p.y + offset, p.pressure) }
-                                        )
-                                    }
-                                    strokes.addAll(duplicates)
-                                    selectedStrokes.clear()
-                                    selectedStrokes.addAll(duplicates)
-                                    val nativeCopies = selectedNatives.map {
-                                        io.github.kjly.brna.storage.NativeEditing.translate(it, offset, offset)
-                                    }
-                                    documentNativeElements = documentNativeElements + nativeCopies
-                                    selectedNatives.clear()
-                                    selectedNatives.addAll(nativeCopies)
-                                    isModified = true
-                                }
-                            },
-                            onSelectAll = {
-                                selectedStrokes.clear()
-                                selectedStrokes.addAll(strokes)
-                                selectedNatives.clear()
-                                selectedNatives.addAll(documentNativeElements.filter { it !is NativeBrushStroke })
-                            },
-                            onDeselectAll = {
-                                selectedStrokes.clear()
-                                selectedNatives.clear()
-                            },
+                            onDuplicateSelection = duplicateSelection,
+                            onSelectAll = selectAll,
+                            onDeselectAll = deselectAll,
                             onShapeKindSelected = { kind -> toolConfig = toolConfig.copy(shapeKind = kind) },
                             onEraserModeSelected = { mode -> toolConfig = toolConfig.copy(eraserMode = mode) },
                             canPaste = SelectionClipboard.clip != null,
@@ -1747,6 +1891,7 @@ class MainActivity : ComponentActivity() {
                             onLockAspectRatioToggled = {
                                 toolConfig = toolConfig.copy(lockAspectRatio = !toolConfig.lockAspectRatio)
                             },
+                            onSelectorModeSelected = { mode -> toolConfig = toolConfig.copy(selectorMode = mode) },
                             onSnapAnglesToggled = {
                                 toolConfig = toolConfig.copy(snapAngles = !toolConfig.snapAngles)
                             },
@@ -1767,13 +1912,7 @@ class MainActivity : ComponentActivity() {
                             toolConfig = toolConfig,
                             canUndo = undoStack.isNotEmpty(),
                             canRedo = redoStack.isNotEmpty(),
-                            onToolSelected = { newTool ->
-                                toolConfig = toolConfig.copy(activeTool = newTool)
-                                if (newTool != ToolType.SELECTOR) {
-                                    selectedStrokes.clear()
-                                    selectedNatives.clear()
-                                }
-                            },
+                            onToolSelected = selectTool,
                             onUndo = { performUndoAction?.invoke() },
                             onRedo = { performRedoAction?.invoke() },
                             modifier = Modifier
@@ -2164,6 +2303,27 @@ class MainActivity : ComponentActivity() {
     private companion object {
         /** How long after the first unsaved change autosave runs. Rnote's default is 120 s. */
         const val AUTOSAVE_DELAY_MS = 60_000L
+
+        /** What Rnote's "Import" takes that this app can: PDFs and pictures. */
+        val IMPORTABLE_TYPES = arrayOf("application/pdf", "image/png", "image/jpeg")
+    }
+
+    /**
+     * Desktop Rnote's keyboard shortcuts (see [KeyboardShortcuts]). Only keys nothing else
+     * took arrive here: a text box being typed into gets its own first.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        // What the key types with no modifier held, on the keyboard's own layout.
+        val char = event.getUnicodeChar(0).takeIf { it > 0 }?.toChar()
+        val shortcut = KeyboardShortcuts.of(
+            char, keyCode, event.isCtrlPressed, event.isShiftPressed, event.isAltPressed || event.isMetaPressed
+        )
+        if (shortcut != null) {
+            // Held down, only undo, redo and zoom repeat; saving or printing once is enough.
+            if (event.repeatCount > 0 && !shortcut.repeats) return true
+            if (shortcutHandler?.invoke(shortcut) == true) return true
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     /**

@@ -30,16 +30,18 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   slots that keep a style, color and width together.
 - **Shaper**: line, arrow, rectangle, ellipse, and — built from lines, as Rnote
   builds them — 2D, 3D and single-quadrant coordinate systems and a grid. Lines
-  and arrows can snap to 15° steps.
+  and arrows can snap to 15° steps. The color picker's fill pad fills shapes.
 - **Typewriter**: tap and type straight onto the page, into a new text box or
   an existing one. Bold, italic, underline and strikethrough — from the strip,
   or Ctrl+B / Ctrl+I / Ctrl+U on a keyboard — stored as Rnote stores them, so
   formatting made on either side shows on the other.
 - **Eraser**: Trash Strokes and Split Strokes modes. Like Rnote's, it erases ink
   and shapes and leaves text and images alone.
-- **Selector** (lasso), for ink and for desktop text, shapes and images alike:
-  select all / deselect / duplicate / delete, drag-to-move, scale and rotate
-  handles with an aspect-ratio lock, and copy / cut / paste between notes.
+- **Selector**, for ink and for desktop text, shapes and images alike, in
+  Rnote's four styles: lasso, rectangle, single (tap, tap again to add) and
+  intersecting path. Select all / deselect / duplicate / delete, drag-to-move,
+  scale and rotate handles with an aspect-ratio lock, copy / cut / paste between
+  notes, and recoloring the selection — its lines and text, or its shapes' fill.
 - **Tools**: Rnote's Vertical Space — drag down to open up room, up to close it.
 - **Stylus-aware input**: stylus-only mode by default (finger pans and zooms),
   optional finger drawing, S-Pen barrel button as a momentary eraser, S-Pen Air
@@ -64,12 +66,19 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   newer version — or, with changes on both sides, asks what to keep.
 - **Import**: PDF pages, and pictures from the gallery or the camera, written
   the way desktop Rnote writes its own imports.
-- **Export and share**: PDF, SVG, PNG, and JPEG, with page-range and split
-  options and one page per imported PDF page. A Share button sends the current
-  page, the selection or the whole note to another app.
+- **Export, share and print**: PDF, SVG, PNG, and JPEG, with page-range and
+  split options and one page per imported PDF page. A Share button sends the
+  current page, the selection or the whole note to another app; Print sends
+  every page, background and pattern included, to Android's print dialog.
+- **Keyboard shortcuts** for a hardware keyboard, Rnote's own: Ctrl+Z / Ctrl+Shift+Z
+  (and Ctrl+Y), Ctrl+S / Ctrl+Shift+S, Ctrl+O, Ctrl+N, Ctrl+P, Ctrl+Shift+I,
+  Ctrl+L, Ctrl+Shift+O, Ctrl+C / X / V / A / D, Delete and Escape for the
+  selection, Ctrl++ / Ctrl+- / Ctrl+0 to zoom, Ctrl+1 to Ctrl+6 for the pens.
+  They follow the keyboard's layout, so Ctrl+Z is the Z key on a German
+  keyboard too.
 
 **UI slots with no implementation behind them** — visible but disabled: the
-Textured brush style; the three non-polygon selector modes; separate fill color.
+Textured brush style.
 
 **Not built**: layers (the stroke list is flat), the Tools pen's other styles
 (Offset Camera, Zoom, Laser), document tabs.

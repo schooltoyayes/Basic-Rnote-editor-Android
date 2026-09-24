@@ -38,6 +38,50 @@ class NativeEditingTest {
     }
 
     @Test
+    fun `a shape is written with the fill it is drawn with`() {
+        val blue = RnoteNativeColor(0.2f, 0.4f, 0.8f, 1f)
+        val rect = NativeEditing.createShape(ShapeKind.RECTANGLE, 0f, 0f, 10f, 10f, black, 2f, blue)!!
+        assertEquals(blue, rect.fillColor)
+        val fill = rect.raw!!.asJsonObject.getAsJsonObject("style").getAsJsonObject("smooth").getAsJsonObject("fill_color")
+        assertEquals(0.8, fill.get("b").asDouble, 1e-6)
+        assertEquals(1.0, fill.get("a").asDouble, 1e-6)
+        // Without one, Rnote's "no fill".
+        val plain = NativeEditing.createShape(ShapeKind.RECTANGLE, 0f, 0f, 10f, 10f, black, 2f)!!
+        assertEquals(RnoteNativeColor.TRANSPARENT, plain.fillColor)
+    }
+
+    @Test
+    fun `recolouring a shape changes only its colour, in the JSON written back`() {
+        val red = RnoteNativeColor(1f, 0f, 0f, 1f)
+        val green = RnoteNativeColor(0f, 1f, 0f, 1f)
+        val rect = NativeEditing.createShape(ShapeKind.RECTANGLE, 0f, 0f, 10f, 10f, black, 3f)!!
+        val lined = NativeEditing.withStrokeColor(rect, red) as NativeShapeElement
+        val filled = NativeEditing.withFillColor(lined, green) as NativeShapeElement
+        assertEquals(red, filled.color)
+        assertEquals(green, filled.fillColor)
+        val style = filled.raw!!.asJsonObject.getAsJsonObject("style").getAsJsonObject("smooth")
+        assertEquals(1.0, style.getAsJsonObject("stroke_color").get("r").asDouble, 1e-6)
+        assertEquals(1.0, style.getAsJsonObject("fill_color").get("g").asDouble, 1e-6)
+        assertEquals(3.0, style.get("stroke_width").asDouble, 1e-6)
+        assertEquals(rect.minX, filled.minX, 1e-3f)
+        // Taking the fill off again is Rnote's transparent, not a missing field.
+        val cleared = NativeEditing.withFillColor(filled, RnoteNativeColor.TRANSPARENT) as NativeShapeElement
+        assertEquals(0f, cleared.fillColor.a, 0f)
+    }
+
+    @Test
+    fun `recolouring text changes its colour and keeps its text`() {
+        val red = RnoteNativeColor(1f, 0f, 0f, 1f)
+        val text = NativeEditing.createText("Hallo", 10f, 20f, 32f, black, 600f)!!
+        val recolored = NativeEditing.withStrokeColor(text, red) as NativeTextElement
+        assertEquals(red, recolored.color)
+        assertEquals("Hallo", recolored.text)
+        assertEquals(10f, recolored.transform[4], 1e-3f)
+        // Text has no fill; nor do pictures, and they come back as they were.
+        assertTrue(NativeEditing.withFillColor(text, red) === text)
+    }
+
+    @Test
     fun `a tap is not a shape`() {
         assertNull(NativeEditing.createShape(ShapeKind.LINE, 5f, 5f, 5.2f, 5.1f, black, 2f))
     }

@@ -19,6 +19,8 @@ import io.github.kjly.brna.model.PathShape
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.ShapeKind
+import io.github.kjly.brna.model.TextFormatting
+import io.github.kjly.brna.model.TextToggle
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.cos
@@ -582,6 +584,135 @@ object NativeEditing {
             }
         }
         return parseText(obj)
+    }
+
+    // ── Text formatting ───────────────────────────────────────────────────────
+
+    /**
+     * Rnote's `TextStroke::toggle_attrs_for_range`, for the chars [startChar, endChar) of
+     * [el]: the smallest range of the same kind that meets the selection decides — bold is
+     * taken off, italic, underline and strikethrough are flipped — and with none there the
+     * attribute is put on. Whatever of that kind lay inside the selection is cut out first.
+     * An empty selection changes nothing, as in Rnote.
+     */
+    fun toggleFormat(el: NativeTextElement, startChar: Int, endChar: Int, toggle: TextToggle): NativeTextElement =
+        editRanges(el, startChar, endChar, toggle) { intersecting ->
+            val smallest = intersecting.minByOrNull { rangeEnd(it) - rangeStart(it) }
+                ?: return@editRanges onValue(toggle)
+            val value = smallest.asJsonObject.getAsJsonObject("attribute").get(toggle.key)
+            when (toggle) {
+                TextToggle.BOLD -> null
+                TextToggle.ITALIC ->
+                    JsonPrimitive(if (value?.isJsonPrimitive == true && value.asString == "italic") "regular" else "italic")
+                TextToggle.UNDERLINE, TextToggle.STRIKETHROUGH ->
+                    JsonPrimitive(!(value?.isJsonPrimitive == true && value.asBoolean))
+            }
+        }
+
+    /**
+     * [toggle] switched on or off for the chars [startChar, endChar) of [el], whatever they
+     * had: what the switches set for text typed next. Setting rather than flipping keeps a
+     * keyboard's autocorrect, which replaces a word already typed, from undoing it again.
+     * Rnote's `replace_attr_for_range` to switch on, `remove_attrs_for_range` of just that
+     * kind to switch off.
+     */
+    fun setFormat(el: NativeTextElement, startChar: Int, endChar: Int, toggle: TextToggle, on: Boolean): NativeTextElement =
+        editRanges(el, startChar, endChar, toggle) { if (on) onValue(toggle) else null }
+
+    /** The value Rnote's typewriter buttons set. */
+    private fun onValue(toggle: TextToggle): JsonElement = when (toggle) {
+        TextToggle.BOLD -> JsonPrimitive(TextFormatting.BOLD_WEIGHT)
+        TextToggle.ITALIC -> JsonPrimitive("italic")
+        TextToggle.UNDERLINE, TextToggle.STRIKETHROUGH -> JsonPrimitive(true)
+    }
+
+    /**
+     * The shared part of [toggleFormat] and [setFormat]: the ranges of [toggle]'s kind that
+     * meet the selection are cut back to outside it (split around it if they reach past
+     * both ends), then [newValue] — given those ranges as they were — goes over the whole
+     * selection, or nothing does when it returns null.
+     */
+    private inline fun editRanges(
+        el: NativeTextElement,
+        startChar: Int,
+        endChar: Int,
+        toggle: TextToggle,
+        newValue: (intersecting: List<JsonElement>) -> JsonElement?
+    ): NativeTextElement {
+        val s = TextFormatting.byteIndex(el.text, minOf(startChar, endChar))
+        val e = TextFormatting.byteIndex(el.text, maxOf(startChar, endChar))
+        if (s >= e) return el
+        val obj = el.raw?.takeIf { it.isJsonObject }?.deepCopy()?.asJsonObject ?: textJson(el)
+        val style = obj.get("text_style")?.takeIf { it.isJsonObject }?.asJsonObject
+            ?: JsonObject().also { obj.add("text_style", it) }
+        val existing = style.get("ranged_text_attributes")?.takeIf { it.isJsonArray }?.asJsonArray ?: JsonArray()
+
+        val others = JsonArray()
+        val matching = mutableListOf<JsonElement>()
+        for (item in existing) {
+            if (isRange(item) && attributeKey(item) == toggle.key) matching += item else others.add(item)
+        }
+        val intersecting = matching.filter { rangeEnd(it) > s && rangeStart(it) < e }
+        val retained = matching.filter { !(rangeEnd(it) > s && rangeStart(it) < e) }
+        val value = newValue(intersecting)
+
+        val result = others
+        retained.forEach { result.add(it) }
+        for (item in intersecting) {
+            val a = rangeStart(item)
+            val b = rangeEnd(item)
+            // Rnote's remove_intersecting_attrs_in_range: keep what lies outside [s, e).
+            if (a < s) result.add(withRange(item, a, s))
+            if (b > e) result.add(withRange(item, e, b))
+        }
+        if (value != null) {
+            result.add(JsonObject().apply {
+                add("range", JsonObject().apply { addProperty("start", s); addProperty("end", e) })
+                add("attribute", JsonObject().apply { add(toggle.key, value) })
+            })
+        }
+        style.add("ranged_text_attributes", mergeTouching(result))
+        return parseText(obj) ?: el
+    }
+
+    private fun isRange(e: JsonElement): Boolean {
+        if (!e.isJsonObject) return false
+        val o = e.asJsonObject
+        return o.get("range")?.isJsonObject == true && o.get("attribute")?.isJsonObject == true
+    }
+
+    private fun attributeKey(e: JsonElement): String? =
+        e.asJsonObject.getAsJsonObject("attribute").keySet().singleOrNull()
+
+    private fun rangeStart(e: JsonElement) = e.asJsonObject.getAsJsonObject("range").get("start").asInt
+    private fun rangeEnd(e: JsonElement) = e.asJsonObject.getAsJsonObject("range").get("end").asInt
+
+    private fun withRange(e: JsonElement, start: Int, end: Int): JsonElement = e.deepCopy().also {
+        it.asJsonObject.add("range", JsonObject().apply { addProperty("start", start); addProperty("end", end) })
+    }
+
+    /**
+     * Ranges of one attribute and value that touch or overlap made into one: typing with
+     * bold switched on adds a character at a time, and a hundred one-letter ranges would
+     * mean the same as one. Everything else keeps its place in the list.
+     */
+    private fun mergeTouching(ranges: JsonArray): JsonArray {
+        val out = mutableListOf<JsonElement>()
+        for (item in ranges) {
+            if (!isRange(item)) { out += item; continue }
+            val attribute = item.asJsonObject.get("attribute")
+            val i = out.indexOfFirst {
+                isRange(it) && it.asJsonObject.get("attribute") == attribute &&
+                    rangeStart(it) <= rangeEnd(item) && rangeStart(item) <= rangeEnd(it)
+            }
+            if (i < 0) {
+                out += item
+            } else {
+                val other = out[i]
+                out[i] = withRange(other, minOf(rangeStart(other), rangeStart(item)), maxOf(rangeEnd(other), rangeEnd(item)))
+            }
+        }
+        return JsonArray().apply { out.forEach { add(it) } }
     }
 
     /** The topmost text box at ([x], [y]), if any; [slop] widens each box for a fingertip. */

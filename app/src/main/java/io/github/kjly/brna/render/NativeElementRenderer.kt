@@ -12,7 +12,13 @@ import android.graphics.Typeface
 import android.os.Build
 import android.text.Layout
 import android.text.StaticLayout
+import android.text.SpannableString
+import android.text.Spanned
 import android.text.TextPaint
+import android.text.style.ForegroundColorSpan
+import android.text.style.MetricAffectingSpan
+import android.text.style.StrikethroughSpan
+import android.text.style.UnderlineSpan
 import io.github.kjly.brna.model.EllipseShape
 import io.github.kjly.brna.model.LineShape
 import io.github.kjly.brna.model.NativeBitmapElement
@@ -26,6 +32,7 @@ import io.github.kjly.brna.model.PathOp
 import io.github.kjly.brna.model.PathShape
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
+import io.github.kjly.brna.model.TextFormatting
 import java.nio.ByteBuffer
 import java.util.IdentityHashMap
 import kotlin.math.ceil
@@ -53,7 +60,7 @@ class NativeElementRenderer {
 
     /** Rnote's `TextStroke::draw`: the laid-out text, its top-left at the transform's origin. */
     fun drawText(canvas: Canvas, el: NativeTextElement) {
-        val layout = textLayouts.getOrPut(el) { buildLayout(el) }
+        val layout = textLayouts.getOrPut(el) { layoutFor(el) }
         canvas.save()
         canvas.concat(matrixOf(el.transform))
         layout.draw(canvas)
@@ -101,47 +108,95 @@ class NativeElementRenderer {
         shapePaths.keys.retainAll(keep)
     }
 
-    private fun buildLayout(el: NativeTextElement): StaticLayout {
-        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = argb(el.color)
-            textSize = el.fontSize
-            typeface = typefaceFor(el)
-        }
-        // Without a wrap width, a text box is as wide as its longest line.
-        val width = el.maxWidth?.takeIf { it > 0f }?.let { ceil(it).toInt() }
-            ?: (el.text.split('\n').maxOf { ceil(paint.measureText(it)).toInt() } + 1)
-        val alignment = when (el.alignment) {
-            "center" -> Layout.Alignment.ALIGN_CENTER
-            "end" -> Layout.Alignment.ALIGN_OPPOSITE
-            else -> Layout.Alignment.ALIGN_NORMAL
-        }
-        val builder = StaticLayout.Builder
-            .obtain(el.text, 0, el.text.length, paint, width.coerceAtLeast(1))
-            .setAlignment(alignment)
-            .setIncludePad(false)
-        if (el.alignment == "fill") {
-            @Suppress("DEPRECATION")
-            builder.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD)
-        }
-        return builder.build()
-    }
-
-    /**
-     * Rnote names fonts by family ("serif" by default). Android resolves the generic
-     * families and falls back to its default face for any it doesn't have installed.
-     */
-    private fun typefaceFor(el: NativeTextElement): Typeface {
-        val family = Typeface.create(el.fontFamily, Typeface.NORMAL)
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            Typeface.create(family, el.fontWeight.coerceIn(1, 1000), el.italic)
-        } else {
-            val style = (if (el.fontWeight >= 600) Typeface.BOLD else 0) or
-                (if (el.italic) Typeface.ITALIC else 0)
-            Typeface.create(family, style)
-        }
-    }
-
     companion object {
+
+        /**
+         * [el] laid out as Rnote lays out a text stroke: the box's own style, with its
+         * ranged attributes — bold, italic, underline, strikethrough, colour, size, family —
+         * drawn over the stretches they cover.
+         */
+        fun layoutFor(el: NativeTextElement): StaticLayout {
+            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = argb(el.color)
+                textSize = el.fontSize
+                typeface = typeface(el.fontFamily, el.fontWeight, el.italic)
+            }
+            val text = styledText(el)
+            // Without a wrap width, a text box is as wide as its longest line, bold words included.
+            val width = el.maxWidth?.takeIf { it > 0f }?.let { ceil(it).toInt() }
+                ?: (ceil(Layout.getDesiredWidth(text, paint)).toInt() + 1)
+            val alignment = when (el.alignment) {
+                "center" -> Layout.Alignment.ALIGN_CENTER
+                "end" -> Layout.Alignment.ALIGN_OPPOSITE
+                else -> Layout.Alignment.ALIGN_NORMAL
+            }
+            val builder = StaticLayout.Builder
+                .obtain(text, 0, text.length, paint, width.coerceAtLeast(1))
+                .setAlignment(alignment)
+                .setIncludePad(false)
+            if (el.alignment == "fill") {
+                @Suppress("DEPRECATION")
+                builder.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD)
+            }
+            return builder.build()
+        }
+
+        /** [el]'s text with a span per run whose style differs from the box's own. */
+        private fun styledText(el: NativeTextElement): CharSequence {
+            if (el.ranges.isEmpty()) return el.text
+            val out = SpannableString(el.text)
+            for (run in TextFormatting.runs(el)) {
+                val flags = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                if (run.family != el.fontFamily || run.weight != el.fontWeight ||
+                    run.italic != el.italic || run.size != el.fontSize
+                ) {
+                    out.setSpan(FontSpan(typeface(run.family, run.weight, run.italic), run.size), run.start, run.end, flags)
+                }
+                if (run.color != el.color) out.setSpan(ForegroundColorSpan(argb(run.color)), run.start, run.end, flags)
+                if (run.underline) out.setSpan(UnderlineSpan(), run.start, run.end, flags)
+                if (run.strikethrough) out.setSpan(StrikethroughSpan(), run.start, run.end, flags)
+            }
+            return out
+        }
+
+        /** A face and a size for a stretch of text, both in the box's document units. */
+        private class FontSpan(private val face: Typeface, private val size: Float) : MetricAffectingSpan() {
+            override fun updateMeasureState(paint: TextPaint) = restyle(paint)
+            override fun updateDrawState(paint: TextPaint) = restyle(paint)
+            private fun restyle(paint: TextPaint) {
+                paint.typeface = face
+                paint.textSize = size
+            }
+        }
+
+        /**
+         * Rnote names fonts by family ("serif" by default). Android resolves the generic
+         * families and falls back to its default face for any it doesn't have installed.
+         */
+        fun typeface(familyName: String, weight: Int, italic: Boolean): Typeface {
+            val family = Typeface.create(familyName, Typeface.NORMAL)
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                Typeface.create(family, weight.coerceIn(1, 1000), italic)
+            } else {
+                val style = (if (weight >= 600) Typeface.BOLD else 0) or (if (italic) Typeface.ITALIC else 0)
+                Typeface.create(family, style)
+            }
+        }
+
+        /**
+         * The char offset in [el]'s text nearest the document point ([x], [y]): where a
+         * tap into a text box puts the cursor. The point is taken into the box's own frame
+         * first, so a moved, scaled or turned box is hit where it is drawn.
+         */
+        fun charOffsetAt(el: NativeTextElement, x: Float, y: Float): Int {
+            val inverse = Matrix()
+            if (!matrixOf(el.transform).invert(inverse)) return el.text.length
+            val local = floatArrayOf(x, y)
+            inverse.mapPoints(local)
+            val layout = layoutFor(el)
+            val line = layout.getLineForVertical(local[1].toInt().coerceAtLeast(0))
+            return layout.getOffsetForHorizontal(line, local[0]).coerceIn(0, el.text.length)
+        }
 
         /** Whether Rnote draws this beneath the ink: PDF pages and images. */
         fun isUnderlay(el: NativeCanvasElement): Boolean =

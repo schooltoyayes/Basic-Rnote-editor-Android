@@ -4,6 +4,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FilterCenterFocus
@@ -28,6 +30,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -96,7 +99,10 @@ fun RnoteTopBar(
     /** Whether the workspace side panel is showing. */
     filesOpen: Boolean = false,
     /** Shows or hides the workspace side panel, as the sidebar button in Rnote's headerbar does. */
-    onToggleFiles: () -> Unit = {}
+    onToggleFiles: () -> Unit = {},
+    /** Rnote's "Snap Positions", a switch in its canvas menu. */
+    snapPositions: Boolean = false,
+    onToggleSnapPositions: () -> Unit = {}
 ) {
     var showOverflowMenu by remember { mutableStateOf(false) }
     var showShareMenu by remember { mutableStateOf(false) }
@@ -273,6 +279,20 @@ fun RnoteTopBar(
                             onClick = { showOverflowMenu = false; onTakePhoto() }
                         )
                     }
+                    HorizontalDivider()
+                    // A switch, as in Rnote's canvas menu: the menu stays open to show it flip.
+                    DropdownMenuItem(
+                        leadingIcon = {
+                            Icon(
+                                if (snapPositions) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                null,
+                                tint = if (snapPositions) BrnaColors.Accent else LocalContentColor.current
+                            )
+                        },
+                        text = { Text("Snap Positions") },
+                        trailingIcon = { KeyHint("Ctrl+Shift+P") },
+                        onClick = onToggleSnapPositions
+                    )
                     HorizontalDivider()
                     // One entry, not one per format: scope and format are both chosen
                     // in the export sheet, the way desktop Rnote's export dialogs do it.

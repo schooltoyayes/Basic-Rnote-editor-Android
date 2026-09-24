@@ -94,12 +94,14 @@ import io.github.kjly.brna.model.brushFavorite
 import io.github.kjly.brna.model.withFavorite
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
+import io.github.kjly.brna.model.TextAlignment
 import io.github.kjly.brna.model.TextFormatting
 import io.github.kjly.brna.model.TextToggle
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.UndoHistory
 import io.github.kjly.brna.model.ViewportState
+import io.github.kjly.brna.model.SnapPositions
 import io.github.kjly.brna.render.NativeElementRenderer
 import io.github.kjly.brna.storage.ContentHash
 import io.github.kjly.brna.storage.DocumentUri
@@ -1096,7 +1098,17 @@ class MainActivity : ComponentActivity() {
                 mutableStateOf(SettingsManager.loadPaperStyle(this))
             }
             var toolConfig by remember {
-                mutableStateOf(ToolConfig(allowFingerDrawing = SettingsManager.loadAllowFingerDrawing(this)))
+                mutableStateOf(
+                    ToolConfig(
+                        allowFingerDrawing = SettingsManager.loadAllowFingerDrawing(this),
+                        snapPositions = SettingsManager.loadSnapPositions(this)
+                    )
+                )
+            }
+            /** Rnote's canvas menu toggle, and Ctrl+Shift+P. */
+            val toggleSnapPositions: () -> Unit = {
+                toolConfig = toolConfig.copy(snapPositions = !toolConfig.snapPositions)
+                SettingsManager.saveSnapPositions(this@MainActivity, toolConfig.snapPositions)
             }
 
             // ── Document state ────────────────────────────────────────────────────
@@ -1623,7 +1635,8 @@ class MainActivity : ComponentActivity() {
                     NativeEditing.createText(
                         value.text, session.x, session.y, toolConfig.textSize,
                         RnoteNativeColor(c.red, c.green, c.blue, c.alpha),
-                        NativeEditing.typewriterWrapWidth(session.x, paperStyle.effectivePageWidthPx)
+                        NativeEditing.typewriterWrapWidth(session.x, paperStyle.effectivePageWidthPx),
+                        toolConfig.textAlignment.apiName
                     )
                 }
                 if (edited == null && session.element == null) {
@@ -1669,6 +1682,28 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+            /**
+             * Rnote's alignment buttons: the box being typed into is aligned at once, and
+             * new boxes are aligned so from now on.
+             */
+            val onTextAlignmentSelected: (TextAlignment) -> Unit = { alignment ->
+                toolConfig = toolConfig.copy(textAlignment = alignment)
+                val session = textSession
+                val element = session?.element
+                if (session != null && element != null && element.alignment != alignment.apiName) {
+                    if (!session.undoTaken) {
+                        pushUndo()
+                        redoStack.clear()
+                    }
+                    val updated = NativeEditing.withAlignment(element, alignment.apiName)
+                    putText(element, updated)
+                    isModified = true
+                    textSession = session.copy(element = updated, template = updated, undoTaken = true)
+                }
+            }
+            /** What the alignment button shows: the box's own, or the one new boxes get. */
+            val textAlignment: TextAlignment = textSession?.element?.let { TextAlignment.of(it.alignment) }
+                ?: toolConfig.textAlignment
             /** What the switches show: set for text typed next, or else what the selection or cursor has. */
             val textFormats: Set<TextToggle> = textSession?.let { session ->
                 val selection = session.value.selection
@@ -1844,7 +1879,9 @@ class MainActivity : ComponentActivity() {
                                 onClearCanvas = clearCanvas,
                                 onOpenPageSettings = { showPageSettings = true },
                                 filesOpen = showFiles,
-                                onToggleFiles = { showFiles = !showFiles }
+                                onToggleFiles = { showFiles = !showFiles },
+                                snapPositions = toolConfig.snapPositions,
+                                onToggleSnapPositions = toggleSnapPositions
                             )
                             // Desktop Rnote's tab bar: there once more than one note is open.
                             if (tabOrder.size > 1) {
@@ -1957,7 +1994,13 @@ class MainActivity : ComponentActivity() {
                                         TextFieldValue(hit.text, TextRange(NativeElementRenderer.charOffsetAt(hit, x, y)))
                                     )
                                 } else {
-                                    TextSession(textSessionCount, x, y, null, null, TextFieldValue(""))
+                                    // With Snap Positions on, a new box goes to the pattern, as in Rnote.
+                                    val at = if (toolConfig.snapPositions) {
+                                        SnapPositions.snap(Offset(x, y), paperStyle)
+                                    } else {
+                                        Offset(x, y)
+                                    }
+                                    TextSession(textSessionCount, at.x, at.y, null, null, TextFieldValue(""))
                                 }
                             },
                             onVerticalSpace = { dy, strokeIds, natives ->
@@ -1991,7 +2034,7 @@ class MainActivity : ComponentActivity() {
                                     style = box?.let { TextBoxStyle.of(it) } ?: TextBoxStyle(
                                         NativeEditing.TEXT_FONT_FAMILY, toolConfig.textSize, 500, false,
                                         toolConfig.penColor.let { RnoteNativeColor(it.red, it.green, it.blue, it.alpha) },
-                                        "start",
+                                        toolConfig.textAlignment.apiName,
                                         NativeEditing.typewriterWrapWidth(session.x, paperStyle.effectivePageWidthPx)
                                     ),
                                     runs = session.element?.let { TextFormatting.runs(it) } ?: emptyList(),
@@ -2181,6 +2224,7 @@ class MainActivity : ComponentActivity() {
                                 Shortcut.IMPORT -> importFileLauncher.launch(IMPORTABLE_TYPES)
                                 Shortcut.CLEAR -> clearCanvas()
                                 Shortcut.PAGE_OVERVIEW -> showPages = true
+                                Shortcut.SNAP_POSITIONS -> toggleSnapPositions()
                                 Shortcut.UNDO -> performUndoAction?.invoke()
                                 Shortcut.REDO -> performRedoAction?.invoke()
                                 Shortcut.COPY -> if (hasSelection) copySelection() else return@handler false
@@ -2244,6 +2288,9 @@ class MainActivity : ComponentActivity() {
                             onSnapAnglesToggled = {
                                 toolConfig = toolConfig.copy(snapAngles = !toolConfig.snapAngles)
                             },
+                            onShapeConstraintsChanged = { constraints ->
+                                toolConfig = toolConfig.copy(shapeConstraints = constraints)
+                            },
                             favorites = penFavorites,
                             onApplyFavorite = { favorite -> toolConfig = toolConfig.withFavorite(favorite) },
                             onStoreFavorite = { slot -> setFavorite(slot, toolConfig.brushFavorite()) },
@@ -2251,6 +2298,8 @@ class MainActivity : ComponentActivity() {
                             textFormats = textFormats,
                             textFormatsEnabled = textSession != null,
                             onToggleTextFormat = onToggleTextFormat,
+                            textAlignment = textAlignment,
+                            onTextAlignmentSelected = onTextAlignmentSelected,
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 18.dp)

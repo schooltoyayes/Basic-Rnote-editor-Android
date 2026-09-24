@@ -4,7 +4,7 @@ import android.view.KeyEvent
 
 /** What a keyboard shortcut does; see [KeyboardShortcuts]. */
 enum class Shortcut {
-    OPEN, SAVE, SAVE_AS, NEW, PRINT, IMPORT, CLEAR, PAGE_OVERVIEW,
+    OPEN, SAVE, SAVE_AS, NEW, PRINT, IMPORT, CLEAR, PAGE_OVERVIEW, SNAP_POSITIONS,
     CLOSE_TAB, NEXT_TAB, PREVIOUS_TAB,
     UNDO, REDO,
     COPY, CUT, PASTE, SELECT_ALL, DUPLICATE, DELETE_SELECTION, DESELECT,
@@ -61,6 +61,7 @@ object KeyboardShortcuts {
             's' -> Shortcut.SAVE_AS
             'z' -> Shortcut.REDO
             'i' -> Shortcut.IMPORT
+            'p' -> Shortcut.SNAP_POSITIONS
             else -> null
         }
         return when (c) {

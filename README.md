@@ -29,12 +29,17 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   styles. Three size presets per tool plus a numeric adjuster, and four favorite
   slots that keep a style, color and width together.
 - **Shaper**: line, arrow, rectangle, ellipse, and — built from lines, as Rnote
-  builds them — 2D, 3D and single-quadrant coordinate systems and a grid. Lines
-  and arrows can snap to 15° steps. The color picker's fill pad fills shapes.
+  builds them — 2D, 3D and single-quadrant coordinate systems and a grid. Rnote's
+  shapes of several strokes too: polyline and polygon (a corner per stroke; put the
+  pen down on the last corner again to finish), quadratic and cubic curves, and the
+  ellipse through a point from its two foci. Rnote's constraints — 1:1, 3:2, the
+  golden ratio, level and upright — with Ctrl to switch them while drawing. Lines
+  and arrows can also snap to 15° steps. The color picker's fill pad fills shapes.
 - **Typewriter**: tap and type straight onto the page, into a new text box or
   an existing one. Bold, italic, underline and strikethrough — from the strip,
   or Ctrl+B / Ctrl+I / Ctrl+U on a keyboard — stored as Rnote stores them, so
-  formatting made on either side shows on the other.
+  formatting made on either side shows on the other. Left, centred, right or
+  justified, as Rnote aligns text.
 - **Eraser**: Trash Strokes and Split Strokes modes. Like Rnote's, it erases ink
   and shapes and leaves text and images alone.
 - **Selector**, for ink and for desktop text, shapes and images alike, in
@@ -46,12 +51,20 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   and its Laser, a red trail to point with that fades away and is never saved.
 - **Stylus-aware input**: stylus-only mode by default (finger pans and zooms),
   optional finger drawing, S-Pen barrel button as a momentary eraser, S-Pen Air
-  Actions mapped to undo/redo, two-finger pinch-zoom and pan.
+  Actions mapped to undo/redo, two-finger pinch-zoom and pan. Every sample the pen
+  reports is used, the ones Android batches between frames included, as Rnote uses
+  them; the pen's events arrive unbuffered, and motion prediction draws the ink a
+  little ahead of the pen, never saved. The finished note is drawn on a layer of its
+  own and only as far as it is in view, so a long note writes like a short one.
 - **Paper**: six patterns (dots, grid, lines, isometric grid, isometric dots,
   blank), A2–A6 / Letter / Legal / custom / infinite page sizes, four layout
   modes (fixed page, continuous vertical, semi-infinite, infinite), custom
   background and pattern colors, adjustable spacing and DPI,
-  portrait/landscape, dark mode.
+  portrait/landscape, dark mode. The isometric patterns stand on an upright edge,
+  as Rnote draws them. Rnote's Snap Positions (menu, or Ctrl+Shift+P): shapes,
+  moved and resized selections, new text and vertical space go to the pattern and
+  the page edges. The full palette has GTK's Custom row: a color editor
+  (saturation and value, hue, opacity, hex) whose colors are kept.
 - **Files**: open and save native `.rnote` (gzipped engine-snapshot JSON) and a
   simpler app-native `.json`, including "Open with" from file managers and cloud
   drives. Desktop text, shapes, images and PDF pages are shown and editable, and
@@ -82,8 +95,8 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   every page, background and pattern included, to Android's print dialog.
 - **Keyboard shortcuts** for a hardware keyboard, Rnote's own: Ctrl+Z / Ctrl+Shift+Z
   (and Ctrl+Y), Ctrl+S / Ctrl+Shift+S, Ctrl+O, Ctrl+N, Ctrl+P, Ctrl+Shift+I,
-  Ctrl+L, Ctrl+Shift+O, Ctrl+C / X / V / A / D, Delete and Escape for the
-  selection, Ctrl++ / Ctrl+- / Ctrl+0 to zoom, Ctrl+1 to Ctrl+6 for the pens.
+  Ctrl+L, Ctrl+Shift+O, Ctrl+Shift+P, Ctrl+C / X / V / A / D, Delete and Escape
+  for the selection, Ctrl++ / Ctrl+- / Ctrl+0 to zoom, Ctrl+1 to Ctrl+6 for the pens.
   They follow the keyboard's layout, so Ctrl+Z is the Z key on a German
   keyboard too.
 

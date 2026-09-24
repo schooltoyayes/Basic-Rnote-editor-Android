@@ -24,6 +24,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Architecture
+import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
@@ -68,6 +71,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import io.github.kjly.brna.model.BrushStyle
+import io.github.kjly.brna.model.ConstraintRatio
+import io.github.kjly.brna.model.ShapeConstraints
+import io.github.kjly.brna.model.TextAlignment
 import io.github.kjly.brna.model.BrushSizePreset
 import io.github.kjly.brna.model.EraserMode
 import io.github.kjly.brna.model.PenFavorite
@@ -108,6 +114,8 @@ fun PenConfigStrip(
     onSelectorModeSelected: (SelectorMode) -> Unit = {},
     onToolsModeSelected: (ToolsMode) -> Unit = {},
     onSnapAnglesToggled: () -> Unit = {},
+    /** The Shaper's constraints changed: switched on or off, or a ratio added or taken away. */
+    onShapeConstraintsChanged: (ShapeConstraints) -> Unit = {},
     /** The saved pens, [io.github.kjly.brna.storage.PenFavorites.SLOTS] of them; null for an empty slot. */
     favorites: List<PenFavorite?> = emptyList(),
     onApplyFavorite: (PenFavorite) -> Unit = {},
@@ -117,7 +125,10 @@ fun PenConfigStrip(
     /** The Typewriter's formatting switches that are on, and whether a text box is being typed into. */
     textFormats: Set<TextToggle> = emptySet(),
     textFormatsEnabled: Boolean = false,
-    onToggleTextFormat: (TextToggle) -> Unit = {}
+    onToggleTextFormat: (TextToggle) -> Unit = {},
+    /** The alignment of the text box being typed into, or else of the next one. */
+    textAlignment: TextAlignment = TextAlignment.START,
+    onTextAlignmentSelected: (TextAlignment) -> Unit = {}
 ) {
     Surface(
         modifier = modifier.width(60.dp),
@@ -142,9 +153,12 @@ fun PenConfigStrip(
                     canPaste, onCopySelection, onCutSelection, onPaste,
                     toolConfig.lockAspectRatio, onLockAspectRatioToggled
                 )
-                ToolType.SHAPER -> ShaperConfigPage(toolConfig, onShapeKindSelected, onSnapAnglesToggled, onSizeChanged)
+                ToolType.SHAPER -> ShaperConfigPage(
+                    toolConfig, onShapeKindSelected, onSnapAnglesToggled, onShapeConstraintsChanged, onSizeChanged
+                )
                 ToolType.TYPEWRITER -> TypewriterConfigPage(
-                    toolConfig, onSizeChanged, textFormats, textFormatsEnabled, onToggleTextFormat
+                    toolConfig, onSizeChanged, textFormats, textFormatsEnabled, onToggleTextFormat,
+                    textAlignment, onTextAlignmentSelected
                 )
                 ToolType.TOOLS -> ToolsConfigPage(toolConfig.toolsMode, onToolsModeSelected)
             }
@@ -261,6 +275,7 @@ private fun ShaperConfigPage(
     toolConfig: ToolConfig,
     onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit,
     onSnapAnglesToggled: () -> Unit,
+    onConstraintsChanged: (ShapeConstraints) -> Unit,
     onSizeChanged: (Float) -> Unit
 ) {
     val kind = toolConfig.shapeKind
@@ -277,7 +292,9 @@ private fun ShaperConfigPage(
         onShapeKindSelected(io.github.kjly.brna.model.ShapeKind.ELLIPSE)
     }
     LineShapesMenu(kind, onShapeKindSelected)
+    CurveShapesMenu(kind, onShapeKindSelected)
     StripDivider()
+    ConstraintsMenu(toolConfig.shapeConstraints, onConstraintsChanged)
     StripIconToggle(
         Icons.Default.Architecture, "Snap Lines to 15°", toolConfig.snapAngles, true, onClick = onSnapAnglesToggled
     )
@@ -328,6 +345,98 @@ private fun LineShapesMenu(
     }
 }
 
+/**
+ * The shapes Rnote builds from several strokes of the pen, with its icons and names, and
+ * how each is drawn here: a polyline or polygon a corner per stroke, finished by putting
+ * the pen down on the last corner again.
+ */
+private val CURVE_SHAPES = listOf(
+    Triple(io.github.kjly.brna.model.ShapeKind.POLYLINE, GeneratedIcons.ShapePolyline, "Polyline (a corner per stroke; tap the last corner again to finish)"),
+    Triple(io.github.kjly.brna.model.ShapeKind.POLYGON, GeneratedIcons.ShapePolygon, "Polygon (a corner per stroke; tap the last corner again to finish)"),
+    Triple(io.github.kjly.brna.model.ShapeKind.QUADBEZ, GeneratedIcons.ShapeQuadBez, "Quadratic Curve (drag to the control point, then to the end)"),
+    Triple(io.github.kjly.brna.model.ShapeKind.CUBBEZ, GeneratedIcons.ShapeCubBez, "Cubic Curve (drag to each control point, then to the end)"),
+    Triple(io.github.kjly.brna.model.ShapeKind.FOCI_ELLIPSE, GeneratedIcons.ShapeFociEllipse, "Ellipse From Foci (both foci, then a point on it)")
+)
+
+/** One button for the shapes drawn in several strokes, as [LineShapesMenu] is for those built from lines. */
+@Composable
+private fun CurveShapesMenu(
+    kind: io.github.kjly.brna.model.ShapeKind,
+    onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit
+) {
+    var open by remember { mutableStateOf(false) }
+    val chosen = CURVE_SHAPES.firstOrNull { it.first == kind }
+    Box {
+        StripIconToggle(
+            chosen?.second ?: GeneratedIcons.ShapePolygon,
+            chosen?.third ?: "Polylines, Polygons and Curves",
+            selected = chosen != null,
+            implemented = true
+        ) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            for ((shape, icon, label) in CURVE_SHAPES) {
+                DropdownMenuItem(
+                    leadingIcon = { Icon(icon, null, tint = if (shape == kind) BrnaColors.Accent else LocalContentColor.current) },
+                    text = { Text(label) },
+                    onClick = {
+                        open = false
+                        onShapeKindSelected(shape)
+                    }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Rnote's shaper constraints: a switch — Ctrl held on a keyboard flips it for as long as
+ * it is held — and the ratios to bend a drag to. Level and upright are always among them,
+ * as Rnote keeps them; 1:1, 3:2 and the golden ratio can be picked, as in its menu.
+ */
+@Composable
+private fun ConstraintsMenu(constraints: ShapeConstraints, onChanged: (ShapeConstraints) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        StripIconToggle(
+            Icons.Default.AspectRatio, "Constraints", selected = constraints.enabled, implemented = true
+        ) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                leadingIcon = { CheckMark(constraints.enabled) },
+                text = { Text("Enabled (hold Ctrl to switch while drawing)") },
+                onClick = { onChanged(constraints.copy(enabled = !constraints.enabled)) }
+            )
+            HorizontalDivider()
+            for ((ratio, label) in CONSTRAINT_RATIOS) {
+                val on = ratio in constraints.ratios
+                DropdownMenuItem(
+                    leadingIcon = { CheckMark(on) },
+                    text = { Text(label) },
+                    onClick = {
+                        onChanged(constraints.copy(ratios = if (on) constraints.ratios - ratio else constraints.ratios + ratio))
+                    }
+                )
+            }
+        }
+    }
+}
+
+/** The ratios Rnote's constraint menu offers, under its names. */
+private val CONSTRAINT_RATIOS = listOf(
+    ConstraintRatio.ONE_TO_ONE to "1:1",
+    ConstraintRatio.THREE_TO_TWO to "3:2",
+    ConstraintRatio.GOLDEN to "Golden Ratio (1:1.618)"
+)
+
+@Composable
+private fun CheckMark(on: Boolean) {
+    Icon(
+        if (on) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+        null,
+        tint = if (on) BrnaColors.Accent else LocalContentColor.current
+    )
+}
+
 // ── Eraser ───────────────────────────────────────────────────────────────
 
 @Composable
@@ -358,7 +467,9 @@ private fun TypewriterConfigPage(
     onSizeChanged: (Float) -> Unit,
     formats: Set<TextToggle>,
     formatsEnabled: Boolean,
-    onToggleFormat: (TextToggle) -> Unit
+    onToggleFormat: (TextToggle) -> Unit,
+    alignment: TextAlignment,
+    onAlignmentSelected: (TextAlignment) -> Unit
 ) {
     Text(
         text = "Tap to\ntype",
@@ -373,6 +484,7 @@ private fun TypewriterConfigPage(
     for ((toggle, icon, label) in TEXT_FORMATS) {
         StripIconToggle(icon, label, toggle in formats, formatsEnabled) { onToggleFormat(toggle) }
     }
+    AlignmentMenu(alignment, onAlignmentSelected)
     StripDivider()
     // Font size, not a stroke width: small, Rnote's default 32, and large.
     val presets = listOf(
@@ -390,6 +502,42 @@ private val TEXT_FORMATS = listOf(
     Triple(TextToggle.UNDERLINE, Icons.Default.FormatUnderlined, "Underline (Ctrl+U)"),
     Triple(TextToggle.STRIKETHROUGH, Icons.Default.FormatStrikethrough, "Strikethrough")
 )
+
+/** Rnote's typewriter alignment buttons, with its icons and tooltips. */
+private val TEXT_ALIGNMENTS = listOf(
+    Triple(TextAlignment.START, GeneratedIcons.TextAlignStart, "Align Left"),
+    Triple(TextAlignment.CENTER, GeneratedIcons.TextAlignCenter, "Align Center"),
+    Triple(TextAlignment.END, GeneratedIcons.TextAlignEnd, "Align Right"),
+    Triple(TextAlignment.FILL, GeneratedIcons.TextAlignFill, "Fill")
+)
+
+/**
+ * The alignment as one button showing the one in use, the four in its menu — Rnote shows
+ * them side by side, which the strip has no room for. It aligns the box being typed into,
+ * or the next one.
+ */
+@Composable
+private fun AlignmentMenu(alignment: TextAlignment, onSelected: (TextAlignment) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val (_, icon, label) = TEXT_ALIGNMENTS.first { it.first == alignment }
+    Box {
+        StripIconToggle(icon, label, selected = alignment != TextAlignment.START, implemented = true) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            for ((each, eachIcon, eachLabel) in TEXT_ALIGNMENTS) {
+                DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(eachIcon, null, tint = if (each == alignment) BrnaColors.Accent else LocalContentColor.current)
+                    },
+                    text = { Text(eachLabel) },
+                    onClick = {
+                        open = false
+                        onSelected(each)
+                    }
+                )
+            }
+        }
+    }
+}
 
 // ── Selector ─────────────────────────────────────────────────────────────
 

@@ -227,8 +227,8 @@ fun RnoteTopBar(
                 ) {
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.NoteAdd, null) },
-                        text = { Text("New") },
-                        trailingIcon = { KeyHint("Ctrl+N") },
+                        text = { Text("New tab") },
+                        trailingIcon = { KeyHint("Ctrl+T") },
                         onClick = { showOverflowMenu = false; onNewDocument() }
                     )
                     DropdownMenuItem(

@@ -41,6 +41,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -70,6 +71,7 @@ import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.BrushSizePreset
 import io.github.kjly.brna.model.EraserMode
 import io.github.kjly.brna.model.PenFavorite
+import io.github.kjly.brna.model.SelectorMode
 import io.github.kjly.brna.model.TextToggle
 import io.github.kjly.brna.model.brushFavorite
 import io.github.kjly.brna.model.ToolConfig
@@ -102,6 +104,7 @@ fun PenConfigStrip(
     onCutSelection: () -> Unit = {},
     onPaste: () -> Unit = {},
     onLockAspectRatioToggled: () -> Unit = {},
+    onSelectorModeSelected: (SelectorMode) -> Unit = {},
     onSnapAnglesToggled: () -> Unit = {},
     /** The saved pens, [io.github.kjly.brna.storage.PenFavorites.SLOTS] of them; null for an empty slot. */
     favorites: List<PenFavorite?> = emptyList(),
@@ -132,6 +135,7 @@ fun PenConfigStrip(
                 )
                 ToolType.ERASER -> EraserConfigPage(toolConfig, onEraserModeSelected, onSizeChanged)
                 ToolType.SELECTOR -> SelectorConfigPage(
+                    toolConfig.selectorMode, onSelectorModeSelected,
                     hasActiveSelection, onDeleteSelection, onDuplicateSelection, onSelectAll, onDeselectAll,
                     canPaste, onCopySelection, onCutSelection, onPaste,
                     toolConfig.lockAspectRatio, onLockAspectRatioToggled
@@ -389,6 +393,8 @@ private val TEXT_FORMATS = listOf(
 
 @Composable
 private fun SelectorConfigPage(
+    mode: SelectorMode,
+    onModeSelected: (SelectorMode) -> Unit,
     hasActiveSelection: Boolean,
     onDeleteSelection: () -> Unit,
     onDuplicateSelection: () -> Unit,
@@ -401,7 +407,7 @@ private fun SelectorConfigPage(
     lockAspectRatio: Boolean,
     onLockAspectRatioToggled: () -> Unit
 ) {
-    StripIconToggle(GeneratedIcons.SelectorPolygon, "Select With a Polygon", selected = true, implemented = true) {}
+    SelectorModeMenu(mode, onModeSelected)
     StripDivider()
     StripActionButton(GeneratedIcons.SelectionSelectAll, "Select All Strokes", enabled = true, onClick = onSelectAll)
     StripActionButton(GeneratedIcons.SelectionDeselectAll, "Deselect All Strokes", enabled = hasActiveSelection, onClick = onDeselectAll)
@@ -413,6 +419,41 @@ private fun SelectorConfigPage(
     StripActionButton(Icons.Default.ContentPaste, "Paste", enabled = canPaste, onClick = onPaste)
     StripDivider()
     StripIconToggle(GeneratedIcons.SelectionLockAspectRatio, "Lock Aspect Ratio", selected = lockAspectRatio, implemented = true, onClick = onLockAspectRatioToggled)
+}
+
+/** Rnote's four selector styles, with its icons and tooltips. */
+private val SELECTOR_MODES = listOf(
+    Triple(SelectorMode.POLYGON, GeneratedIcons.SelectorPolygon, "Select With a Polygon"),
+    Triple(SelectorMode.RECTANGLE, GeneratedIcons.SelectorRectangle, "Select With a Rectangle"),
+    Triple(SelectorMode.SINGLE, GeneratedIcons.SelectorSingle, "Select Single Strokes"),
+    Triple(SelectorMode.INTERSECTING_PATH, GeneratedIcons.SelectorIntersectingPath, "Select Intersecting Path")
+)
+
+/**
+ * The selector style as one button showing the style in use, the four to choose from
+ * in its menu — Rnote shows them side by side, which the strip has no room for.
+ */
+@Composable
+private fun SelectorModeMenu(mode: SelectorMode, onModeSelected: (SelectorMode) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val (_, icon, label) = SELECTOR_MODES.first { it.first == mode }
+    Box {
+        StripIconToggle(icon, label, selected = true, implemented = true) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            for ((each, eachIcon, eachLabel) in SELECTOR_MODES) {
+                DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(eachIcon, null, tint = if (each == mode) BrnaColors.Accent else LocalContentColor.current)
+                    },
+                    text = { Text(eachLabel) },
+                    onClick = {
+                        open = false
+                        onModeSelected(each)
+                    }
+                )
+            }
+        }
+    }
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────

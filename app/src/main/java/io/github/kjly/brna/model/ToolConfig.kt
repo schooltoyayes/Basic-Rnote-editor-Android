@@ -30,6 +30,12 @@ enum class EraserMode { TRASH, SPLIT }
 enum class ShapeKind { LINE, ARROW, RECTANGLE, ELLIPSE, COORD_SYSTEM_2D, COORD_SYSTEM_3D, QUADRANT, GRID }
 
 /**
+ * Desktop Rnote's selector styles (`SelectorStyle`): draw round what to take, drag a
+ * rectangle over it, tap one thing, or draw a line through everything to take.
+ */
+enum class SelectorMode { POLYGON, RECTANGLE, SINGLE, INTERSECTING_PATH }
+
+/**
  * Desktop Rnote's brush styles. MARKER reproduces what BRNA used to call the
  * "Highlighter" tool — translucent, wide, layered under other strokes — but
  * as a Brush style rather than a separate top-level tool, matching how
@@ -85,6 +91,12 @@ data class ToolConfig(
     val eraserMode: EraserMode = EraserMode.TRASH,
     /** The selector's "Lock Aspect Ratio": scale the selection uniformly. Off in Rnote by default. */
     val lockAspectRatio: Boolean = false,
+    val selectorMode: SelectorMode = SelectorMode.POLYGON,
+    /**
+     * The colour picker's second pad: what new shapes are filled with. Transparent — no
+     * fill — until one is picked, as in Rnote, whose pens start without a fill colour.
+     */
+    val fillColor: Color = Color.Transparent,
     /** Typewriter font size; Rnote's `TextStyle::FONT_SIZE_DEFAULT` is 32. */
     val textSize: Float = 32f,
     /** When false (default), only stylus/S-Pen input can draw. Finger touch is reserved for pan & zoom. */

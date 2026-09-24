@@ -42,6 +42,7 @@ import io.github.kjly.brna.model.NativeTextElement
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.RnoteNativeColor
+import io.github.kjly.brna.model.SelectorMode
 import io.github.kjly.brna.model.ShapeKind
 import io.github.kjly.brna.model.PressureCurve
 import io.github.kjly.brna.model.Stroke
@@ -459,6 +460,26 @@ fun DrawingCanvas(
                                 selectionMoveSnapshotTaken = false
                                 return@pointerInteropFilter true
                             }
+                            // Rnote's single selection: tapping something not yet selected
+                            // adds it, before a tap inside the box can start a move.
+                            if (toolConfig.selectorMode == SelectorMode.SINGLE) {
+                                val picked = SelectionManager.pickAt(
+                                    Offset(x, y), strokes, nativeElements, PICK_TOLERANCE_PX / viewportState.effectiveScale
+                                )
+                                val added = when (picked) {
+                                    is SelectionManager.Pick.Ink ->
+                                        (picked.stroke !in selectedStrokes).also { if (it) selectedStrokes.add(picked.stroke) }
+                                    is SelectionManager.Pick.Element -> selectedNatives != null &&
+                                        selectedNatives.none { it === picked.element }.also {
+                                            if (it) selectedNatives.add(picked.element)
+                                        }
+                                    null -> false
+                                }
+                                if (added) {
+                                    isDrawing = false
+                                    return@pointerInteropFilter true
+                                }
+                            }
                             val screenBoundingBox = Rect(
                                 viewportState.canvasToScreen(boundingBox.topLeft),
                                 viewportState.canvasToScreen(boundingBox.bottomRight)
@@ -606,14 +627,47 @@ fun DrawingCanvas(
                         } else if (isMovingSelection) {
                             isMovingSelection = false
                         } else if (isDrawing) {
-                            if (activeTool == ToolType.SELECTOR && lassoPoints.size >= 3) {
-                                val found = SelectionManager.findStrokesInLasso(lassoPoints, strokes)
+                            if (activeTool == ToolType.SELECTOR) {
+                                val path = lassoPoints.toList()
+                                val polyline = path.map { it.x to it.y }
+                                var foundStrokes: List<Stroke> = emptyList()
+                                var foundNatives: List<NativeCanvasElement> = emptyList()
+                                when (toolConfig.selectorMode) {
+                                    SelectorMode.POLYGON -> if (path.size >= 3) {
+                                        foundStrokes = SelectionManager.findStrokesInLasso(path, strokes)
+                                        foundNatives = nativeElements.filter { NativeEditing.insideLasso(it, polyline) }
+                                    }
+                                    SelectorMode.RECTANGLE -> if (path.size >= 2) {
+                                        val a = path.first()
+                                        val b = path.last()
+                                        foundStrokes = SelectionManager.strokesInRect(a, b, strokes)
+                                        foundNatives = nativeElements.filter {
+                                            NativeEditing.insideRect(it, minOf(a.x, b.x), minOf(a.y, b.y), maxOf(a.x, b.x), maxOf(a.y, b.y))
+                                        }
+                                    }
+                                    SelectorMode.SINGLE -> {
+                                        // What is under the pen where it lifts, as in Rnote.
+                                        val picked = path.lastOrNull()?.let { point ->
+                                            SelectionManager.pickAt(
+                                                point, strokes, nativeElements, PICK_TOLERANCE_PX / viewportState.effectiveScale
+                                            )
+                                        }
+                                        when (picked) {
+                                            is SelectionManager.Pick.Ink -> foundStrokes = listOf(picked.stroke)
+                                            is SelectionManager.Pick.Element -> foundNatives = listOf(picked.element)
+                                            null -> Unit
+                                        }
+                                    }
+                                    SelectorMode.INTERSECTING_PATH -> if (path.size >= 3) {
+                                        foundStrokes = SelectionManager.strokesCrossedByPath(path, strokes)
+                                        foundNatives = nativeElements.filter { NativeEditing.crossedByPath(it, polyline) }
+                                    }
+                                }
                                 selectedStrokes.clear()
-                                selectedStrokes.addAll(found)
+                                selectedStrokes.addAll(foundStrokes)
                                 selectedNatives?.let { natives ->
-                                    val polygon = lassoPoints.map { it.x to it.y }
                                     natives.clear()
-                                    natives.addAll(nativeElements.filter { NativeEditing.insideLasso(it, polygon) })
+                                    natives.addAll(foundNatives)
                                 }
                             } else if (activeTool == ToolType.TYPEWRITER) {
                                 if (action == MotionEvent.ACTION_UP && tapDownScreen != null) {
@@ -625,6 +679,7 @@ fun DrawingCanvas(
                                 if (start != null && end != null) {
                                     val kind = toolConfig.shapeKind
                                     val color = nativeColorOf(toolConfig.penColor)
+                                    val fill = nativeColorOf(toolConfig.fillColor)
                                     val width = toolConfig.shaperWidth
                                     val cell = gridCell
                                     val lines: List<ShapeBuilders.Segment>? = when {
@@ -648,10 +703,10 @@ fun DrawingCanvas(
                                     }
                                     val shapes = if (lines != null) {
                                         lines.mapNotNull {
-                                            NativeEditing.createShape(ShapeKind.LINE, it.x1, it.y1, it.x2, it.y2, color, width)
+                                            NativeEditing.createShape(ShapeKind.LINE, it.x1, it.y1, it.x2, it.y2, color, width, fill)
                                         }
                                     } else {
-                                        listOfNotNull(NativeEditing.createShape(kind, start.x, start.y, end.x, end.y, color, width))
+                                        listOfNotNull(NativeEditing.createShape(kind, start.x, start.y, end.x, end.y, color, width, fill))
                                     }
                                     if (shapes.isNotEmpty()) onAddShapes(shapes)
                                 }
@@ -839,19 +894,29 @@ fun DrawingCanvas(
                 } else if (dragging) {
                     NativeEditing.createShape(
                         kind, previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y,
-                        nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth
+                        nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor)
                     )?.let { preview ->
                         drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, preview, cache = false) }
                     }
                 }
             }
 
-            // 4. Render lasso polygon preview
-            if (isDrawing && activeTool == ToolType.SELECTOR && lassoPoints.size >= 2) {
+            // 4. Render the selector's path: the lasso or the line drawn through things, or
+            //    for the rectangle mode the box from where the pen went down to where it is.
+            //    A tap in single mode draws nothing.
+            if (isDrawing && activeTool == ToolType.SELECTOR && lassoPoints.size >= 2 &&
+                toolConfig.selectorMode != SelectorMode.SINGLE
+            ) {
                 val lassoPath = Path()
-                lassoPath.moveTo(lassoPoints[0].x, lassoPoints[0].y)
-                for (i in 1 until lassoPoints.size) {
-                    lassoPath.lineTo(lassoPoints[i].x, lassoPoints[i].y)
+                if (toolConfig.selectorMode == SelectorMode.RECTANGLE) {
+                    val a = lassoPoints.first()
+                    val b = lassoPoints.last()
+                    lassoPath.addRect(Rect(minOf(a.x, b.x), minOf(a.y, b.y), maxOf(a.x, b.x), maxOf(a.y, b.y)))
+                } else {
+                    lassoPath.moveTo(lassoPoints[0].x, lassoPoints[0].y)
+                    for (i in 1 until lassoPoints.size) {
+                        lassoPath.lineTo(lassoPoints[i].x, lassoPoints[i].y)
+                    }
                 }
                 drawPath(
                     path = lassoPath,
@@ -1113,6 +1178,11 @@ private const val HANDLE_INFLATE_PX = 12f
 private const val HANDLE_SIZE_PX = 14f
 /** How close (screen px) the pen has to come to a handle to take it. */
 private const val HANDLE_HIT_PX = 32f
+/**
+ * How far (screen px) beside a line a tap in single selection still takes it. Rnote
+ * needs the pointer on the ink itself; a pen on glass is less exact than a mouse.
+ */
+private const val PICK_TOLERANCE_PX = 12f
 /** How far (screen px) the rotate knob stands above the box. */
 private const val ROTATE_HANDLE_OFFSET_PX = 36f
 /** Index of the rotate knob in [handlePositions]; 0–3 are the corners, clockwise from top-left. */

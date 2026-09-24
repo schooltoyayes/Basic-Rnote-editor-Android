@@ -73,6 +73,16 @@ data class ViewportState(
     }
 
     /**
+     * Zoomed to [newZoom] (clamped) with the document point under [anchor] — a screen
+     * position, the middle of the view for Rnote's zoom keys — kept where it is.
+     */
+    fun zoomedAround(anchor: Offset, newZoom: Float): ViewportState {
+        val zoom = newZoom.coerceIn(ZOOM_MIN, ZOOM_MAX)
+        val point = screenToCanvas(anchor)
+        return copy(zoomScale = zoom, panOffset = anchor - point * (zoom * displayScale))
+    }
+
+    /**
      * Clamps and returns a new ViewportState with updated zoom and pan.
      */
     fun update(newPan: Offset, newZoom: Float): ViewportState {
@@ -87,6 +97,9 @@ data class ViewportState(
          */
         const val ZOOM_MIN = 0.2f
         const val ZOOM_MAX = 6.0f
+
+        /** Rnote's `RnCanvas::ZOOM_SCROLL_STEP`: one press of a zoom key is 10 %, in or out. */
+        const val ZOOM_STEP = 0.1f
 
         /**
          * Gap left between the origin and the corner of the screen by

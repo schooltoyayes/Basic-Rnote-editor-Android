@@ -32,6 +32,7 @@ object SettingsManager {
     private const val KEY_CUSTOM_BG_COLOR    = "customBgColor"
     private const val KEY_CUSTOM_GRID_COLOR  = "customGridColor"
     private const val KEY_BORDER_COLOR       = "formatBorderColor"
+    private const val KEY_SNAP_POSITIONS     = "snapPositions"
 
     fun save(
         context: Context,
@@ -101,4 +102,16 @@ object SettingsManager {
     fun loadAllowFingerDrawing(context: Context): Boolean =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(KEY_ALLOW_FINGER_DRAW, false)
+
+    /** Rnote's "Snap Positions", which it too keeps between sessions; off until switched on. */
+    fun loadSnapPositions(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_SNAP_POSITIONS, false)
+
+    fun saveSnapPositions(context: Context, on: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_SNAP_POSITIONS, on)
+            .apply()
+    }
 }

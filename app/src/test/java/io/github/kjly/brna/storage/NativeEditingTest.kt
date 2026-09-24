@@ -331,4 +331,18 @@ class NativeEditingTest {
         assertEquals(24f, reread.fontSize, 0f)
         assertEquals(500f, reread.maxWidth!!, 0f)
     }
+
+    @Test
+    fun `text is aligned as Rnote aligns it, new or changed, and nothing else moves`() {
+        val centred = NativeEditing.createText("Mitte", 0f, 0f, 32f, black, 400f, "center")!!
+        assertEquals("center", centred.alignment)
+        val bold = NativeEditing.toggleFormat(centred, 0, 3, io.github.kjly.brna.model.TextToggle.BOLD)
+        val filled = NativeEditing.withAlignment(bold, "fill")
+        assertEquals("fill", filled.alignment)
+        assertEquals("Mitte", filled.text)
+        assertEquals(bold.ranges, filled.ranges)
+        val style = filled.raw!!.asJsonObject.getAsJsonObject("text_style")
+        assertEquals("fill", style.get("alignment").asString)
+        assertEquals(400.0, style.get("max_width").asDouble, 1e-6)
+    }
 }

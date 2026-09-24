@@ -23,11 +23,26 @@ enum class ToolType(val isImplemented: Boolean = true) {
 enum class EraserMode { TRASH, SPLIT }
 
 /**
- * The shapes the Shaper draws, from desktop Rnote's shape picker. The last four are
- * built from several lines, as Rnote builds them (see storage.ShapeBuilders); GRID takes
- * two drags there too, the first for one cell and the second for how far to repeat it.
+ * The shapes the Shaper draws, from desktop Rnote's shape picker. COORD_SYSTEM_2D to GRID
+ * are built from several lines, as Rnote builds them (see storage.ShapeBuilders); GRID
+ * takes two drags there too, the first for one cell and the second for how far to repeat
+ * it. The last five take several strokes of the pen each, as Rnote's own builders do
+ * (see storage.ShapeDraft): a polyline and a polygon a stroke per corner, the curves a
+ * stroke per control point, the foci ellipse one per focus and one for a point on it.
  */
-enum class ShapeKind { LINE, ARROW, RECTANGLE, ELLIPSE, COORD_SYSTEM_2D, COORD_SYSTEM_3D, QUADRANT, GRID }
+enum class ShapeKind {
+    LINE, ARROW, RECTANGLE, ELLIPSE, COORD_SYSTEM_2D, COORD_SYSTEM_3D, QUADRANT, GRID,
+    POLYLINE, POLYGON, QUADBEZ, CUBBEZ, FOCI_ELLIPSE
+}
+
+/** Rnote's `TextAlignment`, with the name its files use. */
+enum class TextAlignment(val apiName: String) {
+    START("start"), CENTER("center"), END("end"), FILL("fill");
+
+    companion object {
+        fun of(apiName: String): TextAlignment = entries.firstOrNull { it.apiName == apiName } ?: START
+    }
+}
 
 /**
  * Desktop Rnote's selector styles (`SelectorStyle`): draw round what to take, drag a
@@ -107,6 +122,15 @@ data class ToolConfig(
     val fillColor: Color = Color.Transparent,
     /** Typewriter font size; Rnote's `TextStyle::FONT_SIZE_DEFAULT` is 32. */
     val textSize: Float = 32f,
+    /** How new text is aligned; Rnote's typewriter starts at the start. */
+    val textAlignment: TextAlignment = TextAlignment.START,
+    /** The Shaper's constraints (1:1, level, upright …), off by default as in Rnote. */
+    val shapeConstraints: ShapeConstraints = ShapeConstraints(),
+    /**
+     * Rnote's "Snap Positions": shapes, moved selections, new text and vertical space go
+     * to the page's pattern. Off by default, as in Rnote; kept in the settings.
+     */
+    val snapPositions: Boolean = false,
     /** When false (default), only stylus/S-Pen input can draw. Finger touch is reserved for pan & zoom. */
     val allowFingerDrawing: Boolean = false
 ) {

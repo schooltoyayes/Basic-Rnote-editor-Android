@@ -39,7 +39,14 @@ object VerticalSpace {
         return below
     }
 
-    /** How far everything has moved with the pen at [pointerY], for a drag started at [startY]. */
-    fun offset(startY: Float, pointerY: Float): Float =
-        if (abs(pointerY - startY) < SNAP_DISTANCE) 0f else pointerY - startY
+    /**
+     * How far everything has moved with the pen at [pointerY], for a drag started at
+     * [startY]. With Snap Positions on, [snap] takes the distance to the pattern's step,
+     * as Rnote snaps the offset rather than the pen: ruled lines stay on their lines.
+     */
+    fun offset(startY: Float, pointerY: Float, snap: ((Float) -> Float)? = null): Float {
+        if (abs(pointerY - startY) < SNAP_DISTANCE) return 0f
+        val raw = pointerY - startY
+        return snap?.invoke(raw) ?: raw
+    }
 }

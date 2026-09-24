@@ -1,8 +1,10 @@
 package io.github.kjly.brna.ui.canvas
 
+import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -26,6 +28,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke as CanvasStrokeStyle
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.translate
@@ -33,6 +37,7 @@ import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntSize
 import io.github.kjly.brna.model.Affine
 import io.github.kjly.brna.model.BrushStyle
@@ -47,6 +52,7 @@ import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.SelectorMode
 import io.github.kjly.brna.model.ShapeKind
+import io.github.kjly.brna.model.SnapPositions
 import io.github.kjly.brna.model.PressureCurve
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
@@ -58,6 +64,8 @@ import io.github.kjly.brna.render.NativeElementRenderer
 import io.github.kjly.brna.render.VectorImageRenderer
 import io.github.kjly.brna.storage.NativeEditing
 import io.github.kjly.brna.storage.ShapeBuilders
+import io.github.kjly.brna.storage.ShapeDraft
+import androidx.input.motionprediction.MotionEventPredictor
 import io.github.kjly.brna.render.composeStrokePath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -204,7 +212,21 @@ fun DrawingCanvas(
     // A grid's first cell, drawn and waiting for the second drag that repeats it. Only
     // meaningful while the Shaper stays on the grid.
     var gridCell by remember { mutableStateOf<GridCell?>(null) }
-    LaunchedEffect(toolConfig.activeTool, toolConfig.shapeKind) { gridCell = null }
+    // A polyline, polygon, curve or foci ellipse between the strokes that make it. Another
+    // pen or shape drops it unfinished, as Rnote cancels its builder.
+    var draft by remember { mutableStateOf<ShapeDraft?>(null) }
+    LaunchedEffect(toolConfig.activeTool, toolConfig.shapeKind) {
+        gridCell = null
+        draft = null
+    }
+    /** [p] on the page's pattern when Snap Positions is on, as Rnote's `snap_position`. */
+    fun snapped(p: Offset): Offset = if (toolConfig.snapPositions) SnapPositions.snap(p, paperStyle) else p
+
+    // Where the pen is about to be, from Android's motion prediction: drawn at the tip of
+    // the stroke being written so the ink keeps up with the pen, never saved.
+    val view = LocalView.current
+    val predictor = remember(view) { MotionEventPredictor.newInstance(view) }
+    val predictedPoints = remember { mutableStateListOf<InkPoint>() }
 
     // The Laser's finished trails, in canvas units. Once the pen lifts they fade out
     // together in a second, as Rnote's LaserTool fades; drawing again brings them back.
@@ -225,8 +247,8 @@ fun DrawingCanvas(
     }
 
     val currentPoints = remember { mutableStateListOf<InkPoint>() }
-    /** Memoised stroke outlines, keyed by Stroke identity. See the draw block below. */
-    val outlineCache = remember { IdentityHashMap<Stroke, Path>() }
+    /** Memoised stroke bounds and outlines, keyed by Stroke identity. See the draw block below. */
+    val outlineCache = remember { IdentityHashMap<Stroke, CachedOutline>() }
     val lassoPoints = remember { mutableStateListOf<Offset>() }
     // selectedStrokes is owned by the caller (MainActivity) so it can be read for delete
 
@@ -234,6 +256,9 @@ fun DrawingCanvas(
     var hoverOffset by remember { mutableStateOf<Offset?>(null) }
     var isMovingSelection by remember { mutableStateOf(false) }
     var selectionDragStart by remember { mutableStateOf(Offset.Zero) }
+    // With Snap Positions on: the selection's corner nearest where it was taken, which is
+    // what lands on the pattern as it moves (Rnote's `SnapCorner`).
+    var selectionSnapCorner by remember { mutableStateOf<Offset?>(null) }
     // Ensures exactly one undo snapshot is taken per selection drag, on first
     // actual movement — not one per ACTION_MOVE frame, and not on a drag that
     // starts but never moves.
@@ -275,7 +300,7 @@ fun DrawingCanvas(
     val eraserWidth = toolConfig.eraserWidth
     val splitEraser = toolConfig.eraserMode == EraserMode.SPLIT
 
-    Canvas(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .onSizeChanged { viewSize = it }
@@ -369,6 +394,9 @@ fun DrawingCanvas(
                 val hasStylusPrimaryButton = (buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
                 val hasStylusSecondaryButton = (buttonState and MotionEvent.BUTTON_STYLUS_SECONDARY) != 0
                 val hasSecondaryButton = (buttonState and MotionEvent.BUTTON_SECONDARY) != 0
+                // Held on a keyboard, Ctrl turns the Shaper's constraints on — or off — for
+                // as long as it is held, as in Rnote.
+                val ctrlHeld = (motionEvent.metaState and KeyEvent.META_CTRL_ON) != 0
 
                 // Stylus-only mode: finger pans the viewport instead of drawing
                 if (isFinger && !toolConfig.allowFingerDrawing) {
@@ -430,6 +458,9 @@ fun DrawingCanvas(
                     else -> motionEvent.actionMasked
                 }
 
+                // Android's motion prediction learns where the pen is heading from its events.
+                if (isStylus && motionEvent.actionMasked in PREDICTED_ACTIONS) predictor.record(motionEvent)
+
                 when (action) {
                     MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
                         if (isStylus) {
@@ -452,8 +483,12 @@ fun DrawingCanvas(
                     }
 
                     MotionEvent.ACTION_DOWN -> {
+                        // The pen's events straight to the canvas as they come, not a frame's
+                        // worth at a time, so the ink is drawn from the newest point there is.
+                        if (isStylus) view.requestUnbufferedDispatch(motionEvent)
                         hoverOffset = null
                         isDrawing = true
+                        predictedPoints.clear()
                         buttonEraserLatched = eraserRequestedNow
                         eraseSnapshotTaken = false
 
@@ -510,6 +545,7 @@ fun DrawingCanvas(
                                 isMovingSelection = true
                                 selectionMoveSnapshotTaken = false
                                 selectionDragStart = Offset(x, y)
+                                selectionSnapCorner = SnapPositions.nearestCorner(boundingBox, Offset(x, y))
                                 return@pointerInteropFilter true
                             } else {
                                 selectedStrokes.clear()
@@ -533,11 +569,26 @@ fun DrawingCanvas(
                             laserOpacity = 1f
                         }
                         if (activeTool == ToolType.SHAPER) {
-                            // The grid's second drag spans from its first cell's corner,
-                            // wherever the pen comes down, as in Rnote's GridBuilder.
-                            val cell = gridCell.takeIf { toolConfig.shapeKind == ShapeKind.GRID }
-                            shapeStart = cell?.start ?: Offset(x, y)
-                            shapeEnd = Offset(x, y)
+                            val pos = snapped(Offset(x, y))
+                            // A draft of another shape (the shape was switched a moment ago) starts over.
+                            val pending = draft?.takeIf { it.kind == toolConfig.shapeKind }
+                            if (ShapeDraft.isMultiStroke(toolConfig.shapeKind)) {
+                                // The next stroke of a shape drawn in several; the first starts it.
+                                draft = pending?.down(
+                                    pos,
+                                    toolConfig.shapeConstraints.withCtrl(ctrlHeld),
+                                    maxOf(ShapeDraft.FINISH_DISTANCE, FINISH_TOLERANCE_PX / viewportState.effectiveScale)
+                                ) ?: ShapeDraft.start(toolConfig.shapeKind, pos)
+                                shapeStart = null
+                                shapeEnd = null
+                            } else {
+                                // The grid's second drag spans from its first cell's corner,
+                                // wherever the pen comes down, as in Rnote's GridBuilder.
+                                val cell = gridCell.takeIf { toolConfig.shapeKind == ShapeKind.GRID }
+                                val start = cell?.start ?: pos
+                                shapeStart = start
+                                shapeEnd = shapeEndFor(toolConfig, start, pos, ctrlHeld)
+                            }
                         }
                         tapDownScreen = if (activeTool == ToolType.TYPEWRITER) Offset(screenX, screenY) else null
                         tapDownCanvas = Offset(x, y)
@@ -560,7 +611,12 @@ fun DrawingCanvas(
                     MotionEvent.ACTION_MOVE -> {
                         if (isDrawing) {
                             spaceDrag?.let { space ->
-                                space.offset = VerticalSpace.offset(space.startY, y)
+                                val snapOffset: ((Float) -> Float)? = if (toolConfig.snapPositions) {
+                                    { v -> snapped(Offset(x, v)).y }
+                                } else {
+                                    null
+                                }
+                                space.offset = VerticalSpace.offset(space.startY, y, snapOffset)
                                 return@pointerInteropFilter true
                             }
                             val drag = transformDrag
@@ -569,7 +625,11 @@ fun DrawingCanvas(
                                     onSelectionDragStart()
                                     selectionMoveSnapshotTaken = true
                                 }
-                                val m = dragTransform(drag, Offset(x, y), toolConfig.lockAspectRatio)
+                                // Rnote snaps the dragged corner only when the ratio is free.
+                                val m = dragTransform(
+                                    drag, Offset(x, y), toolConfig.lockAspectRatio,
+                                    if (toolConfig.snapPositions) ::snapped else null
+                                )
                                 if (drag.strokes.isNotEmpty()) {
                                     val updated = SelectionManager.transformStrokes(drag.strokes, m)
                                     selectedStrokes.clear()
@@ -592,12 +652,24 @@ fun DrawingCanvas(
                             if (isMovingSelection &&
                                 (selectedStrokes.isNotEmpty() || !natives.isNullOrEmpty())
                             ) {
+                                val corner = selectionSnapCorner
+                                val delta = if (toolConfig.snapPositions && corner != null) {
+                                    // Rnote's snapped translate: the corner goes to the pattern
+                                    // point nearest where the pen would take it, and the pen's
+                                    // leftover movement waits for the next point.
+                                    val step = snapped(corner + (Offset(x, y) - selectionDragStart)) - corner
+                                    val threshold = SnapPositions.TRANSLATE_THRESHOLD_PX / viewportState.effectiveScale
+                                    if (step.getDistance() > threshold) step else Offset.Zero
+                                } else {
+                                    Offset(x, y) - selectionDragStart
+                                }
+                                if (delta == Offset.Zero) return@pointerInteropFilter true
                                 if (!selectionMoveSnapshotTaken) {
                                     onSelectionDragStart()
                                     selectionMoveSnapshotTaken = true
                                 }
-                                val delta = Offset(x, y) - selectionDragStart
-                                selectionDragStart = Offset(x, y)
+                                selectionDragStart += delta
+                                selectionSnapCorner = corner?.plus(delta)
                                 if (selectedStrokes.isNotEmpty()) {
                                     val updated = SelectionManager.translateStrokes(selectedStrokes, delta)
                                     selectedStrokes.clear()
@@ -618,7 +690,12 @@ fun DrawingCanvas(
 
                             val start = shapeStart
                             if (activeTool == ToolType.SHAPER && start != null) {
-                                shapeEnd = shapeEndFor(toolConfig, start, Offset(x, y))
+                                shapeEnd = shapeEndFor(toolConfig, start, snapped(Offset(x, y)), ctrlHeld)
+                                return@pointerInteropFilter true
+                            }
+                            val pending = draft
+                            if (activeTool == ToolType.SHAPER && pending != null) {
+                                draft = pending.move(snapped(Offset(x, y)), toolConfig.shapeConstraints.withCtrl(ctrlHeld))
                                 return@pointerInteropFilter true
                             }
                             if (activeTool == ToolType.TYPEWRITER) {
@@ -628,14 +705,48 @@ fun DrawingCanvas(
                                 return@pointerInteropFilter true
                             }
 
-                            currentPoints.add(InkPoint(x, y, rawPressure))
-                            lassoPoints.add(Offset(x, y))
-
+                            // Android hands the pen's samples over a frame at a time, the ones in
+                            // between as the event's history. Rnote takes every one (its input
+                            // handling walks the event's history too), so a quick curve keeps
+                            // the shape it was written with, and a quick eraser misses nothing.
+                            for (h in 0..motionEvent.historySize) {
+                                val point = if (h < motionEvent.historySize) {
+                                    val at = viewportState.screenToCanvas(
+                                        Offset(motionEvent.getHistoricalX(h), motionEvent.getHistoricalY(h))
+                                    )
+                                    val pressure = if (isStylus) {
+                                        motionEvent.getHistoricalPressure(h).coerceIn(0f, 1f)
+                                    } else {
+                                        StrokePoint.PRESSURE_DEFAULT
+                                    }
+                                    InkPoint(at.x, at.y, pressure)
+                                } else {
+                                    InkPoint(x, y, rawPressure)
+                                }
+                                currentPoints.add(point)
+                                lassoPoints.add(Offset(point.x, point.y))
+                                if (activeTool == ToolType.ERASER) {
+                                    eraseAt(Offset(point.x, point.y), eraserWidth, splitEraser, strokes, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
+                                        if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
+                                    }
+                                }
+                            }
                             if (activeTool == ToolType.ERASER) {
                                 eraserCursor = Offset(x, y)
                                 eraserCursorDown = true
-                                eraseAt(Offset(x, y), eraserWidth, splitEraser, strokes, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
-                                    if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
+                            }
+                            // Where the pen is heading, drawn ahead of the ink and replaced
+                            // with every event. At the pen's own pressure, so the tip
+                            // doesn't swell or thin on a guess.
+                            predictedPoints.clear()
+                            if (isStylus && activeTool == ToolType.BRUSH && motionEvent.actionMasked == MotionEvent.ACTION_MOVE) {
+                                predictor.predict()?.takeIf { it.pointerCount > 0 }?.let { predicted ->
+                                    for (h in 0..predicted.historySize) {
+                                        val sx = if (h < predicted.historySize) predicted.getHistoricalX(h) else predicted.x
+                                        val sy = if (h < predicted.historySize) predicted.getHistoricalY(h) else predicted.y
+                                        val at = viewportState.screenToCanvas(Offset(sx, sy))
+                                        predictedPoints.add(InkPoint(at.x, at.y, rawPressure))
+                                    }
                                 }
                             }
                         }
@@ -701,6 +812,22 @@ fun DrawingCanvas(
                                     onTypewriterTap(tapDownCanvas.x, tapDownCanvas.y)
                                 }
                             } else if (activeTool == ToolType.SHAPER) {
+                                val pending = draft
+                                if (pending != null) {
+                                    if (action == MotionEvent.ACTION_UP) {
+                                        val lifted = pending.up()
+                                        draft = lifted.draft
+                                        lifted.finished?.let { points ->
+                                            ShapeDraft.toShape(
+                                                pending.kind, points, nativeColorOf(toolConfig.penColor),
+                                                toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor)
+                                            )?.let { onAddShapes(listOf(it)) }
+                                        }
+                                    } else {
+                                        // A cancelled stroke places nothing; the shape waits for the next.
+                                        draft = pending.copy(current = null, finishing = false)
+                                    }
+                                }
                                 val start = shapeStart
                                 val end = shapeEnd
                                 if (start != null && end != null) {
@@ -766,6 +893,8 @@ fun DrawingCanvas(
                         tapDownScreen = null
                         shapeStart = null
                         shapeEnd = null
+                        selectionSnapCorner = null
+                        predictedPoints.clear()
                         buttonEraserLatched = false
                         eraseSnapshotTaken = false
                         eraserCursorDown = false
@@ -779,338 +908,381 @@ fun DrawingCanvas(
                 }
             }
     ) {
-        // 1. Render Infinite Paper Background
-        PaperBackgroundRenderer.drawPaperBackground(
-            drawScope = this,
-            paperStyle = paperStyle,
-            zoomLevel = viewportState.effectiveScale,
-            panOffset = viewportState.panOffset
-        )
+        // The note as it stands, in a layer of its own. The pen adding a point redraws only
+        // the layer above it; this one is redrawn when the note or the view changes. What
+        // lies outside the view isn't drawn at all, so a long note costs no more to write
+        // in than a short one.
+        Canvas(modifier = Modifier.fillMaxSize().graphicsLayer()) {
+            // 1. Render Infinite Paper Background
+            PaperBackgroundRenderer.drawPaperBackground(
+                drawScope = this,
+                paperStyle = paperStyle,
+                zoomLevel = viewportState.effectiveScale,
+                panOffset = viewportState.panOffset
+            )
 
-        // Apply Viewport Transform Matrix (Zoom & Pan)
-        withTransform({
-            translate(viewportState.panOffset.x, viewportState.panOffset.y)
-            scale(viewportState.effectiveScale, viewportState.effectiveScale, Offset.Zero)
-        }) {
-            // 1b. Imported PDF pages and images (Rnote's document/image layers), beneath all ink.
-            if (underlays.isNotEmpty()) {
-                drawIntoCanvas { canvas ->
-                    val nc = canvas.nativeCanvas
-                    underlays.forEach { el ->
-                        val shift = spaceDrag?.shiftOf(el) ?: 0f
-                        if (shift != 0f) {
-                            nc.save()
-                            nc.translate(0f, shift)
-                        }
-                        val bitmap = imageKey(el)?.let { underlayBitmaps[it] }
-                        when (el) {
-                            is NativeVectorImageElement -> {
-                                val dst = android.graphics.RectF(
-                                    -el.halfExtentX, -el.halfExtentY, el.halfExtentX, el.halfExtentY
-                                )
-                                nc.save()
-                                nc.concat(VectorImageRenderer.matrixFor(el))
-                                if (bitmap != null) nc.drawBitmap(bitmap, null, dst, vectorPaint)
-                                else nc.drawRect(dst, placeholderPaint)
-                                nc.restore()
-                                detailTiles[el]?.let { tile ->
-                                    nc.drawBitmap(
-                                        tile.bitmap, null,
-                                        android.graphics.RectF(tile.left, tile.top, tile.right, tile.bottom),
-                                        vectorPaint
-                                    )
-                                }
-                            }
-                            is NativeBitmapElement ->
-                                bitmap?.let { nativeRenderer.drawBitmap(nc, el, it) }
-                            else -> Unit
-                        }
-                        if (shift != 0f) nc.restore()
-                    }
-                }
-            }
-
-            // 2. Render existing strokes.
-            // Filled variable-width outlines, not constant-width stroked paths — see
-            // StrokeOutline for why that's the only way the width can match desktop.
-            // Outlines are ~4x the work of the old polyline, so they're memoised on the
-            // Stroke instance; strokes are immutable, and every edit path (translate,
-            // scale) produces a fresh copy, so identity is a safe key.
-            if (outlineCache.size > strokes.size * 2 + 64) outlineCache.clear()
+            val viewScale = viewportState.effectiveScale
+            val visible = Rect(
+                -viewportState.panOffset.x / viewScale,
+                -viewportState.panOffset.y / viewScale,
+                (size.width - viewportState.panOffset.x) / viewScale,
+                (size.height - viewportState.panOffset.y) / viewScale
+            )
             val space = spaceDrag
-            strokes.forEach { stroke ->
-                val path = outlineCache.getOrPut(stroke) {
-                    composeStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve)
-                }
-                if (space != null && space.offset != 0f && stroke.id in space.strokeIds) {
-                    translate(0f, space.offset) { drawPath(path = path, color = stroke.color) }
-                } else {
-                    drawPath(path = path, color = stroke.color)
-                }
-            }
+            fun inView(el: NativeCanvasElement, shift: Float) =
+                el.maxX >= visible.left && el.minX <= visible.right &&
+                    el.maxY + shift >= visible.top && el.minY + shift <= visible.bottom
 
-            // 2b. Desktop text boxes and shapes, over the ink.
-            if (overlays.isNotEmpty()) {
-                drawIntoCanvas { canvas ->
-                    val nc = canvas.nativeCanvas
-                    for (el in overlays) {
-                        val shift = space?.shiftOf(el) ?: 0f
-                        if (shift != 0f) {
-                            nc.save()
-                            nc.translate(0f, shift)
+            // Apply Viewport Transform Matrix (Zoom & Pan)
+            withTransform({
+                translate(viewportState.panOffset.x, viewportState.panOffset.y)
+                scale(viewportState.effectiveScale, viewportState.effectiveScale, Offset.Zero)
+            }) {
+                // 1b. Imported PDF pages and images (Rnote's document/image layers), beneath all ink.
+                if (underlays.isNotEmpty()) {
+                    drawIntoCanvas { canvas ->
+                        val nc = canvas.nativeCanvas
+                        underlays.forEach { el ->
+                            val shift = space?.shiftOf(el) ?: 0f
+                            if (!inView(el, shift)) return@forEach
+                            if (shift != 0f) {
+                                nc.save()
+                                nc.translate(0f, shift)
+                            }
+                            val bitmap = imageKey(el)?.let { underlayBitmaps[it] }
+                            when (el) {
+                                is NativeVectorImageElement -> {
+                                    val dst = android.graphics.RectF(
+                                        -el.halfExtentX, -el.halfExtentY, el.halfExtentX, el.halfExtentY
+                                    )
+                                    nc.save()
+                                    nc.concat(VectorImageRenderer.matrixFor(el))
+                                    if (bitmap != null) nc.drawBitmap(bitmap, null, dst, vectorPaint)
+                                    else nc.drawRect(dst, placeholderPaint)
+                                    nc.restore()
+                                    detailTiles[el]?.let { tile ->
+                                        nc.drawBitmap(
+                                            tile.bitmap, null,
+                                            android.graphics.RectF(tile.left, tile.top, tile.right, tile.bottom),
+                                            vectorPaint
+                                        )
+                                    }
+                                }
+                                is NativeBitmapElement ->
+                                    bitmap?.let { nativeRenderer.drawBitmap(nc, el, it) }
+                                else -> Unit
+                            }
+                            if (shift != 0f) nc.restore()
                         }
-                        when (el) {
-                            is NativeTextElement -> nativeRenderer.drawText(nc, el)
-                            is NativeShapeElement -> nativeRenderer.drawShape(nc, el)
-                            else -> Unit
+                    }
+                }
+
+                // 2. Render existing strokes.
+                // Filled variable-width outlines, not constant-width stroked paths — see
+                // StrokeOutline for why that's the only way the width can match desktop.
+                // Outlines are ~4x the work of the old polyline, so they're memoised on the
+                // Stroke instance, and only made once a stroke comes into view; strokes are
+                // immutable, and every edit path (translate, scale) produces a fresh copy, so
+                // identity is a safe key.
+                if (outlineCache.size > strokes.size * 2 + 64) outlineCache.clear()
+                strokes.forEach { stroke ->
+                    val cached = outlineCache.getOrPut(stroke) { CachedOutline(strokeBounds(stroke)) }
+                    val shift = if (space != null && space.offset != 0f && stroke.id in space.strokeIds) space.offset else 0f
+                    if (!visible.overlaps(cached.bounds.translate(0f, shift))) return@forEach
+                    val path = cached.path
+                        ?: composeStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve).also { cached.path = it }
+                    if (shift != 0f) {
+                        translate(0f, shift) { drawPath(path = path, color = stroke.color) }
+                    } else {
+                        drawPath(path = path, color = stroke.color)
+                    }
+                }
+
+                // 2b. Desktop text boxes and shapes, over the ink.
+                if (overlays.isNotEmpty()) {
+                    drawIntoCanvas { canvas ->
+                        val nc = canvas.nativeCanvas
+                        for (el in overlays) {
+                            val shift = space?.shiftOf(el) ?: 0f
+                            if (!inView(el, shift)) continue
+                            if (shift != 0f) {
+                                nc.save()
+                                nc.translate(0f, shift)
+                            }
+                            when (el) {
+                                is NativeTextElement -> nativeRenderer.drawText(nc, el)
+                                is NativeShapeElement -> nativeRenderer.drawShape(nc, el)
+                                else -> Unit
+                            }
+                            if (shift != 0f) nc.restore()
                         }
-                        if (shift != 0f) nc.restore()
                     }
                 }
             }
 
-            // 3. Render active stroke preview
-            // Must agree with the input handler's latch, or a gesture that started with
-            // the side button held would paint an ink preview while it erased.
-            val activeTool =
-                if (buttonEraserLatched) ToolType.ERASER else toolConfig.activeTool
-            if (isDrawing && currentPoints.isNotEmpty() && activeTool == ToolType.BRUSH) {
-                val isMarker = toolConfig.brushStyle == BrushStyle.MARKER
-                // Built the same way as a committed stroke, so what's under the nib is
-                // what gets saved — the old preview used only the latest pressure and so
-                // showed one uniform width for a stroke that would be drawn tapered.
-                val path = composeStrokePath(
-                    currentPoints,
-                    toolConfig.currentActiveSize,
-                    pressureCurveFor(toolConfig)
-                )
-                drawPath(path = path, color = toolConfig.currentActiveColor)
-            }
-
-            // 3b. Shape being dragged out with the Shaper.
-            val previewStart = shapeStart
-            val previewEnd = shapeEnd
-            val dragging = isDrawing && previewStart != null && previewEnd != null
-            if (activeTool == ToolType.SHAPER) {
-                val kind = toolConfig.shapeKind
-                val cell = gridCell
-                // Shapes made of lines are previewed as plain lines: a grid can be thousands
-                // of them, far too many to build as shapes on every frame.
-                val lines: List<ShapeBuilders.Segment>? = when {
-                    kind == ShapeKind.GRID && cell != null ->
-                        if (dragging) {
-                            ShapeBuilders.grid(cell.start.x, cell.start.y, cell.size.x, cell.size.y, previewEnd!!.x, previewEnd.y)
-                        } else {
-                            ShapeBuilders.cellOutline(
-                                cell.start.x, cell.start.y, cell.start.x + cell.size.x, cell.start.y + cell.size.y
-                            )
-                        }
-                    kind == ShapeKind.GRID ->
-                        if (dragging) ShapeBuilders.cellOutline(previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y)
-                        else emptyList()
-                    ShapeBuilders.isMultiLine(kind) ->
-                        if (dragging) ShapeBuilders.axes(kind, previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y)
-                        else emptyList()
-                    else -> null
-                }
-                if (lines != null) {
-                    for (line in lines) {
-                        drawLine(
-                            color = toolConfig.penColor,
-                            start = Offset(line.x1, line.y1),
-                            end = Offset(line.x2, line.y2),
-                            strokeWidth = toolConfig.shaperWidth
-                        )
-                    }
-                } else if (dragging) {
-                    NativeEditing.createShape(
-                        kind, previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y,
-                        nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor)
-                    )?.let { preview ->
-                        drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, preview, cache = false) }
-                    }
-                }
-            }
-
-            // 4. Render the selector's path: the lasso or the line drawn through things, or
-            //    for the rectangle mode the box from where the pen went down to where it is.
-            //    A tap in single mode draws nothing.
-            if (isDrawing && activeTool == ToolType.SELECTOR && lassoPoints.size >= 2 &&
-                toolConfig.selectorMode != SelectorMode.SINGLE
-            ) {
-                val lassoPath = Path()
-                if (toolConfig.selectorMode == SelectorMode.RECTANGLE) {
-                    val a = lassoPoints.first()
-                    val b = lassoPoints.last()
-                    lassoPath.addRect(Rect(minOf(a.x, b.x), minOf(a.y, b.y), maxOf(a.x, b.x), maxOf(a.y, b.y)))
-                } else {
-                    lassoPath.moveTo(lassoPoints[0].x, lassoPoints[0].y)
-                    for (i in 1 until lassoPoints.size) {
-                        lassoPath.lineTo(lassoPoints[i].x, lassoPoints[i].y)
-                    }
-                }
-                drawPath(
-                    path = lassoPath,
-                    color = Color(0xFFC792EA),
-                    style = CanvasStrokeStyle(
-                        width = 2f / viewportState.effectiveScale,
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
-                    )
-                )
-            }
-
-            // 4b. The Laser, as Rnote draws it: a red line with a light core, the same width
-            //     on screen at any zoom. The trail being drawn is the pen's path so far.
-            val liveTrail = if (isDrawing && activeTool == ToolType.TOOLS && toolConfig.toolsMode == ToolsMode.LASER) {
-                lassoPoints.toList()
-            } else {
-                emptyList()
-            }
-            if (laserTrails.isNotEmpty() || liveTrail.isNotEmpty()) {
-                val zoom = viewportState.zoomScale
-                for (trail in laserTrails + listOf(liveTrail)) {
-                    if (trail.isEmpty()) continue
-                    val path = Path().apply {
-                        moveTo(trail[0].x, trail[0].y)
-                        // A tap is a dot: a line of no length, drawn with round ends.
-                        if (trail.size == 1) lineTo(trail[0].x, trail[0].y)
-                        for (i in 1 until trail.size) lineTo(trail[i].x, trail[i].y)
-                    }
-                    for ((color, width) in LASER_LINES) {
-                        drawPath(
-                            path = path,
-                            color = color.copy(alpha = laserOpacity),
-                            style = CanvasStrokeStyle(width = width / zoom, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                        )
-                    }
-                }
-            }
-
-            // 5. Render selection bounding box
-            val bbox = selectionBounds(selectedStrokes, selectedNatives)
-            bbox?.let { box ->
-                val scale = viewportState.effectiveScale
-                val inflated = box.inflate(HANDLE_INFLATE_PX / scale)
-                drawRoundRect(
-                    color = SELECTION_COLOR,
-                    topLeft = inflated.topLeft,
-                    size = inflated.size,
-                    cornerRadius = CornerRadius(8f, 8f),
-                    style = CanvasStrokeStyle(
-                        width = 2.5f / scale,
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 12f), 0f)
-                    )
-                )
-                // Handles, a fixed size on screen: the corners scale, the knob above rotates.
-                if (toolConfig.activeTool == ToolType.SELECTOR) {
-                    val handles = handlePositions(box, scale)
-                    val half = HANDLE_SIZE_PX / 2f / scale
-                    val outline = CanvasStrokeStyle(width = 2f / scale)
-                    val knob = handles[ROTATE_HANDLE]
-                    drawLine(
-                        color = SELECTION_COLOR,
-                        start = Offset(knob.x, inflated.top),
-                        end = knob,
-                        strokeWidth = 2f / scale
-                    )
-                    for (i in 0 until 4) {
-                        val topLeft = handles[i] - Offset(half, half)
-                        val size = Size(half * 2f, half * 2f)
-                        drawRect(color = Color.White, topLeft = topLeft, size = size)
-                        drawRect(color = SELECTION_COLOR, topLeft = topLeft, size = size, style = outline)
-                    }
-                    drawCircle(color = Color.White, radius = half * 1.2f, center = knob)
-                    drawCircle(color = SELECTION_COLOR, radius = half * 1.2f, center = knob, style = outline)
-                }
-            }
-
-            // 5b. The vertical space being made, as Rnote's VerticalSpaceTool::draw_on_doc
-            // draws it: the room as a faint band across the view, a dashed green line where
-            // the drag started, a blue one where everything below now begins.
-            space?.let { drag ->
-                val zoom = viewportState.zoomScale
-                val left = viewportState.screenToCanvas(Offset.Zero).x
-                val right = viewportState.screenToCanvas(Offset(viewSize.width.toFloat(), 0f)).x
-                val end = drag.startY + drag.offset
-                drawRect(
-                    color = SPACE_FILL,
-                    topLeft = Offset(left, minOf(drag.startY, end)),
-                    size = Size(right - left, abs(drag.offset))
-                )
-                drawLine(
-                    color = SPACE_THRESHOLD_LINE,
-                    start = Offset(left, drag.startY),
-                    end = Offset(right, drag.startY),
-                    strokeWidth = 3f / zoom,
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(9f / zoom, 6f / zoom), 0f)
-                )
-                drawLine(
-                    color = SPACE_OFFSET_LINE,
-                    start = Offset(left, end),
-                    end = Offset(right, end),
-                    strokeWidth = 1.5f / zoom
-                )
-            }
-
-            // 6. Render the eraser square, in canvas space so it scales with zoom exactly
-            // as Rnote's does (Eraser::draw_on_doc). Colours are Rnote's GNOME reds:
-            // fill GNOME_REDS[0] at a=160 when down and a=51 in proximity, outline
-            // GNOME_REDS[2] at a=240, two screen pixels wide at any zoom.
-            eraserCursor?.let { center ->
-                val bounds = EraserHitTest.eraserBounds(center, toolConfig.eraserWidth)
-                val outlineWidth = 2f / viewportState.effectiveScale
-                drawRect(
-                    color = if (eraserCursorDown) ERASER_FILL else ERASER_PROXIMITY_FILL,
-                    topLeft = bounds.topLeft,
-                    size = bounds.size
-                )
-                val outline = bounds.deflate(outlineWidth * 0.5f)
-                drawRect(
-                    color = ERASER_OUTLINE,
-                    topLeft = outline.topLeft,
-                    size = outline.size,
-                    style = CanvasStrokeStyle(width = outlineWidth)
-                )
-            }
+            // 7. Veil the canvas outside the document, over the strokes so ink out there is
+            // dimmed too — see PaperBackgroundRenderer.drawOutOfBoundsScrim.
+            PaperBackgroundRenderer.drawOutOfBoundsScrim(
+                drawScope = this,
+                paperStyle = paperStyle,
+                zoomLevel = viewportState.effectiveScale,
+                panOffset = viewportState.panOffset
+            )
         }
 
-        // 7. Veil the canvas outside the document, over the strokes so ink out there is
-        // dimmed too — see PaperBackgroundRenderer.drawOutOfBoundsScrim.
-        PaperBackgroundRenderer.drawOutOfBoundsScrim(
-            drawScope = this,
-            paperStyle = paperStyle,
-            zoomLevel = viewportState.effectiveScale,
-            panOffset = viewportState.panOffset
-        )
+        // What the pen is doing, over the note: the stroke being written, the shape being
+        // dragged out, the lasso, the laser, the selection, the eraser and the hover cursor.
+        Canvas(modifier = Modifier.fillMaxSize().graphicsLayer()) {
+            val space = spaceDrag
+            withTransform({
+                translate(viewportState.panOffset.x, viewportState.panOffset.y)
+                scale(viewportState.effectiveScale, viewportState.effectiveScale, Offset.Zero)
+            }) {
+                // 3. Render active stroke preview
+                // Must agree with the input handler's latch, or a gesture that started with
+                // the side button held would paint an ink preview while it erased.
+                val activeTool =
+                    if (buttonEraserLatched) ToolType.ERASER else toolConfig.activeTool
+                if (isDrawing && currentPoints.isNotEmpty() && activeTool == ToolType.BRUSH) {
+                    // Built the same way as a committed stroke, so what's under the nib is
+                    // what gets saved — the old preview used only the latest pressure and so
+                    // showed one uniform width for a stroke that would be drawn tapered. The
+                    // predicted points run on ahead of the pen; they are never saved.
+                    val path = composeStrokePath(
+                        if (predictedPoints.isEmpty()) currentPoints else currentPoints + predictedPoints,
+                        toolConfig.currentActiveSize,
+                        pressureCurveFor(toolConfig)
+                    )
+                    drawPath(path = path, color = toolConfig.currentActiveColor)
+                }
 
-        // 8. Render the brush hover cursor (screen space). The eraser has its own
-        // indicator above, drawn in canvas space because its size is a document size.
-        hoverOffset?.let { hoverPos ->
-            if (toolConfig.activeTool == ToolType.TOOLS) {
-                // Where the line would go: everything reaching below it moves.
-                drawLine(
-                    color = SPACE_THRESHOLD_LINE.copy(alpha = 0.5f),
-                    start = Offset(0f, hoverPos.y),
-                    end = Offset(size.width, hoverPos.y),
-                    strokeWidth = 2f,
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(18f, 12f), 0f)
-                )
-            } else if (toolConfig.activeTool == ToolType.TYPEWRITER) {
-                // A text cursor as tall as a line of the chosen size: tapping here puts the
-                // top-left of the new text box at the pen tip.
-                val height = toolConfig.textSize * 1.2f * viewportState.effectiveScale
-                drawLine(
-                    color = toolConfig.penColor,
-                    start = hoverPos,
-                    end = hoverPos + Offset(0f, height),
-                    strokeWidth = 2f
-                )
-            } else {
-                drawCircle(
-                    color = toolConfig.currentActiveColor,
-                    radius = (toolConfig.currentActiveSize * viewportState.effectiveScale) / 2f,
-                    center = hoverPos
-                )
+                // 3b. Shape being dragged out with the Shaper.
+                val previewStart = shapeStart
+                val previewEnd = shapeEnd
+                val dragging = isDrawing && previewStart != null && previewEnd != null
+                if (activeTool == ToolType.SHAPER) {
+                    val kind = toolConfig.shapeKind
+                    val cell = gridCell
+                    // Shapes made of lines are previewed as plain lines: a grid can be thousands
+                    // of them, far too many to build as shapes on every frame.
+                    val lines: List<ShapeBuilders.Segment>? = when {
+                        kind == ShapeKind.GRID && cell != null ->
+                            if (dragging) {
+                                ShapeBuilders.grid(cell.start.x, cell.start.y, cell.size.x, cell.size.y, previewEnd!!.x, previewEnd.y)
+                            } else {
+                                ShapeBuilders.cellOutline(
+                                    cell.start.x, cell.start.y, cell.start.x + cell.size.x, cell.start.y + cell.size.y
+                                )
+                            }
+                        kind == ShapeKind.GRID ->
+                            if (dragging) ShapeBuilders.cellOutline(previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y)
+                            else emptyList()
+                        ShapeBuilders.isMultiLine(kind) ->
+                            if (dragging) ShapeBuilders.axes(kind, previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y)
+                            else emptyList()
+                        else -> null
+                    }
+                    if (lines != null) {
+                        for (line in lines) {
+                            drawLine(
+                                color = toolConfig.penColor,
+                                start = Offset(line.x1, line.y1),
+                                end = Offset(line.x2, line.y2),
+                                strokeWidth = toolConfig.shaperWidth
+                            )
+                        }
+                    } else if (dragging) {
+                        NativeEditing.createShape(
+                            kind, previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y,
+                            nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor)
+                        )?.let { preview ->
+                            drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, preview, cache = false) }
+                        }
+                    }
+
+                    // A shape drawn in several strokes, as far as it has got.
+                    draft?.let { pending ->
+                        val hover = hoverOffset?.let { viewportState.screenToCanvas(it) }
+                        drawDraft(
+                            pending, hover, toolConfig, viewportState.effectiveScale,
+                            maxOf(ShapeDraft.FINISH_DISTANCE, FINISH_TOLERANCE_PX / viewportState.effectiveScale)
+                        ) { shape ->
+                            drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, shape, cache = false) }
+                        }
+                    }
+                }
+
+                // 4. Render the selector's path: the lasso or the line drawn through things, or
+                //    for the rectangle mode the box from where the pen went down to where it is.
+                //    A tap in single mode draws nothing.
+                if (isDrawing && activeTool == ToolType.SELECTOR && lassoPoints.size >= 2 &&
+                    toolConfig.selectorMode != SelectorMode.SINGLE
+                ) {
+                    val lassoPath = Path()
+                    if (toolConfig.selectorMode == SelectorMode.RECTANGLE) {
+                        val a = lassoPoints.first()
+                        val b = lassoPoints.last()
+                        lassoPath.addRect(Rect(minOf(a.x, b.x), minOf(a.y, b.y), maxOf(a.x, b.x), maxOf(a.y, b.y)))
+                    } else {
+                        lassoPath.moveTo(lassoPoints[0].x, lassoPoints[0].y)
+                        for (i in 1 until lassoPoints.size) {
+                            lassoPath.lineTo(lassoPoints[i].x, lassoPoints[i].y)
+                        }
+                    }
+                    drawPath(
+                        path = lassoPath,
+                        color = Color(0xFFC792EA),
+                        style = CanvasStrokeStyle(
+                            width = 2f / viewportState.effectiveScale,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
+                        )
+                    )
+                }
+
+                // 4b. The Laser, as Rnote draws it: a red line with a light core, the same width
+                //     on screen at any zoom. The trail being drawn is the pen's path so far.
+                val liveTrail = if (isDrawing && activeTool == ToolType.TOOLS && toolConfig.toolsMode == ToolsMode.LASER) {
+                    lassoPoints.toList()
+                } else {
+                    emptyList()
+                }
+                if (laserTrails.isNotEmpty() || liveTrail.isNotEmpty()) {
+                    val zoom = viewportState.zoomScale
+                    for (trail in laserTrails + listOf(liveTrail)) {
+                        if (trail.isEmpty()) continue
+                        val path = Path().apply {
+                            moveTo(trail[0].x, trail[0].y)
+                            // A tap is a dot: a line of no length, drawn with round ends.
+                            if (trail.size == 1) lineTo(trail[0].x, trail[0].y)
+                            for (i in 1 until trail.size) lineTo(trail[i].x, trail[i].y)
+                        }
+                        for ((color, width) in LASER_LINES) {
+                            drawPath(
+                                path = path,
+                                color = color.copy(alpha = laserOpacity),
+                                style = CanvasStrokeStyle(width = width / zoom, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                            )
+                        }
+                    }
+                }
+
+                // 5. Render selection bounding box
+                val bbox = selectionBounds(selectedStrokes, selectedNatives)
+                bbox?.let { box ->
+                    val scale = viewportState.effectiveScale
+                    val inflated = box.inflate(HANDLE_INFLATE_PX / scale)
+                    drawRoundRect(
+                        color = SELECTION_COLOR,
+                        topLeft = inflated.topLeft,
+                        size = inflated.size,
+                        cornerRadius = CornerRadius(8f, 8f),
+                        style = CanvasStrokeStyle(
+                            width = 2.5f / scale,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 12f), 0f)
+                        )
+                    )
+                    // Handles, a fixed size on screen: the corners scale, the knob above rotates.
+                    if (toolConfig.activeTool == ToolType.SELECTOR) {
+                        val handles = handlePositions(box, scale)
+                        val half = HANDLE_SIZE_PX / 2f / scale
+                        val outline = CanvasStrokeStyle(width = 2f / scale)
+                        val knob = handles[ROTATE_HANDLE]
+                        drawLine(
+                            color = SELECTION_COLOR,
+                            start = Offset(knob.x, inflated.top),
+                            end = knob,
+                            strokeWidth = 2f / scale
+                        )
+                        for (i in 0 until 4) {
+                            val topLeft = handles[i] - Offset(half, half)
+                            val size = Size(half * 2f, half * 2f)
+                            drawRect(color = Color.White, topLeft = topLeft, size = size)
+                            drawRect(color = SELECTION_COLOR, topLeft = topLeft, size = size, style = outline)
+                        }
+                        drawCircle(color = Color.White, radius = half * 1.2f, center = knob)
+                        drawCircle(color = SELECTION_COLOR, radius = half * 1.2f, center = knob, style = outline)
+                    }
+                }
+
+                // 5b. The vertical space being made, as Rnote's VerticalSpaceTool::draw_on_doc
+                // draws it: the room as a faint band across the view, a dashed green line where
+                // the drag started, a blue one where everything below now begins.
+                space?.let { drag ->
+                    val zoom = viewportState.zoomScale
+                    val left = viewportState.screenToCanvas(Offset.Zero).x
+                    val right = viewportState.screenToCanvas(Offset(viewSize.width.toFloat(), 0f)).x
+                    val end = drag.startY + drag.offset
+                    drawRect(
+                        color = SPACE_FILL,
+                        topLeft = Offset(left, minOf(drag.startY, end)),
+                        size = Size(right - left, abs(drag.offset))
+                    )
+                    drawLine(
+                        color = SPACE_THRESHOLD_LINE,
+                        start = Offset(left, drag.startY),
+                        end = Offset(right, drag.startY),
+                        strokeWidth = 3f / zoom,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(9f / zoom, 6f / zoom), 0f)
+                    )
+                    drawLine(
+                        color = SPACE_OFFSET_LINE,
+                        start = Offset(left, end),
+                        end = Offset(right, end),
+                        strokeWidth = 1.5f / zoom
+                    )
+                }
+
+                // 6. Render the eraser square, in canvas space so it scales with zoom exactly
+                // as Rnote's does (Eraser::draw_on_doc). Colours are Rnote's GNOME reds:
+                // fill GNOME_REDS[0] at a=160 when down and a=51 in proximity, outline
+                // GNOME_REDS[2] at a=240, two screen pixels wide at any zoom.
+                eraserCursor?.let { center ->
+                    val bounds = EraserHitTest.eraserBounds(center, toolConfig.eraserWidth)
+                    val outlineWidth = 2f / viewportState.effectiveScale
+                    drawRect(
+                        color = if (eraserCursorDown) ERASER_FILL else ERASER_PROXIMITY_FILL,
+                        topLeft = bounds.topLeft,
+                        size = bounds.size
+                    )
+                    val outline = bounds.deflate(outlineWidth * 0.5f)
+                    drawRect(
+                        color = ERASER_OUTLINE,
+                        topLeft = outline.topLeft,
+                        size = outline.size,
+                        style = CanvasStrokeStyle(width = outlineWidth)
+                    )
+                }
+            }
+
+            // 8. Render the brush hover cursor (screen space). The eraser has its own
+            // indicator above, drawn in canvas space because its size is a document size.
+            hoverOffset?.let { hoverPos ->
+                if (toolConfig.activeTool == ToolType.TOOLS) {
+                    // Where the line would go: everything reaching below it moves.
+                    drawLine(
+                        color = SPACE_THRESHOLD_LINE.copy(alpha = 0.5f),
+                        start = Offset(0f, hoverPos.y),
+                        end = Offset(size.width, hoverPos.y),
+                        strokeWidth = 2f,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(18f, 12f), 0f)
+                    )
+                } else if (toolConfig.activeTool == ToolType.TYPEWRITER) {
+                    // A text cursor as tall as a line of the chosen size: tapping here puts the
+                    // top-left of the new text box at the pen tip.
+                    val height = toolConfig.textSize * 1.2f * viewportState.effectiveScale
+                    drawLine(
+                        color = toolConfig.penColor,
+                        start = hoverPos,
+                        end = hoverPos + Offset(0f, height),
+                        strokeWidth = 2f
+                    )
+                } else {
+                    drawCircle(
+                        color = toolConfig.currentActiveColor,
+                        radius = (toolConfig.currentActiveSize * viewportState.effectiveScale) / 2f,
+                        center = hoverPos
+                    )
+                }
             }
         }
     }
@@ -1140,14 +1312,103 @@ private const val SAMSUNG_ACTION_PEN_MOVE = 213
 /** A grid's first cell: its corner where the pen went down, and its size and direction. */
 private class GridCell(val start: Offset, val size: Offset)
 
+/** A stroke's bounds, and its outline once it has come into view. */
+private class CachedOutline(val bounds: Rect) {
+    var path: Path? = null
+}
+
+/** A stroke's extent with room for its width: enough to tell whether it is in view. */
+private fun strokeBounds(stroke: Stroke): Rect {
+    val points = stroke.points
+    if (points.isEmpty()) return Rect.Zero
+    var left = points[0].x
+    var top = points[0].y
+    var right = left
+    var bottom = top
+    for (p in points) {
+        if (p.x < left) left = p.x
+        if (p.x > right) right = p.x
+        if (p.y < top) top = p.y
+        if (p.y > bottom) bottom = p.y
+    }
+    val margin = stroke.strokeWidth
+    return Rect(left - margin, top - margin, right + margin, bottom + margin)
+}
+
 /**
- * Where the Shaper's drag ends for the pen at [pos]: turned to the nearest 15° for a line
- * or an arrow when that is switched on.
+ * A shape being drawn in several strokes, as far as it has got, as Rnote's builders show
+ * theirs: the shape itself once there is enough of it, dashed guides along a curve's
+ * control points and between the foci, and a ring on every point placed. A polyline's or
+ * polygon's last corner gets a green ring where putting the pen down would finish it.
  */
-private fun shapeEndFor(toolConfig: ToolConfig, start: Offset, pos: Offset): Offset {
+private fun DrawScope.drawDraft(
+    draft: ShapeDraft,
+    hover: Offset?,
+    toolConfig: ToolConfig,
+    scale: Float,
+    finishDistance: Float,
+    drawShape: (NativeShapeElement) -> Unit
+) {
+    val color = nativeColorOf(toolConfig.penColor)
+    val fill = nativeColorOf(toolConfig.fillColor)
+    val width = toolConfig.shaperWidth
+    val kind = draft.kind
+    val isPoly = kind == ShapeKind.POLYLINE || kind == ShapeKind.POLYGON
+    val current = draft.current
+    val placed = if (current != null && !draft.finishing) draft.points + current else draft.points
+    val preview = when {
+        // Two corners of a polygon are only a line so far.
+        kind == ShapeKind.POLYGON && placed.size == 2 -> ShapeDraft.toShape(ShapeKind.POLYLINE, placed, color, width, fill)
+        isPoly -> ShapeDraft.toShape(kind, placed, color, width, fill)
+        placed.size == 3 && (kind == ShapeKind.QUADBEZ || kind == ShapeKind.FOCI_ELLIPSE) ->
+            ShapeDraft.toShape(kind, placed, color, width, fill)
+        placed.size == 4 && kind == ShapeKind.CUBBEZ -> ShapeDraft.toShape(kind, placed, color, width, fill)
+        else -> null
+    }
+    preview?.let(drawShape)
+
+    val guideWidth = 1.5f / scale
+    if (!isPoly) {
+        val dashes = PathEffect.dashPathEffect(floatArrayOf(6f / scale, 4f / scale), 0f)
+        for (i in 1 until placed.size) {
+            drawLine(color = DRAFT_GUIDE, start = placed[i - 1], end = placed[i], strokeWidth = guideWidth, pathEffect = dashes)
+        }
+    }
+    val radius = DRAFT_POINT_RADIUS_PX / scale
+    for (p in placed) {
+        drawCircle(color = Color.White, radius = radius, center = p)
+        drawCircle(color = DRAFT_GUIDE, radius = radius, center = p, style = CanvasStrokeStyle(width = guideWidth))
+    }
+    if (isPoly) {
+        val last = draft.points.last()
+        val finishes = draft.finishing ||
+            (current == null && hover != null && (hover - last).getDistance() < finishDistance)
+        if (finishes) {
+            drawCircle(color = DRAFT_FINISH, radius = radius * 1.8f, center = last, style = CanvasStrokeStyle(width = guideWidth * 2f))
+        }
+    }
+}
+
+/** The rings and guides of a shape being drawn in several strokes: Rnote's indicator blue. */
+private val DRAFT_GUIDE = Color(0xFF3584E4)
+/** Rnote's finish indicator: GNOME green. */
+private val DRAFT_FINISH = Color(0xFF33D17A)
+/** The rings on a draft's points, in screen px. */
+private const val DRAFT_POINT_RADIUS_PX = 5f
+
+/**
+ * Where the Shaper's drag ends for the pen at [pos]: bent by the constraints — switched
+ * on or off while [ctrl] is held — as each of Rnote's builders bends it, lines and arrows
+ * always allowing level and upright; then, for a line or an arrow, turned to the nearest
+ * 15° when that is switched on.
+ */
+private fun shapeEndFor(toolConfig: ToolConfig, start: Offset, pos: Offset, ctrl: Boolean): Offset {
     val kind = toolConfig.shapeKind
-    if (!toolConfig.snapAngles || (kind != ShapeKind.LINE && kind != ShapeKind.ARROW)) return pos
-    val (x, y) = ShapeBuilders.snapAngle(start.x, start.y, pos.x, pos.y)
+    val constraints = toolConfig.shapeConstraints.withCtrl(ctrl)
+    val isLine = kind == ShapeKind.LINE || kind == ShapeKind.ARROW
+    val end = start + (if (isLine) constraints.withAxes() else constraints).constrain(pos - start)
+    if (!toolConfig.snapAngles || !isLine) return end
+    val (x, y) = ShapeBuilders.snapAngle(start.x, start.y, end.x, end.y)
     return Offset(x, y)
 }
 
@@ -1290,14 +1551,21 @@ private fun handleAt(box: Rect, viewport: ViewportState, screen: Offset): Int? {
  * "Lock Aspect Ratio" does. Rotating turns about the centre by the angle swept since the
  * drag began.
  */
-private fun dragTransform(drag: TransformDrag, pos: Offset, lockAspect: Boolean): FloatArray {
+private fun dragTransform(
+    drag: TransformDrag,
+    pos: Offset,
+    lockAspect: Boolean,
+    /** Snap Positions, when on: the dragged corner goes to the pattern unless the ratio is locked. */
+    snap: ((Offset) -> Offset)? = null
+): FloatArray {
     val p = drag.pivot
     if (drag.rotate) {
         val from = atan2(drag.start.y - p.y, drag.start.x - p.x)
         val to = atan2(pos.y - p.y, pos.x - p.x)
         return Affine.rotateAbout(p.x, p.y, to - from)
     }
-    val moved = drag.corner + (pos - drag.start)
+    val free = drag.corner + (pos - drag.start)
+    val moved = if (snap != null && !lockAspect) snap(free) else free
     val w0 = drag.corner.x - p.x
     val h0 = drag.corner.y - p.y
     var sx: Float
@@ -1318,6 +1586,17 @@ private fun dragTransform(drag: TransformDrag, pos: Offset, lockAspect: Boolean)
 
 /** How far (screen px) a Typewriter tap may drift and still count as a tap. */
 private const val TAP_SLOP_PX = 24f
+
+/**
+ * How close (screen px) the pen has to come down to a polyline's or polygon's last corner
+ * to finish it, where Rnote's 8 document units would be a pinpoint zoomed out.
+ */
+private const val FINISH_TOLERANCE_PX = 16f
+
+/** The pen's events that motion prediction learns from; hovering and One UI's own codes are not. */
+private val PREDICTED_ACTIONS = setOf(
+    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL
+)
 
 /** What a page or image is rendered from; the key its bitmap is kept under. */
 private fun imageKey(el: NativeCanvasElement): Any? = when (el) {

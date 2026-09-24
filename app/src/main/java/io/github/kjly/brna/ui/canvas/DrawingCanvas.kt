@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -23,6 +24,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke as CanvasStrokeStyle
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.translate
@@ -49,6 +52,7 @@ import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
+import io.github.kjly.brna.model.ToolsMode
 import io.github.kjly.brna.model.ViewportState
 import io.github.kjly.brna.render.NativeElementRenderer
 import io.github.kjly.brna.render.VectorImageRenderer
@@ -201,6 +205,24 @@ fun DrawingCanvas(
     // meaningful while the Shaper stays on the grid.
     var gridCell by remember { mutableStateOf<GridCell?>(null) }
     LaunchedEffect(toolConfig.activeTool, toolConfig.shapeKind) { gridCell = null }
+
+    // The Laser's finished trails, in canvas units. Once the pen lifts they fade out
+    // together in a second, as Rnote's LaserTool fades; drawing again brings them back.
+    val laserTrails = remember { mutableStateListOf<List<Offset>>() }
+    var laserFading by remember { mutableStateOf(false) }
+    var laserOpacity by remember { mutableFloatStateOf(1f) }
+    LaunchedEffect(laserFading) {
+        if (!laserFading) return@LaunchedEffect
+        val start = withFrameMillis { it }
+        var elapsed = 0L
+        while (elapsed < LASER_FADE_MS) {
+            elapsed = withFrameMillis { it } - start
+            laserOpacity = (1f - elapsed.toFloat() / LASER_FADE_MS).coerceIn(0f, 1f)
+        }
+        laserTrails.clear()
+        laserOpacity = 1f
+        laserFading = false
+    }
 
     val currentPoints = remember { mutableStateListOf<InkPoint>() }
     /** Memoised stroke outlines, keyed by Stroke identity. See the draw block below. */
@@ -495,7 +517,7 @@ fun DrawingCanvas(
                             }
                         }
 
-                        if (activeTool == ToolType.TOOLS) {
+                        if (activeTool == ToolType.TOOLS && toolConfig.toolsMode == ToolsMode.VERTICAL_SPACE) {
                             // What moves is settled here, as in Rnote: dragging back up past
                             // the line must not start picking up what was above it.
                             spaceDrag = SpaceDrag(
@@ -504,6 +526,11 @@ fun DrawingCanvas(
                                 VerticalSpace.nativesBelow(nativeElements, y)
                             )
                             return@pointerInteropFilter true
+                        }
+                        if (activeTool == ToolType.TOOLS) {
+                            // A new laser trail stops the fade: the earlier ones are back too.
+                            laserFading = false
+                            laserOpacity = 1f
                         }
                         if (activeTool == ToolType.SHAPER) {
                             // The grid's second drag spans from its first cell's corner,
@@ -710,6 +737,10 @@ fun DrawingCanvas(
                                     }
                                     if (shapes.isNotEmpty()) onAddShapes(shapes)
                                 }
+                            } else if (activeTool == ToolType.TOOLS && toolConfig.toolsMode == ToolsMode.LASER) {
+                                // Kept on screen, never in the note, and fading from now.
+                                if (lassoPoints.isNotEmpty()) laserTrails.add(lassoPoints.toList())
+                                laserFading = true
                             } else if (activeTool == ToolType.BRUSH && currentPoints.isNotEmpty()) {
                                 val isMarker = toolConfig.brushStyle == BrushStyle.MARKER
 
@@ -926,6 +957,33 @@ fun DrawingCanvas(
                         pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
                     )
                 )
+            }
+
+            // 4b. The Laser, as Rnote draws it: a red line with a light core, the same width
+            //     on screen at any zoom. The trail being drawn is the pen's path so far.
+            val liveTrail = if (isDrawing && activeTool == ToolType.TOOLS && toolConfig.toolsMode == ToolsMode.LASER) {
+                lassoPoints.toList()
+            } else {
+                emptyList()
+            }
+            if (laserTrails.isNotEmpty() || liveTrail.isNotEmpty()) {
+                val zoom = viewportState.zoomScale
+                for (trail in laserTrails + listOf(liveTrail)) {
+                    if (trail.isEmpty()) continue
+                    val path = Path().apply {
+                        moveTo(trail[0].x, trail[0].y)
+                        // A tap is a dot: a line of no length, drawn with round ends.
+                        if (trail.size == 1) lineTo(trail[0].x, trail[0].y)
+                        for (i in 1 until trail.size) lineTo(trail[i].x, trail[i].y)
+                    }
+                    for ((color, width) in LASER_LINES) {
+                        drawPath(
+                            path = path,
+                            color = color.copy(alpha = laserOpacity),
+                            style = CanvasStrokeStyle(width = width / zoom, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                        )
+                    }
+                }
             }
 
             // 5. Render selection bounding box
@@ -1183,6 +1241,15 @@ private const val HANDLE_HIT_PX = 32f
  * needs the pointer on the ink itself; a pen on glass is less exact than a mouse.
  */
 private const val PICK_TOLERANCE_PX = 12f
+
+/** Rnote's `LaserTool::FULL_FADE_DURATION`. */
+private const val LASER_FADE_MS = 1000L
+
+/**
+ * Rnote's laser: GNOME red 6 px wide with a GNOME light 1 px core, in screen px at 96 dpi
+ * — canvas units at 100 % — so the same size at any zoom.
+ */
+private val LASER_LINES = listOf(Color(0xFFED333B) to 6f, Color(0xFFF6F5F4) to 1f)
 /** How far (screen px) the rotate knob stands above the box. */
 private const val ROTATE_HANDLE_OFFSET_PX = 36f
 /** Index of the rotate knob in [handlePositions]; 0–3 are the corners, clockwise from top-left. */

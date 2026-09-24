@@ -36,6 +36,13 @@ enum class ShapeKind { LINE, ARROW, RECTANGLE, ELLIPSE, COORD_SYSTEM_2D, COORD_S
 enum class SelectorMode { POLYGON, RECTANGLE, SINGLE, INTERSECTING_PATH }
 
 /**
+ * Desktop Rnote's Tools pen styles (`ToolStyle`) that this app has: Vertical Space, and
+ * the Laser — a red trail to point with that fades away and is never saved. Rnote's
+ * other two, Offset Camera and Zoom, are what pan and pinch already do on a tablet.
+ */
+enum class ToolsMode { VERTICAL_SPACE, LASER }
+
+/**
  * Desktop Rnote's brush styles. MARKER reproduces what BRNA used to call the
  * "Highlighter" tool — translucent, wide, layered under other strokes — but
  * as a Brush style rather than a separate top-level tool, matching how
@@ -92,6 +99,7 @@ data class ToolConfig(
     /** The selector's "Lock Aspect Ratio": scale the selection uniformly. Off in Rnote by default. */
     val lockAspectRatio: Boolean = false,
     val selectorMode: SelectorMode = SelectorMode.POLYGON,
+    val toolsMode: ToolsMode = ToolsMode.VERTICAL_SPACE,
     /**
      * The colour picker's second pad: what new shapes are filled with. Transparent — no
      * fill — until one is picked, as in Rnote, whose pens start without a fill colour.

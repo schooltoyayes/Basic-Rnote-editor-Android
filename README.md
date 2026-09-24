@@ -42,7 +42,8 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   intersecting path. Select all / deselect / duplicate / delete, drag-to-move,
   scale and rotate handles with an aspect-ratio lock, copy / cut / paste between
   notes, and recoloring the selection — its lines and text, or its shapes' fill.
-- **Tools**: Rnote's Vertical Space — drag down to open up room, up to close it.
+- **Tools**: Rnote's Vertical Space — drag down to open up room, up to close it —
+  and its Laser, a red trail to point with that fades away and is never saved.
 - **Stylus-aware input**: stylus-only mode by default (finger pans and zooms),
   optional finger drawing, S-Pen barrel button as a momentary eraser, S-Pen Air
   Actions mapped to undo/redo, two-finger pinch-zoom and pan.
@@ -63,7 +64,9 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   them. Open notes, drop PDFs and pictures into the open note, make new notes
   and folders, rename, duplicate and delete. When the open note was saved on
   another device meanwhile, returning to the app or opening the panel loads the
-  newer version — or, with changes on both sides, asks what to keep.
+  newer version — or, with changes on both sides, asks what to keep. While the
+  app is open it also looks every 30 seconds, and loads a newer version when
+  nothing here is unsaved, so the tablet follows along as the laptop saves.
 - **Import**: PDF pages, and pictures from the gallery or the camera, written
   the way desktop Rnote writes its own imports.
 - **Export, share and print**: PDF, SVG, PNG, and JPEG, with page-range and
@@ -81,7 +84,7 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
 Textured brush style.
 
 **Not built**: layers (the stroke list is flat), the Tools pen's other styles
-(Offset Camera, Zoom, Laser), document tabs.
+(Offset Camera, Zoom — pan and pinch do that here), document tabs.
 
 ## Screenshots
 

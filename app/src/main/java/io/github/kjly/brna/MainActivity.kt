@@ -22,6 +22,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -42,6 +43,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -127,6 +130,8 @@ import io.github.kjly.brna.ui.components.RnoteTopBar
 import io.github.kjly.brna.ui.components.PageOverviewDialog
 import io.github.kjly.brna.ui.components.RecentFilesDialog
 import io.github.kjly.brna.ui.components.InlineTextEditor
+import io.github.kjly.brna.ui.components.NoteTab
+import io.github.kjly.brna.ui.components.NoteTabBar
 import io.github.kjly.brna.ui.components.TextBoxStyle
 import io.github.kjly.brna.ui.components.WorkspaceBrowser
 import io.github.kjly.brna.ui.theme.BabyRnoteTheme
@@ -136,6 +141,25 @@ import io.github.kjly.brna.ui.theme.BabyRnoteTheme
  * or an erased shape brings back everything it took.
  */
 private data class DocSnapshot(val strokes: List<Stroke>, val natives: List<NativeCanvasElement>)
+
+/**
+ * A note open in a tab other than the one on screen: everything needed to show it again
+ * as it was left — its undo history and the part of it in view included. The note on
+ * screen lives in the UI's own state instead, as it did before there were tabs.
+ */
+private data class ParkedTab(
+    val title: String,
+    val isModified: Boolean,
+    val strokes: List<Stroke>,
+    val natives: List<NativeCanvasElement>,
+    val paperStyle: PaperStyle,
+    val undo: List<DocSnapshot>,
+    val redo: List<DocSnapshot>,
+    val viewport: ViewportState,
+    val uri: Uri?,
+    val knownLastModified: Long?,
+    val saveAsRnote: Boolean
+)
 
 /** Copied ink and desktop elements. */
 private class Clip(val strokes: List<Stroke>, val natives: List<NativeCanvasElement>) {
@@ -240,14 +264,42 @@ class MainActivity : ComponentActivity() {
     /** A save that found the file changed elsewhere, waiting for the user to decide. */
     private var pendingConflict by mutableStateOf<NoteDocument?>(null)
 
-    /** A note recovered from the last session, waiting to be offered back. */
-    private var pendingRecovery by mutableStateOf<Recovery.Pending?>(null)
+    /** Notes recovered from the last session, one per tab they were in, waiting to be offered back. */
+    private var pendingRecovery by mutableStateOf<List<Recovery.Pending>>(emptyList())
 
     /** Set when [incomingDocument] is the open note reloaded from its file. */
     private var incomingKeepsView = false
 
-    /** Set when [incomingDocument] is a recovered note, which is unsaved by definition. */
-    private var incomingIsRecovered = false
+    // ── Tabs ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Tab ids come from the clock, so none is ever the id of a tab from an earlier run —
+     * whose recovery slot (see [Recovery]) may still be waiting to be offered back.
+     */
+    private var nextTabId = System.currentTimeMillis()
+
+    private fun newTabId() = nextTabId++
+
+    /** The open tabs, in the tab bar's order. */
+    private val tabOrder = mutableStateListOf<Long>()
+
+    /** The tab on screen; its note is the one all of this activity's file handling is about. */
+    private var activeTab by mutableLongStateOf(0L)
+
+    /** Every other tab's note. */
+    private val parkedTabs = mutableStateMapOf<Long, ParkedTab>()
+
+    /**
+     * Installed by the UI. With [uri] already open in a tab, shows that tab and says so;
+     * opening it a second time would make two copies that save over each other.
+     */
+    private var showTabWith: ((Uri) -> Boolean)? = null
+
+    /**
+     * Installed by the UI: called as a note being opened arrives. It gets a new tab of its
+     * own, unless the tab on screen is an untouched new note it can take the place of.
+     */
+    private var makeRoomForIncoming: (() -> Unit)? = null
 
     /** Set when the file's own name becomes the note's title (on open, and on save-as). */
     private var onTitleAdopted: ((String) -> Unit)? = null
@@ -454,11 +506,14 @@ class MainActivity : ComponentActivity() {
         automatic: Boolean = false
     ) {
         if (busyMessage != null) return
+        // Already open in a tab: that tab is shown instead of a second copy.
+        if (!reload && showTabWith?.invoke(uri) == true) return
         busyMessage = when {
             automatic -> "Loading the newer version…"
             reload -> "Loading their version…"
             else -> "Opening…"
         }
+        val slot = activeTab
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 try {
@@ -468,7 +523,7 @@ class MainActivity : ComponentActivity() {
                     FileManager.loadDocumentFromUri(this@MainActivity, uri)
                         ?.let {
                             // Discarded on purpose; don't offer them back on the next launch.
-                            if (reload) Recovery.clear(this@MainActivity)
+                            if (reload) Recovery.clear(this@MainActivity, slot)
                             Triple(it, DocumentUri.displayName(this@MainActivity, uri), lastModified)
                         }
                 } catch (e: Throwable) {
@@ -484,6 +539,8 @@ class MainActivity : ComponentActivity() {
                 // The file's own name wins over the title inside it: a .rnote carries no
                 // title at all, and our JSON's title is only what it was last renamed to.
                 val title = fileName?.let(DocumentUri::titleFrom) ?: loaded.document.title
+                // A new tab for it, before anything below replaces what the one on screen holds.
+                if (!reload) makeRoomForIncoming?.invoke()
                 // The bytes decide the format it saves back as. The old test was the
                 // "Imported Note" placeholder title, which said nothing about the file.
                 saveAsRnote = loaded.isNativeRnote
@@ -531,21 +588,15 @@ class MainActivity : ComponentActivity() {
         RecentFiles.add(this, uri, title)
     }
 
-    /** Opens a note from the recent list, securing the open one first as leaving for the picker does. */
+    /**
+     * Opens a note from the recent list or a workspace, in a tab of its own. The note on
+     * screen is saved first, as leaving for the picker does, so the tab it stays in holds
+     * nothing its file doesn't — and whatever can't be saved stays open there, unharmed.
+     */
     private fun openRecent(uri: Uri) {
         if (busyMessage != null) return
         lifecycleScope.launch {
-            val secured = autosaveNow()
-            if (!secured && currentDocumentUri != null) {
-                // Changed elsewhere, or the write failed: don't bury the changes under
-                // another note. Saving now shows why (and offers a copy).
-                Toast.makeText(
-                    this@MainActivity,
-                    "This note couldn't be saved automatically — save it first",
-                    Toast.LENGTH_LONG
-                ).show()
-                return@launch
-            }
+            autosaveNow()
             openDocument(uri, fromRecent = true)
         }
     }
@@ -557,6 +608,7 @@ class MainActivity : ComponentActivity() {
         busyMessage = "Saving…"
         val asRnote = saveAsRnote
         val known = knownLastModified
+        val slot = activeTab
         lifecycleScope.launch {
             savesRunning++
             try {
@@ -568,7 +620,7 @@ class MainActivity : ComponentActivity() {
                 val success = writeLock.withLock { withContext(Dispatchers.IO) { writeDocument(target, document, asRnote) } }
                 busyMessage = null
                 if (success) {
-                    afterSave(target, document)
+                    afterSave(target, document, slot)
                     Toast.makeText(this@MainActivity, "Saved ${document.title}", Toast.LENGTH_SHORT).show()
                 } else {
                     // The grant can be gone (file deleted, card pulled, permission revoked, or
@@ -599,10 +651,10 @@ class MainActivity : ComponentActivity() {
         return now != known
     }
 
-    /** Bookkeeping after any successful write of [document] to [uri]. */
-    private suspend fun afterSave(uri: Uri, document: NoteDocument) {
+    /** Bookkeeping after any successful write of [document] to [uri], the note of tab [slot]. */
+    private suspend fun afterSave(uri: Uri, document: NoteDocument, slot: Long) {
         knownLastModified = withContext(Dispatchers.IO) {
-            Recovery.clear(this@MainActivity)
+            Recovery.clear(this@MainActivity, slot)
             DocumentUri.lastModified(this@MainActivity, uri)
         }
         onSaveSucceeded?.invoke(document)
@@ -745,18 +797,19 @@ class MainActivity : ComponentActivity() {
         val target = currentDocumentUri
         val asRnote = saveAsRnote
         val known = knownLastModified
+        val slot = activeTab
         savesRunning++
         try {
             val wrote = withContext(Dispatchers.IO) {
                 try {
-                    Recovery.write(this@MainActivity, document, target, asRnote)
+                    Recovery.write(this@MainActivity, document, target, asRnote, slot)
                 } catch (e: Throwable) {
                     e.printStackTrace()
                 }
                 target != null && busyMessage == null && !changedElsewhere(target, known) &&
                     writeLock.withLock { writeDocument(target, document, asRnote) }
             }
-            if (wrote && target != null) afterSave(target, document)
+            if (wrote && target != null) afterSave(target, document, slot)
             return wrote
         } finally {
             savesRunning--
@@ -789,6 +842,7 @@ class MainActivity : ComponentActivity() {
         val document = pendingDocumentToSave ?: return
         pendingDocumentToSave = null
         busyMessage = "Saving…"
+        val slot = activeTab
         lifecycleScope.launch {
             savesRunning++
             try {
@@ -804,7 +858,7 @@ class MainActivity : ComponentActivity() {
                 val savedTitle = DocumentUri.displayName(this@MainActivity, uri)?.let(DocumentUri::titleFrom)
                 adoptDocumentUri(uri, savedTitle ?: document.title)
                 savedTitle?.let { onTitleAdopted?.invoke(it) }
-                afterSave(uri, document)
+                afterSave(uri, document, slot)
                 Toast.makeText(
                     this@MainActivity,
                     if (asRnote) "Saved as .rnote" else "Saved as .json",
@@ -971,6 +1025,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The first tab, which the note opened or recovered at launch may take over.
+        activeTab = newTabId()
+        tabOrder.add(activeTab)
         workspaces = Workspaces.load(this)
         selectedWorkspace = Workspaces.loadSelected(this)
         // While the app is in front: look now and then whether Toni saved the open note.
@@ -1002,7 +1059,6 @@ class MainActivity : ComponentActivity() {
             var documentTitle by remember { mutableStateOf("My Note") }
             var isModified by remember { mutableStateOf(false) }
             var showRenameDialog by remember { mutableStateOf(false) }
-            var showNewDocumentDialog by remember { mutableStateOf(false) }
             var renameFieldValue by remember { mutableStateOf("") }
 
             // ── UI sheet state ────────────────────────────────────────────────────
@@ -1108,20 +1164,17 @@ class MainActivity : ComponentActivity() {
                         incomingKeepsView = false
                         viewportState = view
                     }
-                    if (incomingIsRecovered) {
-                        incomingIsRecovered = false
-                        isModified = true
-                    }
                 }
             }
 
             // ── New document handler ──────────────────────────────────────────────
-            // A harder reset than Clear Canvas: the title and the undo history go too,
-            // so there's no way back — hence the confirmation when edits are unsaved.
+            // Empties the tab on screen for a new note: a harder reset than Clear Canvas,
+            // the title and the undo history go too. Only ever done to a tab being
+            // opened or reused — the note that was there has been put in a tab of its own.
             // The paper style goes back to the stored preference rather than surviving:
             // it belongs to the document now, so whatever an opened file brought with it
             // must not follow the user into their next note.
-            val startNewDocument = {
+            val startNewDocument: () -> Unit = {
                 textSession = null
                 paperStyle = SettingsManager.loadPaperStyle(this)
                 strokes.clear()
@@ -1138,35 +1191,219 @@ class MainActivity : ComponentActivity() {
                 // No file yet, so the next Save has to ask for one.
                 currentDocumentUri = null
                 knownLastModified = null
-                // Starting over discards the old note on purpose; don't offer it back.
-                Recovery.clear(this)
+            }
+
+            // ── Tabs ──────────────────────────────────────────────────────────────
+            // The note on screen is the state above; every other open note is parked
+            // (see ParkedTab) and swapped in when its tab is chosen.
+            val parkActive: () -> ParkedTab = {
+                ParkedTab(
+                    title = documentTitle,
+                    isModified = isModified,
+                    strokes = strokes.toList(),
+                    natives = documentNativeElements,
+                    paperStyle = paperStyle,
+                    undo = undoStack.toList(),
+                    redo = redoStack.toList(),
+                    viewport = viewportState,
+                    uri = currentDocumentUri,
+                    knownLastModified = knownLastModified,
+                    saveAsRnote = saveAsRnote
+                )
+            }
+            val showParked: (ParkedTab) -> Unit = { tab ->
+                textSession = null
+                selectedStrokes.clear()
+                selectedNatives.clear()
+                strokes.clear()
+                strokes.addAll(tab.strokes)
+                documentNativeElements = tab.natives
+                paperStyle = tab.paperStyle
+                documentTitle = tab.title
+                undoStack.clear()
+                undoStack.addAll(tab.undo)
+                redoStack.clear()
+                redoStack.addAll(tab.redo)
+                viewportState = tab.viewport
+                currentDocumentUri = tab.uri
+                tab.uri?.let { pickerStartUri = it }
+                knownLastModified = tab.knownLastModified
+                saveAsRnote = tab.saveAsRnote
+                isModified = tab.isModified
+            }
+            // An untouched new note: what a note being opened may take the place of.
+            val activeIsBlank: () -> Boolean = {
+                currentDocumentUri == null && !isModified && strokes.isEmpty() && documentNativeElements.isEmpty()
+            }
+            // Parks the note on screen and shows tab [id] in its place, then and there.
+            val activate: (Long) -> Unit = { id ->
+                val next = parkedTabs.remove(id)
+                if (next != null && id != activeTab) {
+                    parkedTabs[activeTab] = parkActive()
+                    activeTab = id
+                    showParked(next)
+                }
+            }
+            // A tab of its own for a new note, beside the one on screen, which is parked.
+            val openFreshTab: () -> Unit = {
+                parkedTabs[activeTab] = parkActive()
+                val id = newTabId()
+                tabOrder.add(tabOrder.indexOf(activeTab) + 1, id)
+                activeTab = id
+                startNewDocument()
+            }
+            var settlingTab by remember { mutableStateOf(false) }
+            // Readies the note on screen to leave the screen: typing is ended, a save or a
+            // load under way is waited out, and it is saved as autosave would — so its tab
+            // holds nothing its file doesn't. [then] runs after, told whether that worked;
+            // not at all while a conflict waits for an answer about this note.
+            val settleActive: ((secured: Boolean) -> Unit) -> Unit = { then ->
+                if (!settlingTab && pendingConflict == null) {
+                    settlingTab = true
+                    lifecycleScope.launch {
+                        var secured = false
+                        try {
+                            textSession = null
+                            while (busyMessage != null || savesRunning > 0 || incomingDocument != null) delay(50)
+                            secured = autosaveNow()
+                        } finally {
+                            settlingTab = false
+                        }
+                        if (pendingConflict == null) then(secured)
+                    }
+                }
+            }
+            val switchTab: (Long, () -> Unit) -> Unit = { id, then ->
+                if (id != activeTab && id in parkedTabs) {
+                    settleActive {
+                        activate(id)
+                        // Toni may have saved it while it waited in the background.
+                        checkForNewerVersion()
+                        then()
+                    }
+                }
+            }
+            // Rnote's "New tab" — and "New": a new note never takes the place of another.
+            val newTab: (() -> Unit) -> Unit = { then ->
+                if (activeIsBlank()) {
+                    then()
+                } else {
+                    settleActive {
+                        openFreshTab()
+                        then()
+                    }
+                }
+            }
+            // The tab on screen closed, what was in it gone: a neighbour takes its place,
+            // or, for the last tab, a new note.
+            val finishClose: () -> Unit = {
+                val closed = activeTab
+                Recovery.clear(this@MainActivity, closed)
+                val index = tabOrder.indexOf(closed)
+                tabOrder.remove(closed)
+                val neighbour = tabOrder.getOrNull(index) ?: tabOrder.getOrNull(index - 1)
+                val next = neighbour?.let { parkedTabs.remove(it) }
+                if (neighbour != null && next != null) {
+                    activeTab = neighbour
+                    showParked(next)
+                    checkForNewerVersion()
+                } else {
+                    val id = newTabId()
+                    tabOrder.add(id)
+                    activeTab = id
+                    startNewDocument()
+                }
+            }
+            // The tab on screen, unsaved, waiting for a yes to close it all the same.
+            var confirmClose by remember { mutableStateOf(false) }
+            val closeActive: () -> Unit = {
+                settleActive { secured ->
+                    if (secured && !isModified) {
+                        finishClose()
+                    } else {
+                        confirmClose = true
+                    }
+                }
+            }
+            // Rnote's close button: a tab whose note is all in its file just closes; one
+            // with unsaved changes is shown first, saved if it can be, and asked about if not.
+            val closeTab: (Long) -> Unit = { id ->
+                val parked = parkedTabs[id]
+                when {
+                    id == activeTab -> closeActive()
+                    parked == null -> Unit
+                    !parked.isModified -> {
+                        parkedTabs.remove(id)
+                        tabOrder.remove(id)
+                        Recovery.clear(this@MainActivity, id)
+                    }
+                    else -> switchTab(id, closeActive)
+                }
+            }
+            val stepTab: (Int) -> Unit = { step ->
+                if (tabOrder.size > 1) {
+                    val index = tabOrder.indexOf(activeTab)
+                    switchTab(tabOrder[(index + step).mod(tabOrder.size)]) {}
+                }
+            }
+            showTabWith = { uri ->
+                if (FolderBrowser.sameDocument(uri, currentDocumentUri)) {
+                    true
+                } else {
+                    val id = parkedTabs.entries.firstOrNull { FolderBrowser.sameDocument(uri, it.value.uri) }?.key
+                    if (id != null) switchTab(id) {}
+                    id != null
+                }
+            }
+            makeRoomForIncoming = {
+                if (!activeIsBlank()) {
+                    textSession = null
+                    parkedTabs[activeTab] = parkActive()
+                    val id = newTabId()
+                    tabOrder.add(tabOrder.indexOf(activeTab) + 1, id)
+                    activeTab = id
+                }
+            }
+            // Notes the last run didn't get to save, each back in a tab of the id it had —
+            // so its recovery slot goes on being its own. Unknown whether their files changed
+            // meanwhile, so no conflict baseline is set and the next save asks nothing:
+            // recovered work is the user's most recent anyway.
+            val restoreRecovered: (List<Recovery.Pending>) -> Unit = restore@{ recovered ->
+                if (recovered.isEmpty()) return@restore
+                for (r in recovered) {
+                    parkedTabs[r.slot] = ParkedTab(
+                        title = r.document.title,
+                        isModified = true,
+                        strokes = r.document.strokes,
+                        natives = r.document.nativeElements,
+                        paperStyle = r.document.paperStyle,
+                        undo = emptyList(),
+                        redo = emptyList(),
+                        viewport = ViewportState(displayScale = displayScale),
+                        uri = r.uri,
+                        knownLastModified = null,
+                        saveAsRnote = r.saveAsRnote
+                    )
+                    tabOrder.add(r.slot)
+                }
+                val last = recovered.last().slot
+                if (activeIsBlank()) {
+                    val blank = activeTab
+                    activate(last)
+                    parkedTabs.remove(blank)
+                    tabOrder.remove(blank)
+                } else {
+                    switchTab(last) {}
+                }
             }
 
             // ── Workspace panel ───────────────────────────────────────────────────
-            // A panel action that would replace a note never saved anywhere, waiting for
-            // a yes. A note with a file is saved on the way out instead (see openRecent).
-            var confirmDiscard by remember { mutableStateOf<(() -> Unit)?>(null) }
-            val unlessUnsavedNew: (() -> Unit) -> Unit = { action ->
-                if (isModified && currentDocumentUri == null) {
-                    confirmDiscard = action
-                } else {
-                    action()
-                }
-            }
             // Desktop Rnote's "New file" in its browser: the file is made first, then the
             // empty note written into it, so the note has its home from the start and
-            // every save goes straight back there.
+            // every save goes straight back there. It opens in a tab of its own.
             val newNoteIn: (Uri, String, String) -> Unit = { tree, folderId, name ->
                 lifecycleScope.launch {
                     if (busyMessage != null) return@launch
-                    if (!autosaveNow() && currentDocumentUri != null) {
-                        Toast.makeText(
-                            this@MainActivity,
-                            "This note couldn't be saved automatically — save it first",
-                            Toast.LENGTH_LONG
-                        ).show()
-                        return@launch
-                    }
                     val fileName = if (DocumentUri.isRnote(name)) name else "$name.rnote"
                     val created = withContext(Dispatchers.IO) {
                         FolderBrowser.createNote(this@MainActivity, tree, folderId, fileName)?.let { uri ->
@@ -1180,10 +1417,11 @@ class MainActivity : ComponentActivity() {
                     }
                     val (uri, actualName) = created
                     val title = DocumentUri.titleFrom(actualName)
-                    startNewDocument()
-                    documentTitle = title
-                    adoptDocumentUri(uri, title)
-                    saveInPlace(NoteDocument(title = title, paperStyle = paperStyle))
+                    newTab {
+                        documentTitle = title
+                        adoptDocumentUri(uri, title)
+                        saveInPlace(NoteDocument(title = title, paperStyle = paperStyle))
+                    }
                 }
             }
             // Coming to the files is a moment to look whether Toni saved the open note meanwhile.
@@ -1456,13 +1694,7 @@ class MainActivity : ComponentActivity() {
                 if (!saveInPlace(currentDoc)) launchSavePicker(currentDoc)
             }
             val saveDocumentAs: () -> Unit = { launchSavePicker(currentNote()) }
-            val newDocument: () -> Unit = {
-                if (isModified) {
-                    showNewDocumentDialog = true
-                } else {
-                    startNewDocument()
-                }
-            }
+            val newDocument: () -> Unit = { newTab {} }
             val clearCanvas: () -> Unit = {
                 textSession = null
                 if (strokes.isNotEmpty() || documentNativeElements.isNotEmpty()) {
@@ -1488,60 +1720,78 @@ class MainActivity : ComponentActivity() {
             BabyRnoteTheme(darkTheme = paperStyle.isDarkMode) {
                 Scaffold(
                     topBar = {
-                        RnoteTopBar(
-                            paperStyle = paperStyle,
-                            zoomScale = viewportState.zoomScale,
-                            allowFingerDrawing = toolConfig.allowFingerDrawing,
-                            isModified = isModified,
-                            documentTitle = documentTitle,
-                            currentPage = pageGridLabel,
-                            onResetZoom = { viewportState = ViewportState(displayScale = displayScale) },
-                            // Unlike the zoom reset next to it, this keeps the zoom and
-                            // only moves the view — see ViewportState.returnedToOrigin.
-                            onReturnToOrigin = {
-                                viewportState = viewportState.returnedToOrigin(
-                                    viewportWidthPx = canvasSize.width.toFloat(),
-                                    // Nothing to centre on when the document has no pages.
-                                    pageWidthPx = if (paperStyle.pageSize.isInfinite) 0f
-                                                  else paperStyle.effectivePageWidthPx
+                        Column {
+                            RnoteTopBar(
+                                paperStyle = paperStyle,
+                                zoomScale = viewportState.zoomScale,
+                                allowFingerDrawing = toolConfig.allowFingerDrawing,
+                                isModified = isModified,
+                                documentTitle = documentTitle,
+                                currentPage = pageGridLabel,
+                                onResetZoom = { viewportState = ViewportState(displayScale = displayScale) },
+                                // Unlike the zoom reset next to it, this keeps the zoom and
+                                // only moves the view — see ViewportState.returnedToOrigin.
+                                onReturnToOrigin = {
+                                    viewportState = viewportState.returnedToOrigin(
+                                        viewportWidthPx = canvasSize.width.toFloat(),
+                                        // Nothing to centre on when the document has no pages.
+                                        pageWidthPx = if (paperStyle.pageSize.isInfinite) 0f
+                                                      else paperStyle.effectivePageWidthPx
+                                    )
+                                },
+                                onTitleTap = {
+                                    renameFieldValue = documentTitle
+                                    showRenameDialog = true
+                                },
+                                onToggleFingerDrawing = {
+                                    toolConfig = toolConfig.copy(allowFingerDrawing = !toolConfig.allowFingerDrawing)
+                                    SettingsManager.save(
+                                        this@MainActivity, paperStyle, toolConfig.allowFingerDrawing
+                                    )
+                                },
+                                onSaveDocument = saveDocument,
+                                onSaveDocumentAs = saveDocumentAs,
+                                onPrint = { printDocument(currentNote()) },
+                                onOpenDocument = {
+                                    openDocumentLauncher.launch(arrayOf("*/*", "application/json"))
+                                },
+                                onImportPdf = { importPdfLauncher.launch(arrayOf("application/pdf")) },
+                                onInsertImage = {
+                                    pickImageLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                },
+                                canTakePhoto = hasCamera,
+                                onTakePhoto = { takePhoto() },
+                                hasPages = ExportLayout.hasPages(paperStyle),
+                                hasSelection = selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty(),
+                                onShare = shareNote,
+                                onShowRecent = { showRecent = true },
+                                onShowPages = { showPages = true },
+                                onNewDocument = newDocument,
+                                onExport = { showExportSheet = true },
+                                onClearCanvas = clearCanvas,
+                                onOpenPageSettings = { showPageSettings = true },
+                                filesOpen = showFiles,
+                                onToggleFiles = { showFiles = !showFiles }
+                            )
+                            // Desktop Rnote's tab bar: there once more than one note is open.
+                            if (tabOrder.size > 1) {
+                                NoteTabBar(
+                                    tabs = tabOrder.map { id ->
+                                        val parked = parkedTabs[id]
+                                        if (id == activeTab || parked == null) NoteTab(id, documentTitle, isModified)
+                                        else NoteTab(id, parked.title, parked.isModified)
+                                    },
+                                    active = activeTab,
+                                    background = paperStyle.currentBackgroundColor.copy(alpha = 0.95f),
+                                    darkTheme = paperStyle.isDarkMode,
+                                    onSelect = { id -> switchTab(id) {} },
+                                    onClose = closeTab,
+                                    onNew = newDocument
                                 )
-                            },
-                            onTitleTap = {
-                                renameFieldValue = documentTitle
-                                showRenameDialog = true
-                            },
-                            onToggleFingerDrawing = {
-                                toolConfig = toolConfig.copy(allowFingerDrawing = !toolConfig.allowFingerDrawing)
-                                SettingsManager.save(
-                                    this, paperStyle, toolConfig.allowFingerDrawing
-                                )
-                            },
-                            onSaveDocument = saveDocument,
-                            onSaveDocumentAs = saveDocumentAs,
-                            onPrint = { printDocument(currentNote()) },
-                            onOpenDocument = {
-                                openDocumentLauncher.launch(arrayOf("*/*", "application/json"))
-                            },
-                            onImportPdf = { importPdfLauncher.launch(arrayOf("application/pdf")) },
-                            onInsertImage = {
-                                pickImageLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                )
-                            },
-                            canTakePhoto = hasCamera,
-                            onTakePhoto = { takePhoto() },
-                            hasPages = ExportLayout.hasPages(paperStyle),
-                            hasSelection = selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty(),
-                            onShare = shareNote,
-                            onShowRecent = { showRecent = true },
-                            onShowPages = { showPages = true },
-                            onNewDocument = newDocument,
-                            onExport = { showExportSheet = true },
-                            onClearCanvas = clearCanvas,
-                            onOpenPageSettings = { showPageSettings = true },
-                            filesOpen = showFiles,
-                            onToggleFiles = { showFiles = !showFiles }
-                        )
+                            }
+                        }
                     }
                 ) { innerPadding ->
                     Box(
@@ -1853,6 +2103,9 @@ class MainActivity : ComponentActivity() {
                                 Shortcut.SAVE -> saveDocument()
                                 Shortcut.SAVE_AS -> saveDocumentAs()
                                 Shortcut.NEW -> newDocument()
+                                Shortcut.CLOSE_TAB -> closeTab(activeTab)
+                                Shortcut.NEXT_TAB -> if (tabOrder.size > 1) stepTab(1) else return@handler false
+                                Shortcut.PREVIOUS_TAB -> if (tabOrder.size > 1) stepTab(-1) else return@handler false
                                 Shortcut.PRINT -> printDocument(currentNote())
                                 Shortcut.IMPORT -> importFileLauncher.launch(IMPORTABLE_TYPES)
                                 Shortcut.CLEAR -> clearCanvas()
@@ -1973,7 +2226,7 @@ class MainActivity : ComponentActivity() {
                             WorkspaceBrowser(
                                 workspaces = workspaces,
                                 selected = selectedWorkspace,
-                                currentDocument = currentDocumentUri,
+                                openDocuments = listOfNotNull(currentDocumentUri) + parkedTabs.values.mapNotNull { it.uri },
                                 refreshKey = filesRefresh,
                                 path = filesPath,
                                 onPathChange = { filesPath = it },
@@ -1983,13 +2236,10 @@ class MainActivity : ComponentActivity() {
                                 onRemoveWorkspace = { removeWorkspace(it) },
                                 onOpen = { uri, kind ->
                                     when (kind) {
-                                        FolderListing.Kind.NOTE -> if (!FolderBrowser.sameDocument(uri, currentDocumentUri)) {
-                                            unlessUnsavedNew {
-                                                showFiles = false
-                                                openRecent(uri)
-                                            }
-                                        } else {
+                                        // In a tab of its own, or its tab if it is open already.
+                                        FolderListing.Kind.NOTE -> {
                                             showFiles = false
+                                            if (!FolderBrowser.sameDocument(uri, currentDocumentUri)) openRecent(uri)
                                         }
                                         // Into the open note, as Rnote's browser does with them.
                                         FolderListing.Kind.PDF -> {
@@ -2004,32 +2254,69 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 onNewNote = { tree, folderId, name ->
-                                    unlessUnsavedNew {
-                                        showFiles = false
-                                        newNoteIn(tree, folderId, name)
-                                    }
+                                    showFiles = false
+                                    newNoteIn(tree, folderId, name)
                                 },
-                                onCurrentRenamed = { uri, name ->
-                                    currentDocumentUri?.let { RecentFiles.remove(this@MainActivity, it.toString()) }
+                                onOpenRenamed = { old, uri, name ->
                                     val title = DocumentUri.titleFrom(name)
-                                    documentTitle = title
-                                    adoptDocumentUri(uri, title)
-                                    // Some providers count a rename as a change: not one made elsewhere.
-                                    lifecycleScope.launch {
-                                        knownLastModified = withContext(Dispatchers.IO) {
-                                            DocumentUri.lastModified(this@MainActivity, uri)
+                                    if (FolderBrowser.sameDocument(old, currentDocumentUri)) {
+                                        currentDocumentUri?.let { RecentFiles.remove(this@MainActivity, it.toString()) }
+                                        documentTitle = title
+                                        adoptDocumentUri(uri, title)
+                                        // Some providers count a rename as a change: not one made elsewhere.
+                                        lifecycleScope.launch {
+                                            knownLastModified = withContext(Dispatchers.IO) {
+                                                DocumentUri.lastModified(this@MainActivity, uri)
+                                            }
                                         }
+                                    } else {
+                                        // A note in another tab: its tab follows the file.
+                                        parkedTabs.entries.firstOrNull { FolderBrowser.sameDocument(old, it.value.uri) }
+                                            ?.let { (id, tab) ->
+                                                tab.uri?.let { RecentFiles.remove(this@MainActivity, it.toString()) }
+                                                RecentFiles.add(this@MainActivity, uri, title)
+                                                parkedTabs[id] = tab.copy(uri = uri, title = title)
+                                                lifecycleScope.launch {
+                                                    val modified = withContext(Dispatchers.IO) {
+                                                        DocumentUri.lastModified(this@MainActivity, uri)
+                                                    }
+                                                    parkedTabs[id]?.takeIf { it.uri == uri }?.let {
+                                                        parkedTabs[id] = it.copy(knownLastModified = modified)
+                                                    }
+                                                }
+                                            }
                                     }
                                 },
-                                onCurrentDeleted = {
-                                    currentDocumentUri?.let { RecentFiles.remove(this@MainActivity, it.toString()) }
-                                    currentDocumentUri = null
-                                    knownLastModified = null
-                                    // Still open here, now with nowhere to go: Save asks where.
-                                    isModified = true
+                                onOpenDeleted = { uri ->
+                                    RecentFiles.remove(this@MainActivity, uri.toString())
+                                    if (FolderBrowser.sameDocument(uri, currentDocumentUri)) {
+                                        currentDocumentUri?.let { RecentFiles.remove(this@MainActivity, it.toString()) }
+                                        currentDocumentUri = null
+                                        knownLastModified = null
+                                        // Still open here, now with nowhere to go: Save asks where.
+                                        isModified = true
+                                    } else {
+                                        parkedTabs.entries.firstOrNull { FolderBrowser.sameDocument(uri, it.value.uri) }
+                                            ?.let { (id, tab) ->
+                                                tab.uri?.let { RecentFiles.remove(this@MainActivity, it.toString()) }
+                                                parkedTabs[id] = tab.copy(uri = null, knownLastModified = null, isModified = true)
+                                                // Now it lives only here: kept where recovery finds it.
+                                                val note = NoteDocument(
+                                                    title = tab.title, paperStyle = tab.paperStyle,
+                                                    strokes = tab.strokes, nativeElements = tab.natives
+                                                )
+                                                lifecycleScope.launch(Dispatchers.IO) {
+                                                    try {
+                                                        Recovery.write(this@MainActivity, note, null, tab.saveAsRnote, id)
+                                                    } catch (e: Throwable) {
+                                                        e.printStackTrace()
+                                                    }
+                                                }
+                                            }
+                                    }
                                     Toast.makeText(
                                         this@MainActivity,
-                                        "Its file was deleted — the note is still open here; save it to keep it",
+                                        "Its file was deleted — the note is still open in its tab; save it to keep it",
                                         Toast.LENGTH_LONG
                                     ).show()
                                 },
@@ -2093,7 +2380,6 @@ class MainActivity : ComponentActivity() {
                         RecentFilesDialog(
                             entries = entries,
                             currentUri = currentDocumentUri?.toString(),
-                            unsavedNewNote = isModified && currentDocumentUri == null,
                             onOpen = { entry ->
                                 showRecent = false
                                 openRecent(Uri.parse(entry.uri))
@@ -2173,65 +2459,62 @@ class MainActivity : ComponentActivity() {
                     }
 
                     // ── Recovered from the last session ───────────────────────────
-                    pendingRecovery?.let { recovered ->
+                    val recovered = pendingRecovery
+                    if (recovered.isNotEmpty()) {
+                        val titles = recovered.joinToString(", ") { "\"${it.document.title}\"" }
                         AlertDialog(
                             onDismissRequest = { },
-                            title = { Text("Restore unsaved note?") },
+                            title = { Text(if (recovered.size == 1) "Restore unsaved note?" else "Restore unsaved notes?") },
                             text = {
                                 Text(
-                                    "\"${recovered.document.title}\" had changes that were not " +
-                                        "saved when the app was last closed."
+                                    "$titles had changes that were not saved when the app was last closed." +
+                                        if (recovered.size > 1) " Each comes back in a tab of its own." else ""
                                 )
                             },
                             confirmButton = {
                                 TextButton(onClick = {
-                                    pendingRecovery = null
+                                    pendingRecovery = emptyList()
                                     restoreRecovered(recovered)
                                 }) { Text("Restore") }
                             },
                             dismissButton = {
                                 TextButton(onClick = {
-                                    pendingRecovery = null
-                                    Recovery.clear(this@MainActivity)
+                                    pendingRecovery = emptyList()
+                                    for (r in recovered) Recovery.clear(this@MainActivity, r.slot)
                                 }) { Text("Discard") }
                             }
                         )
                     }
 
-                    // ── A never-saved note about to be replaced from the panel ─────
-                    confirmDiscard?.let { action ->
+                    // ── Closing a tab whose note isn't all in its file ────────────
+                    if (confirmClose) {
                         AlertDialog(
-                            onDismissRequest = { confirmDiscard = null },
-                            title = { Text("Discard this note?") },
+                            onDismissRequest = { confirmClose = false },
+                            title = { Text("Close without saving?") },
                             text = {
-                                Text("\"$documentTitle\" has never been saved. Opening another note discards it — save it first to keep it.")
+                                Text(
+                                    if (currentDocumentUri == null) {
+                                        "\"$documentTitle\" has never been saved. Closing its tab discards it."
+                                    } else {
+                                        "\"$documentTitle\" has changes that couldn't be saved to its file. " +
+                                            "Closing its tab discards them."
+                                    }
+                                )
                             },
                             confirmButton = {
                                 TextButton(onClick = {
-                                    confirmDiscard = null
-                                    action()
+                                    confirmClose = false
+                                    finishClose()
                                 }) { Text("Discard") }
                             },
                             dismissButton = {
-                                TextButton(onClick = { confirmDiscard = null }) { Text("Cancel") }
-                            }
-                        )
-                    }
-
-                    // ── New Document Confirmation ─────────────────────────────────
-                    if (showNewDocumentDialog) {
-                        AlertDialog(
-                            onDismissRequest = { showNewDocumentDialog = false },
-                            title = { Text("Discard unsaved changes?") },
-                            text = { Text("\"$documentTitle\" has unsaved changes. Starting a new note will discard them.") },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showNewDocumentDialog = false
-                                    startNewDocument()
-                                }) { Text("Discard") }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showNewDocumentDialog = false }) { Text("Cancel") }
+                                Row {
+                                    TextButton(onClick = { confirmClose = false }) { Text("Cancel") }
+                                    TextButton(onClick = {
+                                        confirmClose = false
+                                        saveDocument()
+                                    }) { Text("Save…") }
+                                }
                             }
                         )
                     }
@@ -2291,24 +2574,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Looks for a note the last session didn't get to save, and offers it back. */
+    /** Looks for notes the last session didn't get to save, and offers them back. */
     private fun offerRecovery() {
         lifecycleScope.launch {
-            val recovered = withContext(Dispatchers.IO) { Recovery.read(this@MainActivity) }
-            if (recovered != null) pendingRecovery = recovered
+            pendingRecovery = withContext(Dispatchers.IO) { Recovery.readAll(this@MainActivity) }
         }
-    }
-
-    private fun restoreRecovered(recovered: Recovery.Pending) {
-        saveAsRnote = recovered.saveAsRnote
-        currentDocumentUri = recovered.uri
-        recovered.uri?.let { pickerStartUri = it }
-        // Unknown: the file may have changed while the app was gone, and the recovered
-        // note would then be the one to overwrite it — so no conflict baseline is set and
-        // the next save asks nothing. Recovered work is the user's most recent anyway.
-        knownLastModified = null
-        incomingIsRecovered = true
-        incomingDocument = recovered.document
     }
 
     override fun onResume() {

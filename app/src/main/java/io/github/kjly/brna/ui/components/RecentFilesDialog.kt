@@ -26,19 +26,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.kjly.brna.storage.RecentFiles
-import io.github.kjly.brna.ui.theme.BrnaColors
 
 /**
  * The notes opened or saved last. Tapping one saves what is open now (as leaving for the
- * file picker does) and opens it.
+ * file picker does) and opens it in a tab of its own — or shows its tab, if it has one.
  */
 @Composable
 fun RecentFilesDialog(
     entries: List<RecentFiles.Entry>,
-    /** The note open now, marked in the list; tapping it reloads it from the file. */
+    /** The note open now, marked in the list. */
     currentUri: String?,
-    /** The open note has changes and no file to save them to: opening another loses them. */
-    unsavedNewNote: Boolean,
     onOpen: (RecentFiles.Entry) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -47,14 +44,6 @@ fun RecentFilesDialog(
         title = { Text("Recent") },
         text = {
             Column {
-                if (unsavedNewNote) {
-                    Text(
-                        "This note has never been saved. Save it first, or opening another one discards it.",
-                        color = BrnaColors.DestructiveTint,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                }
                 if (entries.isEmpty()) {
                     Text(
                         "Notes you open with Open… or save show up here. " +

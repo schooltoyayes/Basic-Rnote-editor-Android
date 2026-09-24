@@ -56,6 +56,12 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   a round trip. Autosave, crash recovery, a warning before overwriting a file
   that changed elsewhere (save a copy, overwrite, or load the other version), a
   list of recent notes, and a page overview with thumbnails.
+- **Workspaces**: Rnote's workspace browser as a side panel — folders on the
+  device or in Google Drive, each with a name and a color, listed as Rnote lists
+  them. Open notes, drop PDFs and pictures into the open note, make new notes
+  and folders, rename, duplicate and delete. When the open note was saved on
+  another device meanwhile, returning to the app or opening the panel loads the
+  newer version — or, with changes on both sides, asks what to keep.
 - **Import**: PDF pages, and pictures from the gallery or the camera, written
   the way desktop Rnote writes its own imports.
 - **Export and share**: PDF, SVG, PNG, and JPEG, with page-range and split

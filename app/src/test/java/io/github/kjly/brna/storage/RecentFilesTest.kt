@@ -1,6 +1,8 @@
 package io.github.kjly.brna.storage
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RecentFilesTest {
@@ -43,5 +45,16 @@ class RecentFilesTest {
         assertEquals(emptyList<RecentFiles.Entry>(), RecentFiles.decode("{not json"))
         assertEquals(emptyList<RecentFiles.Entry>(), RecentFiles.decode(null))
         assertEquals(1, RecentFiles.decode("""[{"uri":"content://x"},{"title":"no uri"}]""").size)
+    }
+
+    @Test
+    fun `a note opened in a workspace stays listed under the folder's grant`() {
+        val tree = "content://com.android.externalstorage.documents/tree/primary%3ASchule"
+        val granted = setOf(tree, "content://com.google.android.apps.docs.storage/document/acc%3D1%3Bdoc%3D7")
+        assertTrue(RecentFiles.isGranted("$tree/document/primary%3ASchule%2FMathe.rnote", granted))
+        assertTrue(RecentFiles.isGranted("content://com.google.android.apps.docs.storage/document/acc%3D1%3Bdoc%3D7", granted))
+        // A folder whose name only starts the same is another folder.
+        assertFalse(RecentFiles.isGranted("${tree}2/document/primary%3ASchule2%2FMathe.rnote", granted))
+        assertFalse(RecentFiles.isGranted("content://com.google.android.apps.docs.storage/document/acc%3D1%3Bdoc%3D8", granted))
     }
 }

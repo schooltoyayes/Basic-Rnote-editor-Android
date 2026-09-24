@@ -62,7 +62,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import io.github.kjly.brna.export.DocumentExporter
 import io.github.kjly.brna.export.ExportFormat
 import io.github.kjly.brna.export.ExportLayout
@@ -620,12 +622,19 @@ class MainActivity : ComponentActivity() {
      * it — Toni saving on the laptop, synced through Drive. With nothing unsaved here the
      * newer version is simply loaded, the view kept where it was; with unsaved changes
      * the conflict dialog asks what to do. Run on coming back to the app and on opening
-     * the side panel; a sync that lands later is noticed at the next of those, or on save.
+     * the side panel, and every [NEWER_VERSION_POLL_MS] while the app is open.
+     *
+     * The regular look ([whileIdle]) only ever loads: with anything unsaved here, or a
+     * text box being typed into, it leaves the file alone rather than put a dialog in
+     * front of someone in mid-sentence. The next return to the app, or the next save,
+     * brings the question up then.
      */
-    private fun checkForNewerVersion() {
+    private fun checkForNewerVersion(whileIdle: Boolean = false) {
         val uri = currentDocumentUri ?: return
         val known = knownLastModified ?: return
         if (busyMessage != null || pendingConflict != null || savesRunning > 0) return
+        val interrupting = { unsavedDocument?.invoke() != null || reloadWouldInterrupt?.invoke() == true }
+        if (whileIdle && interrupting()) return
         lifecycleScope.launch {
             val changed = withContext(Dispatchers.IO) { changedElsewhere(uri, known) }
             // Something may have happened meanwhile: another note opened, a save.
@@ -634,10 +643,14 @@ class MainActivity : ComponentActivity() {
             ) {
                 return@launch
             }
+            if (whileIdle && interrupting()) return@launch
             val unsaved = unsavedDocument?.invoke()
             if (unsaved == null) openDocument(uri, reload = true, automatic = true) else pendingConflict = unsaved
         }
     }
+
+    /** Installed by the UI: whether a reload now would cut into something — a text box being typed into. */
+    private var reloadWouldInterrupt: (() -> Boolean)? = null
 
     // ── Workspaces ────────────────────────────────────────────────────────────
 
@@ -960,6 +973,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         workspaces = Workspaces.load(this)
         selectedWorkspace = Workspaces.loadSelected(this)
+        // While the app is in front: look now and then whether Toni saved the open note.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                while (true) {
+                    delay(NEWER_VERSION_POLL_MS)
+                    checkForNewerVersion(whileIdle = true)
+                }
+            }
+        }
         setContent {
             // Rnote's own breakpoint collapses its sidebar under 1250sp on a desktop window;
             // here, below Material's compact/medium 600dp boundary, the floating PenConfigStrip
@@ -1196,6 +1218,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
             onTitleAdopted = { name -> documentTitle = name }
+            // A reload would end the text box being typed into, even before it has changed anything.
+            reloadWouldInterrupt = { textSession != null }
 
             // ── PDF import ─────────────────────────────────────────────────────────
             pdfImportTarget = {
@@ -1892,6 +1916,7 @@ class MainActivity : ComponentActivity() {
                                 toolConfig = toolConfig.copy(lockAspectRatio = !toolConfig.lockAspectRatio)
                             },
                             onSelectorModeSelected = { mode -> toolConfig = toolConfig.copy(selectorMode = mode) },
+                            onToolsModeSelected = { mode -> toolConfig = toolConfig.copy(toolsMode = mode) },
                             onSnapAnglesToggled = {
                                 toolConfig = toolConfig.copy(snapAngles = !toolConfig.snapAngles)
                             },
@@ -2303,6 +2328,13 @@ class MainActivity : ComponentActivity() {
     private companion object {
         /** How long after the first unsaved change autosave runs. Rnote's default is 120 s. */
         const val AUTOSAVE_DELAY_MS = 60_000L
+
+        /**
+         * How often the open note's file is looked at while the app is open. Drive syncs a
+         * save from the laptop in some seconds; a look every half minute is cheap, and
+         * soon enough to be following along.
+         */
+        const val NEWER_VERSION_POLL_MS = 30_000L
 
         /** What Rnote's "Import" takes that this app can: PDFs and pictures. */
         val IMPORTABLE_TYPES = arrayOf("application/pdf", "image/png", "image/jpeg")

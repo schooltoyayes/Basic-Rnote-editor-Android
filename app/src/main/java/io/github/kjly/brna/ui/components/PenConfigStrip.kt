@@ -76,6 +76,7 @@ import io.github.kjly.brna.model.TextToggle
 import io.github.kjly.brna.model.brushFavorite
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
+import io.github.kjly.brna.model.ToolsMode
 import io.github.kjly.brna.ui.icons.GeneratedIcons
 import io.github.kjly.brna.ui.theme.BrnaColors
 import kotlinx.coroutines.launch
@@ -105,6 +106,7 @@ fun PenConfigStrip(
     onPaste: () -> Unit = {},
     onLockAspectRatioToggled: () -> Unit = {},
     onSelectorModeSelected: (SelectorMode) -> Unit = {},
+    onToolsModeSelected: (ToolsMode) -> Unit = {},
     onSnapAnglesToggled: () -> Unit = {},
     /** The saved pens, [io.github.kjly.brna.storage.PenFavorites.SLOTS] of them; null for an empty slot. */
     favorites: List<PenFavorite?> = emptyList(),
@@ -144,7 +146,7 @@ fun PenConfigStrip(
                 ToolType.TYPEWRITER -> TypewriterConfigPage(
                     toolConfig, onSizeChanged, textFormats, textFormatsEnabled, onToggleTextFormat
                 )
-                ToolType.TOOLS -> ToolsConfigPage()
+                ToolType.TOOLS -> ToolsConfigPage(toolConfig.toolsMode, onToolsModeSelected)
             }
         }
     }
@@ -459,15 +461,20 @@ private fun SelectorModeMenu(mode: SelectorMode, onModeSelected: (SelectorMode) 
 // ── Tools ────────────────────────────────────────────────────────────────
 
 /**
- * Rnote's Tools pen. Of its four styles only Vertical Space, the default, is here; the
- * others (Offset Camera, Zoom, Laser) are covered by pinch and pan or have no use yet.
+ * Rnote's Tools pen: Vertical Space, the default, and the Laser. Its other two styles,
+ * Offset Camera and Zoom, are what pan and pinch already do here.
  */
 @Composable
-private fun ToolsConfigPage() {
-    StripIconToggle(Icons.Default.Height, "Vertical Space", selected = true, implemented = true) {}
+private fun ToolsConfigPage(mode: ToolsMode, onModeSelected: (ToolsMode) -> Unit) {
+    StripIconToggle(Icons.Default.Height, "Vertical Space", selected = mode == ToolsMode.VERTICAL_SPACE, implemented = true) {
+        onModeSelected(ToolsMode.VERTICAL_SPACE)
+    }
+    StripIconToggle(GeneratedIcons.ToolsLaser, "Laser", selected = mode == ToolsMode.LASER, implemented = true) {
+        onModeSelected(ToolsMode.LASER)
+    }
     StripDivider()
     Text(
-        text = "Drag\ndown to\nmake\nroom",
+        text = if (mode == ToolsMode.LASER) "Point;\nit fades\naway" else "Drag\ndown to\nmake\nroom",
         color = BrnaColors.TextSecondaryOnPanel,
         fontSize = 10.sp,
         lineHeight = 12.sp,

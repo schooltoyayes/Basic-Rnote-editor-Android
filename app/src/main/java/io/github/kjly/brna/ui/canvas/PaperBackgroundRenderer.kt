@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import io.github.kjly.brna.model.PaperPattern
 import io.github.kjly.brna.model.PaperStyle
+import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.sqrt
 
@@ -328,9 +329,14 @@ object PaperBackgroundRenderer {
         pageRect: Rect,
         zoomLevel: Float = 1f
     ) {
+        // Rnote's pattern is pattern_size[0] wide and pattern_size[1] high; rows, ruled lines
+        // and isometric patterns go by the height, as its own pattern does.
+        val spacingYPx = paperStyle.patternHeightPx * zoomLevel
+        if (spacingYPx < 6f) return
+
         // Global phase: where the infinite grid origin falls on screen
         val globalPhaseX = ((panOffset.x % spacingPx) + spacingPx) % spacingPx
-        val globalPhaseY = ((panOffset.y % spacingPx) + spacingPx) % spacingPx
+        val globalPhaseY = ((panOffset.y % spacingYPx) + spacingYPx) % spacingYPx
 
         // First grid line/dot inside the page (from the left/top edges)
         val firstDotX = run {
@@ -338,8 +344,8 @@ object PaperBackgroundRenderer {
             pageRect.left + if (offset < 0.001f) 0f else (spacingPx - offset)
         }
         val firstDotY = run {
-            val offset = ((pageRect.top - globalPhaseY) % spacingPx + spacingPx) % spacingPx
-            pageRect.top + if (offset < 0.001f) 0f else (spacingPx - offset)
+            val offset = ((pageRect.top - globalPhaseY) % spacingYPx + spacingYPx) % spacingYPx
+            pageRect.top + if (offset < 0.001f) 0f else (spacingYPx - offset)
         }
 
         val gridColor = paperStyle.currentGridColor
@@ -352,7 +358,7 @@ object PaperBackgroundRenderer {
                         var y = firstDotY
                         while (y <= pageRect.bottom + 0.5f) {
                             drawPatternDot(gridColor, Offset(x, y), zoomLevel)
-                            y += spacingPx
+                            y += spacingYPx
                         }
                         x += spacingPx
                     }
@@ -367,7 +373,7 @@ object PaperBackgroundRenderer {
                     var y = firstDotY
                     while (y <= pageRect.bottom + 0.5f) {
                         drawLine(gridColor, Offset(pageRect.left, y), Offset(pageRect.right, y), patternLineWidth(zoomLevel))
-                        y += spacingPx
+                        y += spacingYPx
                     }
                 }
 
@@ -375,16 +381,16 @@ object PaperBackgroundRenderer {
                     var y = firstDotY
                     while (y <= pageRect.bottom + 0.5f) {
                         drawLine(gridColor, Offset(pageRect.left, y), Offset(pageRect.right, y), patternLineWidth(zoomLevel))
-                        y += spacingPx
+                        y += spacingYPx
                     }
                 }
 
                 PaperPattern.ISO_GRID -> {
-                    drawIsometricGrid(this, gridColor, spacingPx, pageRect, panOffset, zoomLevel)
+                    drawIsometricGrid(this, gridColor, paperStyle.patternHeightPx, pageRect, panOffset, zoomLevel)
                 }
 
                 PaperPattern.ISO_DOTS -> {
-                    drawIsometricDots(this, gridColor, spacingPx, pageRect, panOffset, zoomLevel)
+                    drawIsometricDots(this, gridColor, paperStyle.patternHeightPx, pageRect, panOffset, zoomLevel)
                 }
 
                 PaperPattern.BLANK -> { /* page background is enough */ }
@@ -404,11 +410,12 @@ object PaperBackgroundRenderer {
         val height    = drawScope.size.height
         val gridColor = paperStyle.currentGridColor
         val spacingPx = paperStyle.gridSpacingPx * zoomLevel
+        val spacingYPx = paperStyle.patternHeightPx * zoomLevel
 
-        if (spacingPx < 6f) return
+        if (spacingPx < 6f || spacingYPx < 6f) return
 
         val startX = (panOffset.x % spacingPx + spacingPx) % spacingPx
-        val startY = (panOffset.y % spacingPx + spacingPx) % spacingPx
+        val startY = (panOffset.y % spacingYPx + spacingYPx) % spacingYPx
         val screenRect = Rect(0f, 0f, width, height)
 
         with(drawScope) {
@@ -419,7 +426,7 @@ object PaperBackgroundRenderer {
                         var y = startY
                         while (y < height) {
                             drawPatternDot(gridColor, Offset(x, y), zoomLevel)
-                            y += spacingPx
+                            y += spacingYPx
                         }
                         x += spacingPx
                     }
@@ -433,21 +440,21 @@ object PaperBackgroundRenderer {
                     var y = startY
                     while (y < height) {
                         drawLine(gridColor, Offset(0f, y), Offset(width, y), patternLineWidth(zoomLevel))
-                        y += spacingPx
+                        y += spacingYPx
                     }
                 }
                 PaperPattern.LINES -> {
                     var y = startY
                     while (y < height) {
                         drawLine(gridColor, Offset(0f, y), Offset(width, y), patternLineWidth(zoomLevel))
-                        y += spacingPx
+                        y += spacingYPx
                     }
                 }
                 PaperPattern.ISO_GRID -> {
-                    drawIsometricGrid(this, gridColor, spacingPx, screenRect, panOffset, zoomLevel)
+                    drawIsometricGrid(this, gridColor, paperStyle.patternHeightPx, screenRect, panOffset, zoomLevel)
                 }
                 PaperPattern.ISO_DOTS -> {
-                    drawIsometricDots(this, gridColor, spacingPx, screenRect, panOffset, zoomLevel)
+                    drawIsometricDots(this, gridColor, paperStyle.patternHeightPx, screenRect, panOffset, zoomLevel)
                 }
                 PaperPattern.BLANK -> { /* solid bg only */ }
             }
@@ -457,83 +464,84 @@ object PaperBackgroundRenderer {
     // ── Isometric pattern helpers ──────────────────────────────────────────────
 
     /**
-     * Draws an equilateral triangle grid (isometric). The horizontal spacing is [spacingPx]
-     * and the vertical spacing is spacingPx * sqrt(3)/2 for equilateral triangles.
+     * Rnote's isometric grid (`gen_iso_grid_pattern`): equilateral triangles of side
+     * [spacing] (document units) standing on an upright edge — upright lines spacing·√3/2
+     * apart, crossed by two families at ±30° — anchored at the document origin as Rnote's
+     * pattern is. This used to lie on its side, triangles on a level edge, so the tablet's
+     * page was the laptop's turned by 90°; Snap Positions goes to these same corners.
      */
     private fun drawIsometricGrid(
         drawScope: DrawScope,
         color: Color,
-        spacingPx: Float,
+        spacing: Float,
         rect: Rect,
         panOffset: Offset,
         zoomLevel: Float
     ) {
         val lineWidth = patternLineWidth(zoomLevel)
-        val rowH = spacingPx * sqrt(3f) / 2f
-        val phaseX = ((panOffset.x % spacingPx) + spacingPx) % spacingPx
-        val phaseY = ((panOffset.y % rowH) + rowH) % rowH
+        val column = spacing * sqrt(3f) / 2f
+        val left = (rect.left - panOffset.x) / zoomLevel
+        val right = (rect.right - panOffset.x) / zoomLevel
+        val top = (rect.top - panOffset.y) / zoomLevel
+        val bottom = (rect.bottom - panOffset.y) / zoomLevel
 
         with(drawScope) {
-            // Horizontal lines
-            var y = rect.top + ((rect.top - phaseY) % rowH + rowH) % rowH
-            if (y > rect.top) y -= rowH
-            while (y <= rect.bottom + rowH) {
-                drawLine(color, Offset(rect.left, y), Offset(rect.right, y), lineWidth)
-                y += rowH
+            var k = ceil(left / column).toInt()
+            while (k * column <= right) {
+                val x = panOffset.x + k * column * zoomLevel
+                drawLine(color, Offset(x, rect.top), Offset(x, rect.bottom), lineWidth)
+                k++
             }
 
-            // Diagonal lines: \ direction
-            val diagCount = ((rect.width + rect.height) / spacingPx).toInt() + 4
-            for (i in -diagCount..diagCount) {
-                val baseX = rect.left + phaseX + i * spacingPx
-                val x1 = baseX
-                val y1 = rect.top
-                val x2 = baseX + (rect.height / rowH) * (spacingPx / 2f)
-                val y2 = rect.bottom
-                drawLine(color, Offset(x1, y1), Offset(x2, y2), lineWidth)
-            }
-
-            // Diagonal lines: / direction
-            for (i in -diagCount..diagCount) {
-                val baseX = rect.left + phaseX + i * spacingPx
-                val x1 = baseX
-                val y1 = rect.top
-                val x2 = baseX - (rect.height / rowH) * (spacingPx / 2f)
-                val y2 = rect.bottom
-                drawLine(color, Offset(x1, y1), Offset(x2, y2), lineWidth)
+            // The diagonals: y = ±x/√3 + n·spacing, every one that crosses the rectangle.
+            val slope = 1f / sqrt(3f)
+            for (dir in intArrayOf(1, -1)) {
+                val atLeft = dir * slope * left
+                val atRight = dir * slope * right
+                val nMin = floor((top - maxOf(atLeft, atRight)) / spacing).toInt()
+                val nMax = ceil((bottom - minOf(atLeft, atRight)) / spacing).toInt()
+                for (n in nMin..nMax) {
+                    drawLine(
+                        color,
+                        Offset(rect.left, panOffset.y + (atLeft + n * spacing) * zoomLevel),
+                        Offset(rect.right, panOffset.y + (atRight + n * spacing) * zoomLevel),
+                        lineWidth
+                    )
+                }
             }
         }
     }
 
     /**
-     * Draws dots at equilateral triangle vertices (isometric dot pattern).
+     * Rnote's isometric dots (`gen_iso_dots_pattern`): a hexagon on every corner of the
+     * isometric grid — columns spacing·√3/2 apart, every other one shifted down by half a
+     * step.
      */
     private fun drawIsometricDots(
         drawScope: DrawScope,
         color: Color,
-        spacingPx: Float,
+        spacing: Float,
         rect: Rect,
         panOffset: Offset,
         zoomLevel: Float
     ) {
-        val rowH = spacingPx * sqrt(3f) / 2f
-        val phaseX = ((panOffset.x % spacingPx) + spacingPx) % spacingPx
-        val phaseY = ((panOffset.y % rowH) + rowH) % rowH
+        val column = spacing * sqrt(3f) / 2f
+        val left = (rect.left - panOffset.x) / zoomLevel
+        val right = (rect.right - panOffset.x) / zoomLevel
+        val top = (rect.top - panOffset.y) / zoomLevel
+        val bottom = (rect.bottom - panOffset.y) / zoomLevel
 
         with(drawScope) {
-            var rowIdx = 0
-            var y = rect.top + ((rect.top - phaseY) % rowH + rowH) % rowH
-            if (y > rect.top) { y -= rowH; rowIdx-- }
-            while (y <= rect.bottom + 0.5f) {
-                val xOffset = if (rowIdx % 2 != 0) spacingPx / 2f else 0f
-                var x = rect.left + ((rect.left - phaseX - xOffset) % spacingPx + spacingPx) % spacingPx + xOffset
-                if (x > rect.left + spacingPx) x -= spacingPx
-                while (x <= rect.right + 0.5f) {
-                    drawIsoDotHexagon(color, Offset(x, y), zoomLevel)
-                    x += spacingPx
+            var k = ceil(left / column).toInt()
+            while (k * column <= right) {
+                val x = panOffset.x + k * column * zoomLevel
+                val shift = if (k % 2 != 0) spacing / 2f else 0f
+                var n = ceil((top - shift) / spacing).toInt()
+                while (n * spacing + shift <= bottom) {
+                    drawIsoDotHexagon(color, Offset(x, panOffset.y + (n * spacing + shift) * zoomLevel), zoomLevel)
+                    n++
                 }
-                y += rowH
-                rowIdx++
+                k++
             }
         }
     }

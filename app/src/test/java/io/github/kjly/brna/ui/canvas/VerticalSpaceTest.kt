@@ -60,4 +60,18 @@ class VerticalSpaceTest {
         assertEquals(40f, VerticalSpace.offset(100f, 140f), 0f)
         assertEquals(-30f, VerticalSpace.offset(100f, 70f), 0f)
     }
+
+    @Test
+    fun `with Snap Positions on the room made is whole steps of the pattern`() {
+        val lines = io.github.kjly.brna.model.PaperStyle(
+            pattern = io.github.kjly.brna.model.PaperPattern.LINES, customGridSpacingPx = 20f
+        )
+        val snap = { v: Float ->
+            io.github.kjly.brna.model.SnapPositions.snap(androidx.compose.ui.geometry.Offset(300f, v), lines).y
+        }
+        assertEquals(40f, VerticalSpace.offset(100f, 147f, snap), 1e-3f)
+        assertEquals(-20f, VerticalSpace.offset(100f, 77f, snap), 1e-3f)
+        // Close to the start it still goes back to no room at all.
+        assertEquals(0f, VerticalSpace.offset(100f, 106f, snap), 0f)
+    }
 }

@@ -23,8 +23,11 @@ import io.github.kjly.brna.model.TextFormatting
 import io.github.kjly.brna.model.TextToggle
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Editing for the desktop elements this app used to only display — text, shapes, images,
@@ -468,24 +471,105 @@ object NativeEditing {
         fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT
     ): NativeShapeElement? {
         if (abs(x2 - x1) < 1f && abs(y2 - y1) < 1f) return null
-        fun n(v: Float) = String.format(Locale.ROOT, "%.3f", v)
-        fun point(x: Float, y: Float) = "[${n(x)},${n(y)}]"
-        fun affine(cx: Float, cy: Float) = """{"affine":[1.0,0.0,0.0,0.0,1.0,0.0,${n(cx)},${n(cy)},1.0]}"""
         val cx = (x1 + x2) / 2f; val cy = (y1 + y2) / 2f
         val hx = abs(x2 - x1) / 2f; val hy = abs(y2 - y1) / 2f
         val shape = when (kind) {
-            ShapeKind.LINE -> """{"line":{"start":${point(x1, y1)},"end":${point(x2, y2)}}}"""
-            ShapeKind.ARROW -> """{"arrow":{"start":${point(x1, y1)},"tip":${point(x2, y2)}}}"""
+            ShapeKind.LINE -> """{"line":{"start":${pointJson(x1, y1)},"end":${pointJson(x2, y2)}}}"""
+            ShapeKind.ARROW -> """{"arrow":{"start":${pointJson(x1, y1)},"tip":${pointJson(x2, y2)}}}"""
             ShapeKind.RECTANGLE ->
-                """{"rect":{"cuboid":{"half_extents":${point(hx, hy)}},"transform":${affine(cx, cy)}}}"""
+                """{"rect":{"cuboid":{"half_extents":${pointJson(hx, hy)}},"transform":${affineText(1f, 0f, cx, cy)}}}"""
             ShapeKind.ELLIPSE ->
-                """{"ellipse":{"radii":${point(hx, hy)},"transform":${affine(cx, cy)}}}"""
+                """{"ellipse":{"radii":${pointJson(hx, hy)},"transform":${affineText(1f, 0f, cx, cy)}}}"""
             // Several lines each; see ShapeBuilders, whose lines come back through here.
-            ShapeKind.COORD_SYSTEM_2D, ShapeKind.COORD_SYSTEM_3D, ShapeKind.QUADRANT, ShapeKind.GRID ->
-                return null
+            ShapeKind.COORD_SYSTEM_2D, ShapeKind.COORD_SYSTEM_3D, ShapeKind.QUADRANT, ShapeKind.GRID -> return null
+            // Several strokes of the pen each; see ShapeDraft, which ends in the ones below.
+            ShapeKind.POLYLINE, ShapeKind.POLYGON, ShapeKind.QUADBEZ, ShapeKind.CUBBEZ, ShapeKind.FOCI_ELLIPSE -> return null
         }
-        fun color(c: RnoteNativeColor) = """{"r":${n(c.r)},"g":${n(c.g)},"b":${n(c.b)},"a":${n(c.a)}}"""
-        val style = """{"smooth":{"stroke_width":${n(strokeWidth)},"stroke_color":${color(color)},""" +
+        return shapeElement(shape, color, strokeWidth, fillColor)
+    }
+
+    /**
+     * Rnote's `Polyline` — or, [closed], its `Polygon` — through [points], the first one
+     * its start. Null for fewer corners than the shape needs: two for a polyline, three
+     * for a polygon.
+     */
+    fun createPolyShape(
+        closed: Boolean,
+        points: List<Pair<Float, Float>>,
+        color: RnoteNativeColor,
+        strokeWidth: Float,
+        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT
+    ): NativeShapeElement? {
+        if (points.size < (if (closed) 3 else 2)) return null
+        val (sx, sy) = points.first()
+        val path = points.drop(1).joinToString(",") { (x, y) -> pointJson(x, y) }
+        val name = if (closed) "polygon" else "polyline"
+        return shapeElement("""{"$name":{"start":${pointJson(sx, sy)},"path":[$path]}}""", color, strokeWidth, fillColor)
+    }
+
+    /**
+     * Rnote's quadratic Bézier from three points — start, control point, end — or its
+     * cubic one from four; null for any other number.
+     */
+    fun createCurve(
+        points: List<Pair<Float, Float>>,
+        color: RnoteNativeColor,
+        strokeWidth: Float,
+        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT
+    ): NativeShapeElement? {
+        val p = points.map { (x, y) -> pointJson(x, y) }
+        val shape = when (p.size) {
+            3 -> """{"quadbez":{"start":${p[0]},"cp":${p[1]},"end":${p[2]}}}"""
+            4 -> """{"cubbez":{"start":${p[0]},"cp1":${p[1]},"cp2":${p[2]},"end":${p[3]}}}"""
+            else -> return null
+        }
+        return shapeElement(shape, color, strokeWidth, fillColor)
+    }
+
+    /**
+     * Rnote's `Ellipse::from_foci_and_point`: the ellipse through ([px], [py]) whose foci
+     * are ([f1x], [f1y]) and ([f2x], [f2y]), turned to lie along them. It is an ordinary
+     * ellipse in the file, radii about a transformed centre, as Rnote writes it.
+     */
+    fun createFociEllipse(
+        f1x: Float, f1y: Float, f2x: Float, f2y: Float, px: Float, py: Float,
+        color: RnoteNativeColor,
+        strokeWidth: Float,
+        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT
+    ): NativeShapeElement? {
+        val sum = hypot(px - f1x, py - f1y) + hypot(px - f2x, py - f2y)
+        val d = hypot(f1x - f2x, f1y - f2y) * 0.5f
+        var semimajor = sum * 0.5f
+        // The pen can't be closer to both foci than they are to each other; rounding can.
+        var semiminor = sqrt((semimajor * semimajor - d * d).coerceAtLeast(0f))
+        if (semimajor == 0f) semimajor = 1f
+        if (semiminor == 0f) semiminor = 1f
+        val angle = atan2(f2y - f1y, f2x - f1x)
+        val shape = """{"ellipse":{"radii":${pointJson(semimajor, semiminor)},""" +
+            """"transform":${affineText(cos(angle), sin(angle), (f1x + f2x) / 2f, (f1y + f2y) / 2f)}}}"""
+        return shapeElement(shape, color, strokeWidth, fillColor)
+    }
+
+    private fun num(v: Float) = String.format(Locale.ROOT, "%.3f", v)
+    private fun pointJson(x: Float, y: Float) = "[${num(x)},${num(y)}]"
+
+    /** A turn by the angle of cosine [c] and sine [s], then a move to ([tx], [ty]): Rnote's column-major affine. */
+    private fun affineText(c: Float, s: Float, tx: Float, ty: Float) =
+        """{"affine":[${num(c)},${num(s)},0.0,${num(0f - s)},${num(c)},0.0,${num(tx)},${num(ty)},1.0]}"""
+
+    /**
+     * [shape] as a shape stroke with the style Rnote's shaper gives one, built as the JSON
+     * desktop Rnote writes and read back through the normal parser, so a shape drawn here
+     * is exactly what the file will hold.
+     */
+    private fun shapeElement(
+        shape: String,
+        color: RnoteNativeColor,
+        strokeWidth: Float,
+        fillColor: RnoteNativeColor
+    ): NativeShapeElement? {
+        fun color(c: RnoteNativeColor) = """{"r":${num(c.r)},"g":${num(c.g)},"b":${num(c.b)},"a":${num(c.a)}}"""
+        val style = """{"smooth":{"stroke_width":${num(strokeWidth)},"stroke_color":${color(color)},""" +
             """"fill_color":${color(fillColor)},"pressure_curve":"const",""" +
             """"line_style":"solid","line_cap":"straight"}}"""
         return RnoteNativeParser.parseElementJson("""{"shapestroke":{"shape":$shape,"style":$style}}""")
@@ -641,7 +725,9 @@ object NativeEditing {
         x: Float, y: Float,
         fontSize: Float,
         color: RnoteNativeColor,
-        maxWidth: Float?
+        maxWidth: Float?,
+        /** Rnote's `TextAlignment` name: "start", "center", "end" or "fill". */
+        alignment: String = "start"
     ): NativeTextElement? {
         if (text.isBlank()) return null
         val style = JsonObject().apply {
@@ -652,7 +738,7 @@ object NativeEditing {
             add("color", colorJson(color))
             if (maxWidth != null) addProperty("max_width", round3(maxWidth.toDouble()))
             else add("max_width", JsonNull.INSTANCE)
-            addProperty("alignment", "start")
+            addProperty("alignment", alignment)
             add("ranged_text_attributes", JsonArray())
         }
         val obj = JsonObject().apply {
@@ -661,6 +747,18 @@ object NativeEditing {
             add("text_style", style)
         }
         return parseText(obj)
+    }
+
+    /**
+     * [el] aligned [alignment] — "start", "center", "end" or "fill" — everything else kept:
+     * Rnote's typewriter alignment buttons, which set the box's `text_style.alignment`.
+     */
+    fun withAlignment(el: NativeTextElement, alignment: String): NativeTextElement {
+        val obj = el.raw?.takeIf { it.isJsonObject }?.deepCopy()?.asJsonObject ?: textJson(el)
+        val style = obj.get("text_style")?.takeIf { it.isJsonObject }?.asJsonObject
+            ?: return el.copy(alignment = alignment)
+        style.addProperty("alignment", alignment)
+        return parseText(obj) ?: el.copy(alignment = alignment)
     }
 
     /**

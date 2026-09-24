@@ -49,6 +49,12 @@ class KeyboardShortcutsTest {
     }
 
     @Test
+    fun `Ctrl+Shift+P switches Snap Positions, as in Rnote's canvas menu`() {
+        assertEquals(Shortcut.SNAP_POSITIONS, ctrl('p', shift = true))
+        assertEquals(Shortcut.PRINT, ctrl('p'))
+    }
+
+    @Test
     fun `tabs as in Rnote's tab bar`() {
         assertEquals(Shortcut.NEW, ctrl('t'))
         assertEquals(Shortcut.NEW, ctrl('n'))

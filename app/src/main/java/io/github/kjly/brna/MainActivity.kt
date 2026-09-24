@@ -1746,7 +1746,7 @@ class MainActivity : ComponentActivity() {
                                 onToggleFingerDrawing = {
                                     toolConfig = toolConfig.copy(allowFingerDrawing = !toolConfig.allowFingerDrawing)
                                     SettingsManager.save(
-                                        this, paperStyle, toolConfig.allowFingerDrawing
+                                        this@MainActivity, paperStyle, toolConfig.allowFingerDrawing
                                     )
                                 },
                                 onSaveDocument = saveDocument,

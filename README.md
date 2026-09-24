@@ -59,6 +59,11 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   a round trip. Autosave, crash recovery, a warning before overwriting a file
   that changed elsewhere (save a copy, overwrite, or load the other version), a
   list of recent notes, and a page overview with thumbnails.
+- **Tabs**: several notes open at once, as in Rnote, each with its own undo
+  history and view. Opening a note gives it a tab (or shows its tab if it is
+  open already); a tab being left is saved first, and one that can't be is kept
+  in crash recovery, which brings every unsaved tab back. Ctrl+T / Ctrl+N,
+  Ctrl+W, Ctrl+Tab / Ctrl+Shift+Tab.
 - **Workspaces**: Rnote's workspace browser as a side panel — folders on the
   device or in Google Drive, each with a name and a color, listed as Rnote lists
   them. Open notes, drop PDFs and pictures into the open note, make new notes
@@ -84,7 +89,7 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
 Textured brush style.
 
 **Not built**: layers (the stroke list is flat), the Tools pen's other styles
-(Offset Camera, Zoom — pan and pinch do that here), document tabs.
+(Offset Camera, Zoom — pan and pinch do that here).
 
 ## Screenshots
 

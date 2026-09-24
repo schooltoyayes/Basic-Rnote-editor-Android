@@ -85,8 +85,8 @@ fun WorkspaceBrowser(
     workspaces: List<Workspaces.Workspace>,
     /** The uri of the workspace shown. */
     selected: String?,
-    /** The open note, marked in the list wherever it was opened from. */
-    currentDocument: Uri?,
+    /** The notes open in tabs, marked in the list wherever they were opened from. */
+    openDocuments: List<Uri>,
     /** Changed by the caller when the folder may have changed: a save, a new note. */
     refreshKey: Int,
     /**
@@ -102,15 +102,16 @@ fun WorkspaceBrowser(
     /** A note to open, or a PDF or picture to put into the open note. */
     onOpen: (Uri, FolderListing.Kind) -> Unit,
     onNewNote: (tree: Uri, folderId: String, name: String) -> Unit,
-    /** The open note was renamed here; its uri and name now. */
-    onCurrentRenamed: (Uri, String) -> Unit,
-    /** The open note's file was deleted here. */
-    onCurrentDeleted: () -> Unit,
+    /** A note open in a tab was renamed here: its uri before, and its uri and name now. */
+    onOpenRenamed: (Uri, Uri, String) -> Unit,
+    /** A note open in a tab had its file deleted here. */
+    onOpenDeleted: (Uri) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    fun isOpen(uri: Uri) = openDocuments.any { FolderBrowser.sameDocument(uri, it) }
     val workspace = workspaces.firstOrNull { it.uri == selected } ?: workspaces.firstOrNull()
     val tree = workspace?.let { Uri.parse(it.uri) }
 
@@ -259,7 +260,7 @@ fun WorkspaceBrowser(
                             val uri = FolderBrowser.uriOf(tree, entry.id)
                             EntryRow(
                                 entry = entry,
-                                isOpen = FolderBrowser.sameDocument(uri, currentDocument),
+                                isOpen = isOpen(uri),
                                 onClick = {
                                     if (entry.kind == FolderListing.Kind.FOLDER) {
                                         onPathChange(path + (entry.id to entry.name))
@@ -310,10 +311,10 @@ fun WorkspaceBrowser(
                         val newName = if (entry.kind == FolderListing.Kind.FOLDER) name.trim()
                             else FolderListing.renamed(entry.name, name)
                         val oldUri = FolderBrowser.uriOf(tree ?: return@NameDialog, entry.id)
-                        val wasOpen = FolderBrowser.sameDocument(oldUri, currentDocument)
+                        val wasOpen = isOpen(oldUri)
                         scope.launch {
                             val renamed = withContext(Dispatchers.IO) { FolderBrowser.rename(context, oldUri, newName) }
-                            if (renamed != null && wasOpen) onCurrentRenamed(renamed, newName)
+                            if (renamed != null && wasOpen) onOpenRenamed(oldUri, renamed, newName)
                             localRefresh++
                         }
                     }
@@ -337,10 +338,10 @@ fun WorkspaceBrowser(
                 TextButton(onClick = {
                     deleting = null
                     val uri = FolderBrowser.uriOf(tree ?: return@TextButton, entry.id)
-                    val wasOpen = FolderBrowser.sameDocument(uri, currentDocument)
+                    val wasOpen = isOpen(uri)
                     scope.launch {
                         val gone = withContext(Dispatchers.IO) { FolderBrowser.delete(context, uri) }
-                        if (gone && wasOpen) onCurrentDeleted()
+                        if (gone && wasOpen) onOpenDeleted(uri)
                         localRefresh++
                     }
                 }) { Text("Delete", color = BrnaColors.DestructiveTint) }

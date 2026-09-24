@@ -5,6 +5,7 @@ import android.view.KeyEvent
 /** What a keyboard shortcut does; see [KeyboardShortcuts]. */
 enum class Shortcut {
     OPEN, SAVE, SAVE_AS, NEW, PRINT, IMPORT, CLEAR, PAGE_OVERVIEW,
+    CLOSE_TAB, NEXT_TAB, PREVIOUS_TAB,
     UNDO, REDO,
     COPY, CUT, PASTE, SELECT_ALL, DUPLICATE, DELETE_SELECTION, DESELECT,
     ZOOM_IN, ZOOM_OUT, ZOOM_RESET,
@@ -16,9 +17,11 @@ enum class Shortcut {
 
 /**
  * Desktop Rnote's keyboard shortcuts, for a keyboard on the tablet: the accelerators in
- * rnote-ui's `appwindow/actions.rs` and the selector's own keys (Delete, Escape, Ctrl+A,
- * Ctrl+D). Ctrl+Y redoes as well, as it does in most Windows programs. A text box being
- * typed into takes its own keys first — Ctrl+C there copies text, not the selection.
+ * rnote-ui's `appwindow/actions.rs`, the selector's own keys (Delete, Escape, Ctrl+A,
+ * Ctrl+D) and its tab bar's Ctrl+Tab. Ctrl+Y redoes as well, as it does in most Windows
+ * programs, and Ctrl+N opens a new tab as Ctrl+T does — a new window, which is Ctrl+N
+ * in Rnote, is a new tab here. A text box being typed into takes its own keys first —
+ * Ctrl+C there copies text, not the selection.
  */
 object KeyboardShortcuts {
 
@@ -39,6 +42,7 @@ object KeyboardShortcuts {
             }
         }
         when (keyCode) {
+            KeyEvent.KEYCODE_TAB -> return if (shift) Shortcut.PREVIOUS_TAB else Shortcut.NEXT_TAB
             KeyEvent.KEYCODE_NUMPAD_ADD -> return Shortcut.ZOOM_IN
             KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> return Shortcut.ZOOM_OUT
             KeyEvent.KEYCODE_NUMPAD_0 -> return Shortcut.ZOOM_RESET
@@ -62,7 +66,8 @@ object KeyboardShortcuts {
         return when (c) {
             'o' -> Shortcut.OPEN
             's' -> Shortcut.SAVE
-            'n' -> Shortcut.NEW
+            'n', 't' -> Shortcut.NEW
+            'w' -> Shortcut.CLOSE_TAB
             'p' -> Shortcut.PRINT
             'l' -> Shortcut.CLEAR
             'z' -> Shortcut.UNDO

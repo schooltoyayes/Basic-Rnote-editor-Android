@@ -49,6 +49,17 @@ class KeyboardShortcutsTest {
     }
 
     @Test
+    fun `tabs as in Rnote's tab bar`() {
+        assertEquals(Shortcut.NEW, ctrl('t'))
+        assertEquals(Shortcut.NEW, ctrl('n'))
+        assertEquals(Shortcut.CLOSE_TAB, ctrl('w'))
+        assertEquals(Shortcut.NEXT_TAB, KeyboardShortcuts.of(null, KeyEvent.KEYCODE_TAB, ctrl = true, shift = false))
+        assertEquals(Shortcut.PREVIOUS_TAB, KeyboardShortcuts.of(null, KeyEvent.KEYCODE_TAB, ctrl = true, shift = true))
+        // Tab alone moves the focus, as it always does.
+        assertNull(KeyboardShortcuts.of(null, KeyEvent.KEYCODE_TAB, ctrl = false, shift = false))
+    }
+
+    @Test
     fun `Ctrl+I alone is left to the text box, where it is italic`() {
         assertNull(ctrl('i'))
         assertNull(ctrl('b'))

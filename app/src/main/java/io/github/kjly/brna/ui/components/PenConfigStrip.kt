@@ -28,6 +28,10 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.CropSquare
+import androidx.compose.material.icons.filled.FormatBold
+import androidx.compose.material.icons.filled.FormatItalic
+import androidx.compose.material.icons.filled.FormatStrikethrough
+import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.Height
 import androidx.compose.material.icons.filled.Highlight
 import androidx.compose.material.icons.filled.HorizontalRule
@@ -66,6 +70,7 @@ import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.BrushSizePreset
 import io.github.kjly.brna.model.EraserMode
 import io.github.kjly.brna.model.PenFavorite
+import io.github.kjly.brna.model.TextToggle
 import io.github.kjly.brna.model.brushFavorite
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
@@ -103,7 +108,11 @@ fun PenConfigStrip(
     onApplyFavorite: (PenFavorite) -> Unit = {},
     /** Keep the brush as it is set now in this slot. */
     onStoreFavorite: (Int) -> Unit = {},
-    onClearFavorite: (Int) -> Unit = {}
+    onClearFavorite: (Int) -> Unit = {},
+    /** The Typewriter's formatting switches that are on, and whether a text box is being typed into. */
+    textFormats: Set<TextToggle> = emptySet(),
+    textFormatsEnabled: Boolean = false,
+    onToggleTextFormat: (TextToggle) -> Unit = {}
 ) {
     Surface(
         modifier = modifier.width(60.dp),
@@ -128,7 +137,9 @@ fun PenConfigStrip(
                     toolConfig.lockAspectRatio, onLockAspectRatioToggled
                 )
                 ToolType.SHAPER -> ShaperConfigPage(toolConfig, onShapeKindSelected, onSnapAnglesToggled, onSizeChanged)
-                ToolType.TYPEWRITER -> TypewriterConfigPage(toolConfig, onSizeChanged)
+                ToolType.TYPEWRITER -> TypewriterConfigPage(
+                    toolConfig, onSizeChanged, textFormats, textFormatsEnabled, onToggleTextFormat
+                )
                 ToolType.TOOLS -> ToolsConfigPage()
             }
         }
@@ -336,7 +347,13 @@ private fun EraserConfigPage(
 // ── Typewriter ───────────────────────────────────────────────────────────
 
 @Composable
-private fun TypewriterConfigPage(toolConfig: ToolConfig, onSizeChanged: (Float) -> Unit) {
+private fun TypewriterConfigPage(
+    toolConfig: ToolConfig,
+    onSizeChanged: (Float) -> Unit,
+    formats: Set<TextToggle>,
+    formatsEnabled: Boolean,
+    onToggleFormat: (TextToggle) -> Unit
+) {
     Text(
         text = "Tap to\ntype",
         color = BrnaColors.TextSecondaryOnPanel,
@@ -346,6 +363,11 @@ private fun TypewriterConfigPage(toolConfig: ToolConfig, onSizeChanged: (Float) 
         modifier = Modifier.padding(bottom = 4.dp)
     )
     StripDivider()
+    // Rnote's typewriter page: on the selection, or for what is typed next.
+    for ((toggle, icon, label) in TEXT_FORMATS) {
+        StripIconToggle(icon, label, toggle in formats, formatsEnabled) { onToggleFormat(toggle) }
+    }
+    StripDivider()
     // Font size, not a stroke width: small, Rnote's default 32, and large.
     val presets = listOf(
         BrushSizePreset.SMALL to 20f,
@@ -354,6 +376,14 @@ private fun TypewriterConfigPage(toolConfig: ToolConfig, onSizeChanged: (Float) 
     )
     StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = 128f, onSizeChanged, title = "Font Size")
 }
+
+/** The typewriter's formatting switches, with their keyboard shortcuts where Rnote has one. */
+private val TEXT_FORMATS = listOf(
+    Triple(TextToggle.BOLD, Icons.Default.FormatBold, "Bold (Ctrl+B)"),
+    Triple(TextToggle.ITALIC, Icons.Default.FormatItalic, "Italic (Ctrl+I)"),
+    Triple(TextToggle.UNDERLINE, Icons.Default.FormatUnderlined, "Underline (Ctrl+U)"),
+    Triple(TextToggle.STRIKETHROUGH, Icons.Default.FormatStrikethrough, "Strikethrough")
+)
 
 // ── Selector ─────────────────────────────────────────────────────────────
 

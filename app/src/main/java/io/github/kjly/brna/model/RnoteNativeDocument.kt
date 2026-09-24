@@ -65,6 +65,8 @@ data class NativeTextElement(
     val italic: Boolean = false,
     /** Rnote's `TextAlignment`: "start", "center", "end" or "fill". */
     val alignment: String = "start",
+    /** Bold, italic, underlined … stretches over the box's own style: Rnote's `ranged_text_attributes`. */
+    val ranges: List<RangedTextAttr> = emptyList(),
     /**
      * The element exactly as the file had it. A save writes this back, and editing the
      * text changes it in place (NativeEditing.withText) — so bold ranges, underlines and

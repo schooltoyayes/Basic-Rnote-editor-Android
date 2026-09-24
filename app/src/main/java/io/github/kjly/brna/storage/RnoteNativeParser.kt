@@ -23,9 +23,11 @@ import io.github.kjly.brna.model.NativeTextElement
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PathOp
 import io.github.kjly.brna.model.PathShape
+import io.github.kjly.brna.model.RangedTextAttr
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RnoteNativeDocument
+import io.github.kjly.brna.model.TextAttr
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.util.zip.GZIPInputStream
@@ -451,6 +453,7 @@ object RnoteNativeParser {
         var weight = 500
         var italic = false
         var alignment = "start"
+        var ranges = emptyList<RangedTextAttr>()
         val transform = floatArrayOf(1f, 0f, 0f, 1f, 0f, 0f)
         var minX = 0f; var minY = 0f; var maxX = 0f; var maxY = 0f
 
@@ -472,6 +475,7 @@ object RnoteNativeParser {
                             "font_weight" -> weight = reader.nextInt()
                             "font_style"  -> italic = reader.nextString().equals("italic", ignoreCase = true)
                             "alignment"   -> alignment = reader.nextString().lowercase()
+                            "ranged_text_attributes" -> ranges = parseRangedTextAttributes(reader)
                             else          -> reader.skipValue()
                         }
                     }
@@ -510,8 +514,62 @@ object RnoteNativeParser {
         }
         return NativeTextElement(
             text, family, size, color, transform, minX, minY, maxX, maxY,
-            maxWidth = maxWidth, fontWeight = weight, italic = italic, alignment = alignment
+            maxWidth = maxWidth, fontWeight = weight, italic = italic, alignment = alignment,
+            ranges = ranges
         )
+    }
+
+    /**
+     * Rnote's `ranged_text_attributes`: `[{"range": {"start", "end"}, "attribute": {kind: value}}]`,
+     * byte offsets into the text. An attribute of a kind this app doesn't know is skipped;
+     * it stays in the element's raw JSON all the same.
+     */
+    private fun parseRangedTextAttributes(reader: JsonReader): List<RangedTextAttr> {
+        val out = mutableListOf<RangedTextAttr>()
+        reader.beginArray()
+        while (reader.hasNext()) {
+            var start = -1
+            var end = -1
+            var attr: TextAttr? = null
+            reader.beginObject()
+            while (reader.hasNext()) {
+                when (reader.nextName()) {
+                    "range" -> {
+                        reader.beginObject()
+                        while (reader.hasNext()) {
+                            when (reader.nextName()) {
+                                "start" -> start = reader.nextInt()
+                                "end" -> end = reader.nextInt()
+                                else -> reader.skipValue()
+                            }
+                        }
+                        reader.endObject()
+                    }
+                    "attribute" -> {
+                        reader.beginObject()
+                        while (reader.hasNext()) {
+                            attr = when (reader.nextName()) {
+                                "font_family" -> TextAttr.Family(reader.nextString())
+                                "font_size" -> TextAttr.Size(reader.nextDouble().toFloat())
+                                "font_weight" -> TextAttr.Weight(reader.nextInt())
+                                "text_color" -> TextAttr.Color(parseColor(reader))
+                                "font_style" -> TextAttr.Italic(reader.nextString().equals("italic", ignoreCase = true))
+                                "underline" -> TextAttr.Underline(reader.nextBoolean())
+                                "strikethrough" -> TextAttr.Strikethrough(reader.nextBoolean())
+                                else -> { reader.skipValue(); null }
+                            }
+                        }
+                        reader.endObject()
+                    }
+                    else -> reader.skipValue()
+                }
+            }
+            reader.endObject()
+            val a = attr
+            if (a != null && start >= 0 && end > start) out += RangedTextAttr(start, end, a)
+        }
+        reader.endArray()
+        return out
     }
 
     // ── BitmapImage ───────────────────────────────────────────────────────────

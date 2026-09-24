@@ -16,9 +16,11 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
@@ -31,6 +33,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,9 +43,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,9 +79,12 @@ import io.github.kjly.brna.model.brushFavorite
 import io.github.kjly.brna.model.withFavorite
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
+import io.github.kjly.brna.model.TextFormatting
+import io.github.kjly.brna.model.TextToggle
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.ViewportState
+import io.github.kjly.brna.render.NativeElementRenderer
 import io.github.kjly.brna.storage.DocumentUri
 import io.github.kjly.brna.storage.FileManager
 import io.github.kjly.brna.storage.ImageImport
@@ -97,7 +111,8 @@ import io.github.kjly.brna.ui.components.PenPicker
 import io.github.kjly.brna.ui.components.RnoteTopBar
 import io.github.kjly.brna.ui.components.PageOverviewDialog
 import io.github.kjly.brna.ui.components.RecentFilesDialog
-import io.github.kjly.brna.ui.components.TextEntryDialog
+import io.github.kjly.brna.ui.components.InlineTextEditor
+import io.github.kjly.brna.ui.components.TextBoxStyle
 import io.github.kjly.brna.ui.theme.BabyRnoteTheme
 
 /**
@@ -142,8 +157,24 @@ private const val IMPORT_OFFSET = 32f
 /** How long a shared file is kept for the app it went to, in ms. */
 private const val SHARED_FILE_LIFETIME_MS = 60 * 60 * 1000L
 
-/** Where the Typewriter was tapped, and the text box it hit there, if any. */
-private class TextEditTarget(val x: Float, val y: Float, val existing: NativeTextElement?)
+/**
+ * The text box the Typewriter is typing into: where a new one goes (or where the box
+ * stands), the box as it is in the document now — null until the first character, and
+ * again once everything is deleted — the last box there was, to type back into, the text
+ * field's value, and what the switches set for text typed next.
+ */
+private data class TextSession(
+    /** New for every box tapped, so the text field starts afresh. */
+    val id: Int,
+    val x: Float,
+    val y: Float,
+    val element: NativeTextElement?,
+    val template: NativeTextElement?,
+    val value: TextFieldValue,
+    val pending: Map<TextToggle, Boolean> = emptyMap(),
+    /** Whether this box's undo step is on the stack yet: one per box, however much is typed. */
+    val undoTaken: Boolean = false
+)
 
 class MainActivity : ComponentActivity() {
 
@@ -804,7 +835,10 @@ class MainActivity : ComponentActivity() {
             var documentNativeElements by remember { mutableStateOf<List<NativeCanvasElement>>(emptyList()) }
             // Desktop elements (text, shapes, images) the selector holds, beside selectedStrokes.
             val selectedNatives = remember { mutableStateListOf<NativeCanvasElement>() }
-            var textEditTarget by remember { mutableStateOf<TextEditTarget?>(null) }
+            var textSession by remember { mutableStateOf<TextSession?>(null) }
+            /** The canvas's top edge in the window, to find how much of it the keyboard covers. */
+            var canvasTop by remember { mutableFloatStateOf(0f) }
+            var textSessionCount by remember { mutableIntStateOf(0) }
             var showRecent by remember { mutableStateOf(false) }
             var showPages by remember { mutableStateOf(false) }
             val snapshot = { DocSnapshot(strokes.toList(), documentNativeElements) }
@@ -842,6 +876,7 @@ class MainActivity : ComponentActivity() {
 
             // ── Document load handler ─────────────────────────────────────────────
             onDocumentLoaded = { doc ->
+                textSession = null
                 strokes.clear()
                 undoStack.clear()
                 redoStack.clear()
@@ -884,6 +919,7 @@ class MainActivity : ComponentActivity() {
             // it belongs to the document now, so whatever an opened file brought with it
             // must not follow the user into their next note.
             val startNewDocument = {
+                textSession = null
                 paperStyle = SettingsManager.loadPaperStyle(this)
                 strokes.clear()
                 undoStack.clear()
@@ -992,6 +1028,91 @@ class MainActivity : ComponentActivity() {
                 isModified = true
             }
 
+            // ── Typewriter ────────────────────────────────────────────────────────
+            // Another tool, or a favorite pen picked, ends the typing.
+            LaunchedEffect(toolConfig.activeTool) {
+                if (toolConfig.activeTool != ToolType.TYPEWRITER) textSession = null
+            }
+            /** [old] replaced by [new] in the document, in its place; either may be null. */
+            val putText = { old: NativeTextElement?, new: NativeTextElement? ->
+                documentNativeElements = when {
+                    old != null && new != null -> documentNativeElements.map { if (it === old) new else it }
+                    new != null -> documentNativeElements + new
+                    old != null -> documentNativeElements.filter { it !== old }
+                    else -> documentNativeElements
+                }
+            }
+            val onTextChange: (TextFieldValue) -> Unit = change@{ value ->
+                val session = textSession ?: return@change
+                val old = session.value
+                if (value.text == old.text) {
+                    // The cursor moved: the switches go back to showing what is there.
+                    val moved = value.selection != old.selection
+                    textSession = session.copy(value = value, pending = if (moved) emptyMap() else session.pending)
+                    return@change
+                }
+                val base = session.element ?: session.template
+                var edited = if (base != null) {
+                    // Blank text removes the box, as emptying one does in Rnote.
+                    NativeEditing.withText(base, value.text)
+                } else {
+                    val c = toolConfig.penColor
+                    NativeEditing.createText(
+                        value.text, session.x, session.y, toolConfig.textSize,
+                        RnoteNativeColor(c.red, c.green, c.blue, c.alpha),
+                        NativeEditing.typewriterWrapWidth(session.x, paperStyle.effectivePageWidthPx)
+                    )
+                }
+                if (edited == null && session.element == null) {
+                    // Only spaces typed into a box that isn't there yet: nothing to keep so far.
+                    textSession = session.copy(value = value)
+                    return@change
+                }
+                if (!session.undoTaken) {
+                    undoStack.add(snapshot())
+                    redoStack.clear()
+                }
+                if (edited != null && session.pending.isNotEmpty()) {
+                    val (from, to) = TextFormatting.changedRange(old.text, value.text)
+                    if (to > from) {
+                        for ((toggle, on) in session.pending) {
+                            edited = NativeEditing.setFormat(edited!!, from, to, toggle, on)
+                        }
+                    }
+                }
+                putText(session.element, edited)
+                isModified = true
+                textSession = session.copy(element = edited, template = edited ?: base, value = value, undoTaken = true)
+            }
+            /** Bold, italic, underline or strikethrough: on the selection, or else for what is typed next. */
+            val onToggleTextFormat: (TextToggle) -> Unit = { toggle ->
+                val session = textSession
+                if (session != null) {
+                    val selection = session.value.selection
+                    val element = session.element
+                    if (!selection.collapsed && element != null) {
+                        if (!session.undoTaken) {
+                            undoStack.add(snapshot())
+                            redoStack.clear()
+                        }
+                        val updated = NativeEditing.toggleFormat(element, selection.min, selection.max, toggle)
+                        putText(element, updated)
+                        isModified = true
+                        textSession = session.copy(element = updated, template = updated, undoTaken = true)
+                    } else {
+                        val shown = session.pending[toggle]
+                            ?: (toggle in TextFormatting.togglesAt(element, selection.min, selection.max))
+                        textSession = session.copy(pending = session.pending + (toggle to !shown))
+                    }
+                }
+            }
+            /** What the switches show: set for text typed next, or else what the selection or cursor has. */
+            val textFormats: Set<TextToggle> = textSession?.let { session ->
+                val selection = session.value.selection
+                val there = TextFormatting.togglesAt(session.element, selection.min, selection.max)
+                TextToggle.entries.filterTo(mutableSetOf()) { session.pending[it] ?: (it in there) }
+            } ?: emptySet()
+
             // ── Share ─────────────────────────────────────────────────────────────
             val shareNote: (ShareTarget) -> Unit = { target ->
                 val document = NoteDocument(
@@ -1045,6 +1166,8 @@ class MainActivity : ComponentActivity() {
 
             // ── S-Pen Air Action remote shortcuts ─────────────────────────────────
             performUndoAction = {
+                // The box being typed into may be what comes undone.
+                textSession = null
                 // Gated on undoStack, not `strokes` — an empty canvas can still have undo
                 // history (e.g. right after Clear Canvas), and that must stay undoable.
                 if (undoStack.isNotEmpty()) {
@@ -1055,6 +1178,7 @@ class MainActivity : ComponentActivity() {
             }
 
             performRedoAction = {
+                textSession = null
                 if (redoStack.isNotEmpty()) {
                     undoStack.add(snapshot())
                     restore(redoStack.removeAt(redoStack.lastIndex))
@@ -1139,6 +1263,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onExport = { showExportSheet = true },
                             onClearCanvas = {
+                                textSession = null
                                 if (strokes.isNotEmpty() || documentNativeElements.isNotEmpty()) {
                                     undoStack.add(snapshot())
                                     redoStack.clear()
@@ -1158,6 +1283,7 @@ class MainActivity : ComponentActivity() {
                             .fillMaxSize()
                             .padding(innerPadding)
                             .onSizeChanged { canvasSize = it }
+                            .onGloballyPositioned { canvasTop = it.positionInRoot().y }
                     ) {
                         DrawingCanvas(
                             toolConfig = toolConfig,
@@ -1197,7 +1323,10 @@ class MainActivity : ComponentActivity() {
                                 }
                                 isModified = true
                             },
-                            nativeElements = documentNativeElements,
+                            // The box being typed into is shown by the text field over it instead.
+                            nativeElements = textSession?.element
+                                ?.let { editing -> documentNativeElements.filter { it !== editing } }
+                                ?: documentNativeElements,
                             selectedNatives = selectedNatives,
                             onAddShapes = { shapes ->
                                 // One undo step for all the lines of a grid or a coordinate system.
@@ -1230,10 +1359,19 @@ class MainActivity : ComponentActivity() {
                                 isModified = true
                             },
                             onTypewriterTap = { x, y ->
+                                // Into the box tapped, the cursor where the tap was; else a new box
+                                // with its top-left corner there — which only exists once typed into.
                                 val slop = 12f / viewportState.effectiveScale
-                                textEditTarget = TextEditTarget(
-                                    x, y, NativeEditing.textAt(documentNativeElements, x, y, slop)
-                                )
+                                val hit = NativeEditing.textAt(documentNativeElements, x, y, slop)
+                                textSessionCount++
+                                textSession = if (hit != null) {
+                                    TextSession(
+                                        textSessionCount, hit.transform[4], hit.transform[5], hit, hit,
+                                        TextFieldValue(hit.text, TextRange(NativeElementRenderer.charOffsetAt(hit, x, y)))
+                                    )
+                                } else {
+                                    TextSession(textSessionCount, x, y, null, null, TextFieldValue(""))
+                                }
                             },
                             onVerticalSpace = { dy, strokeIds, natives ->
                                 undoStack.add(snapshot())
@@ -1251,6 +1389,36 @@ class MainActivity : ComponentActivity() {
                                 isModified = true
                             },
                         )
+
+                        // The Typewriter's text field, over the box being typed into.
+                        textSession?.let { session ->
+                            key(session.id) {
+                                val box = session.element ?: session.template
+                                // Above the keyboard: on Android 15 it covers the window rather
+                                // than shrinking it, so its height comes from the insets.
+                                val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+                                val rootHeight = LocalView.current.height.toFloat()
+                                InlineTextEditor(
+                                    value = session.value,
+                                    onValueChange = onTextChange,
+                                    style = box?.let { TextBoxStyle.of(it) } ?: TextBoxStyle(
+                                        NativeEditing.TEXT_FONT_FAMILY, toolConfig.textSize, 500, false,
+                                        toolConfig.penColor.let { RnoteNativeColor(it.red, it.green, it.blue, it.alpha) },
+                                        "start",
+                                        NativeEditing.typewriterWrapWidth(session.x, paperStyle.effectivePageWidthPx)
+                                    ),
+                                    runs = session.element?.let { TextFormatting.runs(it) } ?: emptyList(),
+                                    topLeft = Offset(session.x, session.y),
+                                    viewportState = viewportState,
+                                    visibleBottom = minOf(canvasSize.height.toFloat(), rootHeight - imeBottom - canvasTop),
+                                    onPan = { dy ->
+                                        viewportState = viewportState.copy(panOffset = viewportState.panOffset + Offset(0f, dy))
+                                    },
+                                    onToggle = onToggleTextFormat,
+                                    onDone = { textSession = null }
+                                )
+                            }
+                        }
 
                         // Top-center: stroke color + palette (matches Rnote's colorpicker.ui)
                         ColorPicker(
@@ -1387,6 +1555,9 @@ class MainActivity : ComponentActivity() {
                             onApplyFavorite = { favorite -> toolConfig = toolConfig.withFavorite(favorite) },
                             onStoreFavorite = { slot -> setFavorite(slot, toolConfig.brushFavorite()) },
                             onClearFavorite = { slot -> setFavorite(slot, null) },
+                            textFormats = textFormats,
+                            textFormatsEnabled = textSession != null,
+                            onToggleTextFormat = onToggleTextFormat,
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 18.dp)
@@ -1523,52 +1694,6 @@ class MainActivity : ComponentActivity() {
                                 )
                             },
                             onDismiss = { showPages = false }
-                        )
-                    }
-
-                    // ── Typewriter: type a new text box, or change the one tapped ──
-                    textEditTarget?.let { target ->
-                        val existing = target.existing
-                        TextEntryDialog(
-                            initialText = existing?.text ?: "",
-                            isNew = existing == null,
-                            onDismiss = { textEditTarget = null },
-                            onDelete = {
-                                textEditTarget = null
-                                if (existing != null) {
-                                    undoStack.add(snapshot())
-                                    redoStack.clear()
-                                    documentNativeElements = documentNativeElements.filter { it !== existing }
-                                    isModified = true
-                                }
-                            },
-                            onConfirm = { text ->
-                                textEditTarget = null
-                                if (existing == null) {
-                                    val c = toolConfig.penColor
-                                    NativeEditing.createText(
-                                        text, target.x, target.y, toolConfig.textSize,
-                                        RnoteNativeColor(c.red, c.green, c.blue, c.alpha),
-                                        NativeEditing.typewriterWrapWidth(target.x, paperStyle.effectivePageWidthPx)
-                                    )?.let { created ->
-                                        undoStack.add(snapshot())
-                                        redoStack.clear()
-                                        documentNativeElements = documentNativeElements + created
-                                        isModified = true
-                                    }
-                                } else if (text != existing.text) {
-                                    undoStack.add(snapshot())
-                                    redoStack.clear()
-                                    // Blank text removes the box, as emptying one does in Rnote.
-                                    val edited = NativeEditing.withText(existing, text)
-                                    documentNativeElements = if (edited == null) {
-                                        documentNativeElements.filter { it !== existing }
-                                    } else {
-                                        documentNativeElements.map { if (it === existing) edited else it }
-                                    }
-                                    isModified = true
-                                }
-                            }
                         )
                     }
 

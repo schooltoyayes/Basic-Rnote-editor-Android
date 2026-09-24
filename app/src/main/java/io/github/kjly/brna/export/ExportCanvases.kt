@@ -12,6 +12,8 @@ import io.github.kjly.brna.model.NativeBrushStroke
 import io.github.kjly.brna.model.NativeCanvasElement
 import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.NativeTextElement
+import io.github.kjly.brna.model.TextFormatting
+import io.github.kjly.brna.model.TextRun
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PathOp
 import io.github.kjly.brna.model.PathShape
@@ -227,12 +229,39 @@ class SvgExportCanvas(private val sb: StringBuilder) : ExportCanvas {
             .append("text-anchor=\"$anchor\" fill=\"${hexOf(el.color)}\"")
         if (el.color.a < 1f) sb.append(" fill-opacity=\"${n(el.color.a)}\"")
         sb.append(">")
+        // Each line in a tspan of its own; within it, a nested tspan for every stretch
+        // whose ranged attributes set it apart from the box's own style.
+        val runs = TextFormatting.runs(el)
+        var lineStart = 0
         el.text.split('\n').forEachIndexed { i, line ->
+            val lineEnd = lineStart + line.length
             sb.append("<tspan x=\"${n(x)}\" dy=\"${if (i == 0) "1em" else "1.25em"}\">")
-                .append(esc(line))
-                .append("</tspan>")
+            for (run in runs) {
+                val a = maxOf(run.start, lineStart)
+                val b = minOf(run.end, lineEnd)
+                if (b <= a) continue
+                val piece = esc(el.text.substring(a, b))
+                val attrs = svgRunAttributes(run, el)
+                if (attrs.isEmpty()) sb.append(piece) else sb.append("<tspan").append(attrs).append(">").append(piece).append("</tspan>")
+            }
+            sb.append("</tspan>")
+            lineStart = lineEnd + 1
         }
         sb.append("</text>\n")
+    }
+
+    /** SVG attributes for what sets [run] apart from [el]'s own style; empty when nothing does. */
+    private fun svgRunAttributes(run: TextRun, el: NativeTextElement): String = buildString {
+        if (run.family != el.fontFamily) append(" font-family=\"${esc(run.family)}\"")
+        if (run.size != el.fontSize) append(" font-size=\"${n(run.size)}\"")
+        if (run.weight != el.fontWeight) append(" font-weight=\"${run.weight}\"")
+        if (run.italic != el.italic) append(" font-style=\"${if (run.italic) "italic" else "normal"}\"")
+        val decoration = listOfNotNull("underline".takeIf { run.underline }, "line-through".takeIf { run.strikethrough })
+        if (decoration.isNotEmpty()) append(" text-decoration=\"${decoration.joinToString(" ")}\"")
+        if (run.color != el.color) {
+            append(" fill=\"${hexOf(run.color)}\"")
+            if (run.color.a < 1f) append(" fill-opacity=\"${n(run.color.a)}\"")
+        }
     }
 
     private fun svgShape(el: NativeShapeElement) {

@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.SaveAs
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TouchApp
@@ -90,6 +91,8 @@ fun RnoteTopBar(
     onShowRecent: () -> Unit = {},
     /** Thumbnails of every page, to jump to one. */
     onShowPages: () -> Unit = {},
+    /** The note to Android's print dialog. */
+    onPrint: () -> Unit = {},
     /** Whether the workspace side panel is showing. */
     filesOpen: Boolean = false,
     /** Shows or hides the workspace side panel, as the sidebar button in Rnote's headerbar does. */
@@ -225,11 +228,13 @@ fun RnoteTopBar(
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.NoteAdd, null) },
                         text = { Text("New") },
+                        trailingIcon = { KeyHint("Ctrl+N") },
                         onClick = { showOverflowMenu = false; onNewDocument() }
                     )
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.FolderOpen, null) },
                         text = { Text("Open…") },
+                        trailingIcon = { KeyHint("Ctrl+O") },
                         onClick = { showOverflowMenu = false; onOpenDocument() }
                     )
                     DropdownMenuItem(
@@ -242,11 +247,13 @@ fun RnoteTopBar(
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.Article, null) },
                         text = { Text(if (isModified) "Save  •" else "Save") },
+                        trailingIcon = { KeyHint("Ctrl+S") },
                         onClick = { showOverflowMenu = false; onSaveDocument() }
                     )
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.SaveAs, null) },
                         text = { Text("Save As…") },
+                        trailingIcon = { KeyHint("Ctrl+Shift+S") },
                         onClick = { showOverflowMenu = false; onSaveDocumentAs() }
                     )
                     DropdownMenuItem(
@@ -274,10 +281,17 @@ fun RnoteTopBar(
                         text = { Text("Export…") },
                         onClick = { showOverflowMenu = false; onExport() }
                     )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Default.Print, null) },
+                        text = { Text("Print…") },
+                        trailingIcon = { KeyHint("Ctrl+P") },
+                        onClick = { showOverflowMenu = false; onPrint() }
+                    )
                     HorizontalDivider()
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.Delete, null, tint = BrnaColors.DestructiveTint) },
                         text = { Text("Clear Canvas", color = BrnaColors.DestructiveTint) },
+                        trailingIcon = { KeyHint("Ctrl+L") },
                         onClick = { showOverflowMenu = false; onClearCanvas() }
                     )
                 }
@@ -287,4 +301,10 @@ fun RnoteTopBar(
             containerColor = paperStyle.currentBackgroundColor.copy(alpha = 0.95f)
         )
     )
+}
+
+/** A menu entry's keyboard shortcut, shown small beside it as Rnote's menus show theirs. */
+@Composable
+private fun KeyHint(keys: String) {
+    Text(keys, fontSize = 12.sp, color = Color.Gray)
 }

@@ -355,7 +355,7 @@ object NativeEditing {
     }
 
     /** Liang–Barsky: does the segment cross the box? */
-    private fun segmentHitsBox(
+    internal fun segmentHitsBox(
         x1: Float, y1: Float, x2: Float, y2: Float,
         l: Float, t: Float, r: Float, b: Float
     ): Boolean {
@@ -385,6 +385,60 @@ object NativeEditing {
             .all { (x, y) -> pointInPolygon(x, y, polygon) }
     }
 
+    /** Whether [el] lies wholly inside the box ([l], [t])–([r], [b]): Rnote's rectangle selection. */
+    fun insideRect(el: NativeCanvasElement, l: Float, t: Float, r: Float, b: Float): Boolean =
+        el !is NativeBrushStroke && el.minX >= l && el.maxX <= r && el.minY >= t && el.maxY <= b
+
+    /**
+     * Whether the line [path] crosses [el]: Rnote's intersecting-path selection, which
+     * tests the path against the element's hitboxes — a shape's outline, piece by piece
+     * (and, filled, its whole area); a text box's or a picture's whole box.
+     */
+    fun crossedByPath(el: NativeCanvasElement, path: List<Pair<Float, Float>>): Boolean {
+        if (el is NativeBrushStroke || path.size < 3) return false
+        var pl = Float.MAX_VALUE; var pt = Float.MAX_VALUE; var pr = -Float.MAX_VALUE; var pb = -Float.MAX_VALUE
+        for ((x, y) in path) { pl = minOf(pl, x); pt = minOf(pt, y); pr = maxOf(pr, x); pb = maxOf(pb, y) }
+        return hitboxes(el).any { box ->
+            box[0] <= pr && box[2] >= pl && box[1] <= pb && box[3] >= pt &&
+                (1 until path.size).any { i ->
+                    val (x1, y1) = path[i - 1]
+                    val (x2, y2) = path[i]
+                    segmentHitsBox(x1, y1, x2, y2, box[0], box[1], box[2], box[3])
+                }
+        }
+    }
+
+    /**
+     * Whether a tap at ([x], [y]) lands on [el], [tolerance] around it: Rnote's single
+     * selection. A shape is hit on its outline — anywhere inside when it is filled — a
+     * text box or picture anywhere in its box.
+     */
+    fun hitAt(el: NativeCanvasElement, x: Float, y: Float, tolerance: Float): Boolean = when (el) {
+        is NativeBrushStroke -> false
+        is NativeShapeElement -> eraserHits(el, x - tolerance, y - tolerance, x + tolerance, y + tolerance)
+        else -> x >= el.minX - tolerance && x <= el.maxX + tolerance && y >= el.minY - tolerance && y <= el.maxY + tolerance
+    }
+
+    /** Rnote's hitboxes for [el], as [left, top, right, bottom] boxes. */
+    private fun hitboxes(el: NativeCanvasElement): List<FloatArray> {
+        if (el !is NativeShapeElement) return listOf(floatArrayOf(el.minX, el.minY, el.maxX, el.maxY))
+        val pad = el.strokeWidth / 2f
+        val boxes = mutableListOf<FloatArray>()
+        if (el.fillColor.a > 0f) boxes += floatArrayOf(el.minX, el.minY, el.maxX, el.maxY)
+        for (polyline in outline(el.shape)) {
+            if (polyline.size == 1) {
+                val (x, y) = polyline[0]
+                boxes += floatArrayOf(x - pad, y - pad, x + pad, y + pad)
+            }
+            for (i in 1 until polyline.size) {
+                val (x1, y1) = polyline[i - 1]
+                val (x2, y2) = polyline[i]
+                boxes += floatArrayOf(minOf(x1, x2) - pad, minOf(y1, y2) - pad, maxOf(x1, x2) + pad, maxOf(y1, y2) + pad)
+            }
+        }
+        return boxes
+    }
+
     private fun pointInPolygon(x: Float, y: Float, polygon: List<Pair<Float, Float>>): Boolean {
         var inside = false
         var j = polygon.size - 1
@@ -403,13 +457,15 @@ object NativeEditing {
      * A new shape dragged from ([x1], [y1]) to ([x2], [y2]), built as the JSON desktop
      * Rnote writes for its own shaper and read back through the normal parser, so a shape
      * drawn here is exactly what the file will hold. Rectangles and ellipses fill the
-     * dragged box; null for a drag too short to be a shape.
+     * dragged box; null for a drag too short to be a shape. [fillColor] goes on every
+     * shape, as Rnote's shaper puts its fill colour on every shape it draws.
      */
     fun createShape(
         kind: ShapeKind,
         x1: Float, y1: Float, x2: Float, y2: Float,
         color: RnoteNativeColor,
-        strokeWidth: Float
+        strokeWidth: Float,
+        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT
     ): NativeShapeElement? {
         if (abs(x2 - x1) < 1f && abs(y2 - y1) < 1f) return null
         fun n(v: Float) = String.format(Locale.ROOT, "%.3f", v)
@@ -430,10 +486,51 @@ object NativeEditing {
         }
         fun color(c: RnoteNativeColor) = """{"r":${n(c.r)},"g":${n(c.g)},"b":${n(c.b)},"a":${n(c.a)}}"""
         val style = """{"smooth":{"stroke_width":${n(strokeWidth)},"stroke_color":${color(color)},""" +
-            """"fill_color":${color(RnoteNativeColor.TRANSPARENT)},"pressure_curve":"const",""" +
+            """"fill_color":${color(fillColor)},"pressure_curve":"const",""" +
             """"line_style":"solid","line_cap":"straight"}}"""
         return RnoteNativeParser.parseElementJson("""{"shapestroke":{"shape":$shape,"style":$style}}""")
             as? NativeShapeElement
+    }
+
+    // ── Colours ───────────────────────────────────────────────────────────────
+
+    /**
+     * [el] in [color]: Rnote's `change_stroke_colors` for the selection — a shape's line,
+     * a text box's text. Pictures and PDF pages have no colour of their own and come
+     * back as they are; so does anything whose JSON can't be rewritten.
+     */
+    fun withStrokeColor(el: NativeCanvasElement, color: RnoteNativeColor): NativeCanvasElement = when (el) {
+        is NativeShapeElement -> withStyleColor(el, "stroke_color", color) ?: el.copy(color = color)
+        is NativeTextElement -> {
+            val obj = el.raw?.takeIf { it.isJsonObject }?.deepCopy()?.asJsonObject ?: textJson(el)
+            val style = obj.get("text_style")?.takeIf { it.isJsonObject }?.asJsonObject
+            if (style != null) {
+                style.add("color", colorJson(color))
+                parseText(obj) ?: el
+            } else {
+                el.copy(color = color)
+            }
+        }
+        else -> el
+    }
+
+    /**
+     * [el] filled with [color] — transparent for no fill: Rnote's `change_fill_colors`.
+     * Only shapes have a fill; everything else comes back as it is.
+     */
+    fun withFillColor(el: NativeCanvasElement, color: RnoteNativeColor): NativeCanvasElement =
+        if (el is NativeShapeElement) withStyleColor(el, "fill_color", color) ?: el.copy(fillColor = color) else el
+
+    /**
+     * The shape with [key] of its style set to [color], in whichever of Rnote's styles it
+     * has (smooth or rough); null when it has no JSON of its own to change.
+     */
+    private fun withStyleColor(el: NativeShapeElement, key: String, color: RnoteNativeColor): NativeShapeElement? {
+        val tree = el.raw?.takeIf { it.isJsonObject }?.deepCopy()?.asJsonObject ?: return null
+        val style = tree.get("style")?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
+        val options = style.entrySet().firstOrNull { it.value.isJsonObject }?.value?.asJsonObject ?: return null
+        options.add(key, colorJson(color))
+        return RnoteNativeParser.parseElementTree(JsonObject().apply { add("shapestroke", tree) }) as? NativeShapeElement
     }
 
     // ── Images ────────────────────────────────────────────────────────────────

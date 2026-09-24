@@ -21,27 +21,29 @@ object FolderBrowser {
     fun uriOf(tree: Uri, id: String): Uri = DocumentsContract.buildDocumentUriUsingTree(tree, id)
 
     /** The folder [id] in [tree], sorted and filtered as Rnote's browser shows it; null if it can't be read. */
-    fun list(context: Context, tree: Uri, id: String): List<FolderListing.Entry>? = try {
-        val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, id)
-        val columns = arrayOf(
-            Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME,
-            Document.COLUMN_MIME_TYPE, Document.COLUMN_LAST_MODIFIED
-        )
-        val entries = mutableListOf<FolderListing.Entry>()
-        context.contentResolver.query(children, columns, null, null, null)?.use { c ->
-            while (c.moveToNext()) {
-                val docId = c.getString(0) ?: continue
-                val name = c.getString(1) ?: continue
-                val kind = FolderListing.kindOf(name, c.getString(2)) ?: continue
-                val modified = if (c.isNull(3)) null else c.getLong(3).takeIf { it > 0L }
-                entries += FolderListing.Entry(docId, name, kind, modified)
-            }
-        } ?: return null
-        FolderListing.sorted(entries)
-    } catch (e: Exception) {
-        // The grant withdrawn, the folder gone, the provider unreachable.
-        e.printStackTrace()
-        null
+    fun list(context: Context, tree: Uri, id: String): List<FolderListing.Entry>? {
+        return try {
+            val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, id)
+            val columns = arrayOf(
+                Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME,
+                Document.COLUMN_MIME_TYPE, Document.COLUMN_LAST_MODIFIED
+            )
+            val entries = mutableListOf<FolderListing.Entry>()
+            context.contentResolver.query(children, columns, null, null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    val docId = c.getString(0) ?: continue
+                    val name = c.getString(1) ?: continue
+                    val kind = FolderListing.kindOf(name, c.getString(2)) ?: continue
+                    val modified = if (c.isNull(3)) null else c.getLong(3).takeIf { it > 0L }
+                    entries += FolderListing.Entry(docId, name, kind, modified)
+                }
+            } ?: return null
+            FolderListing.sorted(entries)
+        } catch (e: Exception) {
+            // The grant withdrawn, the folder gone, the provider unreachable.
+            e.printStackTrace()
+            null
+        }
     }
 
     /**

@@ -9,9 +9,11 @@ import android.net.Uri
 import android.os.Bundle
 import android.print.PrintManager
 import android.provider.DocumentsContract
+import android.view.InputDevice
 import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -96,8 +98,10 @@ import io.github.kjly.brna.model.TextFormatting
 import io.github.kjly.brna.model.TextToggle
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
+import io.github.kjly.brna.model.UndoHistory
 import io.github.kjly.brna.model.ViewportState
 import io.github.kjly.brna.render.NativeElementRenderer
+import io.github.kjly.brna.storage.ContentHash
 import io.github.kjly.brna.storage.DocumentUri
 import io.github.kjly.brna.storage.FileManager
 import io.github.kjly.brna.storage.FolderBrowser
@@ -119,6 +123,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import io.github.kjly.brna.ui.canvas.DrawingCanvas
 import io.github.kjly.brna.ui.KeyboardShortcuts
+import io.github.kjly.brna.ui.PenRemote
 import io.github.kjly.brna.ui.Shortcut
 import io.github.kjly.brna.ui.canvas.SelectionManager
 import io.github.kjly.brna.ui.components.ColorPicker
@@ -158,7 +163,8 @@ private data class ParkedTab(
     val viewport: ViewportState,
     val uri: Uri?,
     val knownLastModified: Long?,
-    val saveAsRnote: Boolean
+    val saveAsRnote: Boolean,
+    val knownContentHash: String? = null
 )
 
 /** Copied ink and desktop elements. */
@@ -549,6 +555,7 @@ class MainActivity : ComponentActivity() {
                 // autosave must not see the new file's baseline while the old note is still
                 // open, or it would write that note over the file just read.
                 knownLastModified = lastModified
+                knownContentHash = loaded.contentHash
                 incomingKeepsView = reload
                 incomingDocument = loaded.document.copy(title = title)
                 Toast.makeText(
@@ -608,19 +615,20 @@ class MainActivity : ComponentActivity() {
         busyMessage = "Saving…"
         val asRnote = saveAsRnote
         val known = knownLastModified
+        val knownHash = knownContentHash
         val slot = activeTab
         lifecycleScope.launch {
             savesRunning++
             try {
-                if (!overwriteChanges && withContext(Dispatchers.IO) { changedElsewhere(target, known) }) {
+                if (!overwriteChanges && withContext(Dispatchers.IO) { changedElsewhere(target, known, knownHash) }) {
                     busyMessage = null
                     pendingConflict = document
                     return@launch
                 }
-                val success = writeLock.withLock { withContext(Dispatchers.IO) { writeDocument(target, document, asRnote) } }
+                val written = writeLock.withLock { withContext(Dispatchers.IO) { writeDocument(target, document, asRnote) } }
                 busyMessage = null
-                if (success) {
-                    afterSave(target, document, slot)
+                if (written != null) {
+                    afterSave(target, document, slot, written)
                     Toast.makeText(this@MainActivity, "Saved ${document.title}", Toast.LENGTH_SHORT).show()
                 } else {
                     // The grant can be gone (file deleted, card pulled, permission revoked, or
@@ -644,19 +652,47 @@ class MainActivity : ComponentActivity() {
      * being written was captured. Passed in rather than read here, because a reload that
      * finishes in between moves it on to the reloaded file. Blocking; call from
      * [Dispatchers.IO].
+     *
+     * A new time alone isn't a new version: Drive, for one, can touch a file's time after
+     * uploading it, not a byte different from what this app wrote. So when the bytes it
+     * held then are known ([knownHash]), the file is read and fingerprinted, and only
+     * different bytes count; the same ones just move the known time on, so it isn't read
+     * again at every look.
      */
-    private fun changedElsewhere(uri: Uri, known: Long?): Boolean {
+    private fun changedElsewhere(uri: Uri, known: Long?, knownHash: String?): Boolean {
         if (known == null) return false
         val now = DocumentUri.lastModified(this, uri) ?: return false
-        return now != known
+        if (now == known) return false
+        if (knownHash == null) return true
+        val hash = try {
+            contentResolver.openInputStream(uri)?.use { ContentHash.of(it) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+        if (hash != knownHash) return true
+        lifecycleScope.launch {
+            if (uri == currentDocumentUri && known == knownLastModified) knownLastModified = now
+        }
+        return false
     }
 
-    /** Bookkeeping after any successful write of [document] to [uri], the note of tab [slot]. */
-    private suspend fun afterSave(uri: Uri, document: NoteDocument, slot: Long) {
+    /**
+     * The [ContentHash] of the open note's file as this app last read or wrote it; null
+     * when unknown. Kept beside [knownLastModified], see [changedElsewhere].
+     */
+    private var knownContentHash: String? = null
+
+    /**
+     * Bookkeeping after any successful write of [document] to [uri], the note of tab
+     * [slot]; [hash] is the fingerprint of the bytes written.
+     */
+    private suspend fun afterSave(uri: Uri, document: NoteDocument, slot: Long, hash: String) {
         knownLastModified = withContext(Dispatchers.IO) {
             Recovery.clear(this@MainActivity, slot)
             DocumentUri.lastModified(this@MainActivity, uri)
         }
+        knownContentHash = hash
         onSaveSucceeded?.invoke(document)
         filesRefresh++
     }
@@ -684,11 +720,12 @@ class MainActivity : ComponentActivity() {
     private fun checkForNewerVersion(whileIdle: Boolean = false) {
         val uri = currentDocumentUri ?: return
         val known = knownLastModified ?: return
+        val knownHash = knownContentHash
         if (busyMessage != null || pendingConflict != null || savesRunning > 0) return
         val interrupting = { unsavedDocument?.invoke() != null || reloadWouldInterrupt?.invoke() == true }
         if (whileIdle && interrupting()) return
         lifecycleScope.launch {
-            val changed = withContext(Dispatchers.IO) { changedElsewhere(uri, known) }
+            val changed = withContext(Dispatchers.IO) { changedElsewhere(uri, known, knownHash) }
             // Something may have happened meanwhile: another note opened, a save.
             if (!changed || uri != currentDocumentUri || known != knownLastModified ||
                 busyMessage != null || pendingConflict != null || savesRunning > 0
@@ -797,20 +834,24 @@ class MainActivity : ComponentActivity() {
         val target = currentDocumentUri
         val asRnote = saveAsRnote
         val known = knownLastModified
+        val knownHash = knownContentHash
         val slot = activeTab
         savesRunning++
         try {
-            val wrote = withContext(Dispatchers.IO) {
+            val written = withContext(Dispatchers.IO) {
                 try {
                     Recovery.write(this@MainActivity, document, target, asRnote, slot)
                 } catch (e: Throwable) {
                     e.printStackTrace()
                 }
-                target != null && busyMessage == null && !changedElsewhere(target, known) &&
+                if (target != null && busyMessage == null && !changedElsewhere(target, known, knownHash)) {
                     writeLock.withLock { writeDocument(target, document, asRnote) }
+                } else {
+                    null
+                }
             }
-            if (wrote && target != null) afterSave(target, document, slot)
-            return wrote
+            if (written != null && target != null) afterSave(target, document, slot, written)
+            return written != null
         } finally {
             savesRunning--
         }
@@ -819,12 +860,15 @@ class MainActivity : ComponentActivity() {
     /** One write to a file at a time: autosave and a manual save can otherwise overlap. */
     private val writeLock = Mutex()
 
-    /** Blocking write; call from [Dispatchers.IO]. False on any failure, OOM included. */
-    private fun writeDocument(uri: Uri, document: NoteDocument, asRnote: Boolean): Boolean = try {
-        FileManager.saveDocumentToUri(this, uri, document, asRnote)
+    /**
+     * Blocking write; call from [Dispatchers.IO]. The [ContentHash] of what was written, or
+     * null on any failure, OOM included.
+     */
+    private fun writeDocument(uri: Uri, document: NoteDocument, asRnote: Boolean): String? = try {
+        FileManager.saveDocumentHashed(this, uri, document, asRnote)
     } catch (e: Throwable) {
         e.printStackTrace()
-        false
+        null
     }
 
     /** Asks for a destination, then saves there and adopts it. */
@@ -846,9 +890,9 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             savesRunning++
             try {
-                val success = writeLock.withLock { withContext(Dispatchers.IO) { writeDocument(uri, document, asRnote) } }
+                val written = writeLock.withLock { withContext(Dispatchers.IO) { writeDocument(uri, document, asRnote) } }
                 busyMessage = null
-                if (!success) {
+                if (written == null) {
                     Toast.makeText(this@MainActivity, "Save failed", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
@@ -858,7 +902,7 @@ class MainActivity : ComponentActivity() {
                 val savedTitle = DocumentUri.displayName(this@MainActivity, uri)?.let(DocumentUri::titleFrom)
                 adoptDocumentUri(uri, savedTitle ?: document.title)
                 savedTitle?.let { onTitleAdopted?.invoke(it) }
-                afterSave(uri, document, slot)
+                afterSave(uri, document, slot, written)
                 Toast.makeText(
                     this@MainActivity,
                     if (asRnote) "Saved as .rnote" else "Saved as .json",
@@ -1101,6 +1145,12 @@ class MainActivity : ComponentActivity() {
             var showFiles by remember { mutableStateOf(false) }
             var showPages by remember { mutableStateOf(false) }
             val snapshot = { DocSnapshot(strokes.toList(), documentNativeElements) }
+            // Every change that can be undone goes through here, so undo reaches back as far
+            // as Rnote's does and no further (see UndoHistory).
+            val pushUndo: () -> Unit = {
+                undoStack.add(snapshot())
+                UndoHistory.trim(undoStack)
+            }
             val restore = { state: DocSnapshot ->
                 strokes.clear()
                 strokes.addAll(state.strokes)
@@ -1191,6 +1241,7 @@ class MainActivity : ComponentActivity() {
                 // No file yet, so the next Save has to ask for one.
                 currentDocumentUri = null
                 knownLastModified = null
+                knownContentHash = null
             }
 
             // ── Tabs ──────────────────────────────────────────────────────────────
@@ -1208,7 +1259,8 @@ class MainActivity : ComponentActivity() {
                     viewport = viewportState,
                     uri = currentDocumentUri,
                     knownLastModified = knownLastModified,
-                    saveAsRnote = saveAsRnote
+                    saveAsRnote = saveAsRnote,
+                    knownContentHash = knownContentHash
                 )
             }
             val showParked: (ParkedTab) -> Unit = { tab ->
@@ -1228,6 +1280,7 @@ class MainActivity : ComponentActivity() {
                 currentDocumentUri = tab.uri
                 tab.uri?.let { pickerStartUri = it }
                 knownLastModified = tab.knownLastModified
+                knownContentHash = tab.knownContentHash
                 saveAsRnote = tab.saveAsRnote
                 isModified = tab.isModified
             }
@@ -1398,36 +1451,54 @@ class MainActivity : ComponentActivity() {
             }
 
             // ── Workspace panel ───────────────────────────────────────────────────
-            // Desktop Rnote's "New file" in its browser: the file is made first, then the
-            // empty note written into it, so the note has its home from the start and
-            // every save goes straight back there. It opens in a tab of its own.
+            // Desktop Rnote's "New file" in its browser: the file is made with an empty note
+            // written into it at once, then opened in a tab of its own like any other — so
+            // the note has its home from the start and every save goes straight back there.
+            // Written at once, because a file left with nothing in it (a write that never
+            // came) is one Rnote on the laptop can't open; one that can't be written goes.
             val newNoteIn: (Uri, String, String) -> Unit = { tree, folderId, name ->
                 lifecycleScope.launch {
                     if (busyMessage != null) return@launch
                     val fileName = if (DocumentUri.isRnote(name)) name else "$name.rnote"
                     val created = withContext(Dispatchers.IO) {
-                        FolderBrowser.createNote(this@MainActivity, tree, folderId, fileName)?.let { uri ->
-                            // A provider may pick another name when that one is taken.
-                            uri to (DocumentUri.displayName(this@MainActivity, uri) ?: fileName)
+                        val uri = FolderBrowser.createNote(this@MainActivity, tree, folderId, fileName)
+                            ?: return@withContext null
+                        // A provider may pick another name when that one is taken.
+                        val actualName = DocumentUri.displayName(this@MainActivity, uri) ?: fileName
+                        val note = NoteDocument(
+                            title = DocumentUri.titleFrom(actualName),
+                            paperStyle = SettingsManager.loadPaperStyle(this@MainActivity)
+                        )
+                        if (FileManager.saveDocumentHashed(this@MainActivity, uri, note, asRnote = true) != null) {
+                            uri
+                        } else {
+                            FolderBrowser.delete(this@MainActivity, uri)
+                            null
                         }
                     }
                     if (created == null) {
                         Toast.makeText(this@MainActivity, "Could not create the note there", Toast.LENGTH_LONG).show()
                         return@launch
                     }
-                    val (uri, actualName) = created
-                    val title = DocumentUri.titleFrom(actualName)
-                    newTab {
-                        documentTitle = title
-                        adoptDocumentUri(uri, title)
-                        saveInPlace(NoteDocument(title = title, paperStyle = paperStyle))
-                    }
+                    filesRefresh++
+                    openDocument(created)
                 }
             }
             // Coming to the files is a moment to look whether Toni saved the open note meanwhile.
             LaunchedEffect(showFiles) {
                 if (showFiles) checkForNewerVersion()
             }
+
+            // ── Back ──────────────────────────────────────────────────────────────
+            // Back closes what is open before it leaves the app, as Escape does in Rnote:
+            // the side panel first, then the text box being typed into, then the selection.
+            // (The one composed last is asked first.)
+            BackHandler(enabled = selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
+                selectedStrokes.clear()
+                selectedNatives.clear()
+            }
+            BackHandler(enabled = textSession != null) { textSession = null }
+            BackHandler(enabled = showFiles) { showFiles = false }
 
             // ── Save succeeded handler ────────────────────────────────────────────
             onSaveSucceeded = { saved ->
@@ -1475,7 +1546,7 @@ class MainActivity : ComponentActivity() {
             }
             onPdfImported = { pages ->
                 // Ahead of the rest: the document layer is drawn first, under everything.
-                undoStack.add(snapshot())
+                pushUndo()
                 redoStack.clear()
                 documentNativeElements = pages + documentNativeElements
                 isModified = true
@@ -1508,7 +1579,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
             onImageInserted = { image ->
-                undoStack.add(snapshot())
+                pushUndo()
                 redoStack.clear()
                 // Last, so on top of the images already there, as a new stroke is in Rnote.
                 documentNativeElements = documentNativeElements + image
@@ -1561,7 +1632,7 @@ class MainActivity : ComponentActivity() {
                     return@change
                 }
                 if (!session.undoTaken) {
-                    undoStack.add(snapshot())
+                    pushUndo()
                     redoStack.clear()
                 }
                 if (edited != null && session.pending.isNotEmpty()) {
@@ -1584,7 +1655,7 @@ class MainActivity : ComponentActivity() {
                     val element = session.element
                     if (!selection.collapsed && element != null) {
                         if (!session.undoTaken) {
-                            undoStack.add(snapshot())
+                            pushUndo()
                             redoStack.clear()
                         }
                         val updated = NativeEditing.toggleFormat(element, selection.min, selection.max, toggle)
@@ -1672,7 +1743,7 @@ class MainActivity : ComponentActivity() {
             performRedoAction = {
                 textSession = null
                 if (redoStack.isNotEmpty()) {
-                    undoStack.add(snapshot())
+                    pushUndo()
                     restore(redoStack.removeAt(redoStack.lastIndex))
                     isModified = true
                 }
@@ -1698,7 +1769,7 @@ class MainActivity : ComponentActivity() {
             val clearCanvas: () -> Unit = {
                 textSession = null
                 if (strokes.isNotEmpty() || documentNativeElements.isNotEmpty()) {
-                    undoStack.add(snapshot())
+                    pushUndo()
                     redoStack.clear()
                     strokes.clear()
                     selectedStrokes.clear()
@@ -1811,7 +1882,7 @@ class MainActivity : ComponentActivity() {
                                 viewportState = newViewport
                             },
                             onAddStroke = { newStroke ->
-                                undoStack.add(snapshot())
+                                pushUndo()
                                 redoStack.clear()
                                 strokes.add(newStroke)
                                 isModified = true
@@ -1820,7 +1891,7 @@ class MainActivity : ComponentActivity() {
                                 // One snapshot for the whole eraser drag. This used to sit
                                 // in onEraseStrokes, which fires per motion event, so
                                 // rubbing out five strokes cost five undos to put back.
-                                undoStack.add(snapshot())
+                                pushUndo()
                                 redoStack.clear()
                             },
                             onEraseStrokes = { erased ->
@@ -1829,7 +1900,7 @@ class MainActivity : ComponentActivity() {
                                 isModified = true
                             },
                             onSelectionDragStart = {
-                                undoStack.add(snapshot())
+                                pushUndo()
                                 redoStack.clear()
                             },
                             onStrokesModified = { updatedStrokes ->
@@ -1846,7 +1917,7 @@ class MainActivity : ComponentActivity() {
                             selectedNatives = selectedNatives,
                             onAddShapes = { shapes ->
                                 // One undo step for all the lines of a grid or a coordinate system.
-                                undoStack.add(snapshot())
+                                pushUndo()
                                 redoStack.clear()
                                 documentNativeElements = documentNativeElements + shapes
                                 isModified = true
@@ -1890,7 +1961,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             onVerticalSpace = { dy, strokeIds, natives ->
-                                undoStack.add(snapshot())
+                                pushUndo()
                                 redoStack.clear()
                                 // In place, so every stroke keeps its position in the drawing order.
                                 val shift = Offset(0f, dy)
@@ -1947,7 +2018,7 @@ class MainActivity : ComponentActivity() {
                                     selectedNatives.any { it is NativeShapeElement || it is NativeTextElement }
                             }
                             if (toolConfig.activeTool == ToolType.SELECTOR && affected) {
-                                undoStack.add(snapshot())
+                                pushUndo()
                                 redoStack.clear()
                                 val native = RnoteNativeColor(color.red, color.green, color.blue, color.alpha)
                                 if (!fill) {
@@ -1997,7 +2068,7 @@ class MainActivity : ComponentActivity() {
 
                         val deleteSelection: () -> Unit = {
                             if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
-                                undoStack.add(snapshot())
+                                pushUndo()
                                 redoStack.clear()
                                 val ids = selectedStrokes.map { it.id }.toSet()
                                 strokes.removeAll { it.id in ids }
@@ -2034,7 +2105,7 @@ class MainActivity : ComponentActivity() {
                                 dx = (viewTopLeft.x + viewBottomRight.x) / 2f - (box[0] + box[2]) / 2f
                                 dy = (viewTopLeft.y + viewBottomRight.y) / 2f - (box[1] + box[3]) / 2f
                             }
-                            undoStack.add(snapshot())
+                            pushUndo()
                             redoStack.clear()
                             val newStrokes = clip.strokes.map { s ->
                                 s.copy(
@@ -2057,7 +2128,7 @@ class MainActivity : ComponentActivity() {
 
                         val duplicateSelection: () -> Unit = {
                             if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
-                                undoStack.add(snapshot())
+                                pushUndo()
                                 redoStack.clear()
                                 val offset = 20f
                                 val duplicates = selectedStrokes.map { s ->
@@ -2293,13 +2364,16 @@ class MainActivity : ComponentActivity() {
                                         currentDocumentUri?.let { RecentFiles.remove(this@MainActivity, it.toString()) }
                                         currentDocumentUri = null
                                         knownLastModified = null
+                                        knownContentHash = null
                                         // Still open here, now with nowhere to go: Save asks where.
                                         isModified = true
                                     } else {
                                         parkedTabs.entries.firstOrNull { FolderBrowser.sameDocument(uri, it.value.uri) }
                                             ?.let { (id, tab) ->
                                                 tab.uri?.let { RecentFiles.remove(this@MainActivity, it.toString()) }
-                                                parkedTabs[id] = tab.copy(uri = null, knownLastModified = null, isModified = true)
+                                                parkedTabs[id] = tab.copy(
+                                                    uri = null, knownLastModified = null, knownContentHash = null, isModified = true
+                                                )
                                                 // Now it lives only here: kept where recovery finds it.
                                                 val note = NoteDocument(
                                                     title = tab.title, paperStyle = tab.paperStyle,
@@ -2615,6 +2689,9 @@ class MainActivity : ComponentActivity() {
      * took arrive here: a text box being typed into gets its own first.
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        // The pen's press is acted on as it is let go (onKeyUp); its going down is the
+        // pen's too, and must not start the music as a Play key would.
+        if (PenRemote.isPenKey(keyCode) && isPenRemote(event)) return true
         // What the key types with no modifier held, on the keyboard's own layout.
         val char = event.getUnicodeChar(0).takeIf { it > 0 }?.toChar()
         val shortcut = KeyboardShortcuts.of(
@@ -2628,22 +2705,26 @@ class MainActivity : ComponentActivity() {
         return super.onKeyDown(keyCode, event)
     }
 
+    /** Whether [event] is a press of the S Pen's remote (see [PenRemote]). */
+    private fun isPenRemote(event: KeyEvent?): Boolean {
+        if (event == null) return false
+        val device = event.device
+        return PenRemote.isFromPen(
+            device?.name,
+            event.deviceId,
+            typingKeyboard = device?.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC
+        )
+    }
+
     /**
      * Samsung S-Pen Air Action Remote Button Key Event Handler:
      * - Single Press / Page Down: Undo
      * - Page Up: Redo
+     * Only for the pen: the same keys from a keyboard or headset do what they do anywhere.
      */
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-        return when (keyCode) {
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_PAGE_DOWN -> {
-                performUndoAction?.invoke()
-                true
-            }
-            KeyEvent.KEYCODE_PAGE_UP -> {
-                performRedoAction?.invoke()
-                true
-            }
-            else -> super.onKeyUp(keyCode, event)
-        }
+        if (!PenRemote.isPenKey(keyCode) || !isPenRemote(event)) return super.onKeyUp(keyCode, event)
+        if (keyCode == KeyEvent.KEYCODE_PAGE_UP) performRedoAction?.invoke() else performUndoAction?.invoke()
+        return true
     }
 }

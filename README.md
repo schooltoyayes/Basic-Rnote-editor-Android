@@ -31,8 +31,10 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
 - **Shaper**: line, arrow, rectangle, ellipse, and — built from lines, as Rnote
   builds them — 2D, 3D and single-quadrant coordinate systems and a grid. Lines
   and arrows can snap to 15° steps.
-- **Typewriter**: tap to add a text box or edit one; bold, italic and other
-  ranges set on the desktop are kept through edits.
+- **Typewriter**: tap and type straight onto the page, into a new text box or
+  an existing one. Bold, italic, underline and strikethrough — from the strip,
+  or Ctrl+B / Ctrl+I / Ctrl+U on a keyboard — stored as Rnote stores them, so
+  formatting made on either side shows on the other.
 - **Eraser**: Trash Strokes and Split Strokes modes. Like Rnote's, it erases ink
   and shapes and leaves text and images alone.
 - **Selector** (lasso), for ink and for desktop text, shapes and images alike:

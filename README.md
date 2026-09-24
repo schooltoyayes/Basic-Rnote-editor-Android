@@ -57,8 +57,10 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   drives. Desktop text, shapes, images and PDF pages are shown and editable, and
   keep the JSON they were read with, so attributes the app doesn't model survive
   a round trip. Autosave, crash recovery, a warning before overwriting a file
-  that changed elsewhere (save a copy, overwrite, or load the other version), a
-  list of recent notes, and a page overview with thumbnails.
+  that changed elsewhere (save a copy, overwrite, or load the other version) —
+  judged by the file's content, so a sync that only touches its time is no
+  alarm — a list of recent notes, and a page overview with thumbnails. Undo
+  reaches back 100 steps, as in Rnote.
 - **Tabs**: several notes open at once, as in Rnote, each with its own undo
   history and view. Opening a note gives it a tab (or shows its tab if it is
   open already); a tab being left is saved first, and one that can't be is kept

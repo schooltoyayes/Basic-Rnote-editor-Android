@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FilterCenterFocus
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.HighlightAlt
@@ -88,13 +89,26 @@ fun RnoteTopBar(
     /** The notes opened or saved last. */
     onShowRecent: () -> Unit = {},
     /** Thumbnails of every page, to jump to one. */
-    onShowPages: () -> Unit = {}
+    onShowPages: () -> Unit = {},
+    /** Whether the workspace side panel is showing. */
+    filesOpen: Boolean = false,
+    /** Shows or hides the workspace side panel, as the sidebar button in Rnote's headerbar does. */
+    onToggleFiles: () -> Unit = {}
 ) {
     var showOverflowMenu by remember { mutableStateOf(false) }
     var showShareMenu by remember { mutableStateOf(false) }
     val iconTint = if (paperStyle.isDarkMode) Color.White else Color(0xFF1E1E24)
 
     TopAppBar(
+        navigationIcon = {
+            IconButton(onClick = onToggleFiles) {
+                Icon(
+                    imageVector = Icons.Default.Folder,
+                    contentDescription = if (filesOpen) "Hide files" else "Show files",
+                    tint = if (filesOpen) BrnaColors.Accent else iconTint
+                )
+            }
+        },
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // Tappable document title with unsaved dot

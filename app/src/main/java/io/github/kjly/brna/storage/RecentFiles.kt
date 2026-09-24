@@ -52,8 +52,15 @@ object RecentFiles {
             emptySet()
         }
         val session = synchronized(openedThisSession) { openedThisSession.toSet() }
-        return load(context).filter { it.uri in granted || it.uri in session }
+        return load(context).filter { it.uri in session || isGranted(it.uri, granted) }
     }
+
+    /**
+     * Whether [uri] is readable under [granted]: granted itself, or — for a note opened in a
+     * workspace — a document inside a granted folder tree, whose grant covers it.
+     */
+    internal fun isGranted(uri: String, granted: Set<String>): Boolean =
+        uri in granted || granted.any { uri.startsWith("$it/document/") }
 
     /** [entries] with [entry] put first, any older entry for the same file dropped. */
     internal fun withEntry(entries: List<Entry>, entry: Entry, max: Int = MAX_ENTRIES): List<Entry> =

@@ -14,16 +14,21 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -87,6 +92,8 @@ import io.github.kjly.brna.model.ViewportState
 import io.github.kjly.brna.render.NativeElementRenderer
 import io.github.kjly.brna.storage.DocumentUri
 import io.github.kjly.brna.storage.FileManager
+import io.github.kjly.brna.storage.FolderBrowser
+import io.github.kjly.brna.storage.FolderListing
 import io.github.kjly.brna.storage.ImageImport
 import io.github.kjly.brna.storage.NativeEditing
 import io.github.kjly.brna.storage.PdfImporter
@@ -94,6 +101,7 @@ import io.github.kjly.brna.storage.PenFavorites
 import io.github.kjly.brna.storage.RecentFiles
 import io.github.kjly.brna.storage.Recovery
 import io.github.kjly.brna.storage.SettingsManager
+import io.github.kjly.brna.storage.Workspaces
 import kotlin.math.floor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -113,6 +121,7 @@ import io.github.kjly.brna.ui.components.PageOverviewDialog
 import io.github.kjly.brna.ui.components.RecentFilesDialog
 import io.github.kjly.brna.ui.components.InlineTextEditor
 import io.github.kjly.brna.ui.components.TextBoxStyle
+import io.github.kjly.brna.ui.components.WorkspaceBrowser
 import io.github.kjly.brna.ui.theme.BabyRnoteTheme
 
 /**
@@ -193,8 +202,10 @@ class MainActivity : ComponentActivity() {
      * Save used to launch the create-document picker every single time, so a note opened
      * from disk was saved as a *new* file — under whatever name the picker proposed, in
      * whatever folder it happened to open on — instead of back over itself.
+     *
+     * State, so the workspace panel can mark the open note as it changes.
      */
-    private var currentDocumentUri: Uri? = null
+    private var currentDocumentUri by mutableStateOf<Uri?>(null)
 
     /**
      * Where the SAF picker should open. Without `EXTRA_INITIAL_URI` it starts wherever it
@@ -400,9 +411,19 @@ class MainActivity : ComponentActivity() {
      * [reload] is the conflict dialog's "Load theirs": the open note's own file, read again
      * as it is now, with the changes made here thrown away and the view left where it was.
      */
-    private fun openDocument(uri: Uri, fromRecent: Boolean = false, reload: Boolean = false) {
+    private fun openDocument(
+        uri: Uri,
+        fromRecent: Boolean = false,
+        reload: Boolean = false,
+        /** A reload the app decided on itself, having seen a newer version of the file. */
+        automatic: Boolean = false
+    ) {
         if (busyMessage != null) return
-        busyMessage = if (reload) "Loading their version…" else "Opening…"
+        busyMessage = when {
+            automatic -> "Loading the newer version…"
+            reload -> "Loading their version…"
+            else -> "Opening…"
+        }
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 try {
@@ -440,7 +461,11 @@ class MainActivity : ComponentActivity() {
                 incomingDocument = loaded.document.copy(title = title)
                 Toast.makeText(
                     this@MainActivity,
-                    if (reload) "Loaded their version of $title" else "Opened: $title",
+                    when {
+                        automatic -> "Newer version of $title loaded"
+                        reload -> "Loaded their version of $title"
+                        else -> "Opened: $title"
+                    },
                     Toast.LENGTH_SHORT
                 ).show()
             } else if (fromRecent) {
@@ -498,25 +523,30 @@ class MainActivity : ComponentActivity() {
         val asRnote = saveAsRnote
         val known = knownLastModified
         lifecycleScope.launch {
-            if (!overwriteChanges && withContext(Dispatchers.IO) { changedElsewhere(target, known) }) {
+            savesRunning++
+            try {
+                if (!overwriteChanges && withContext(Dispatchers.IO) { changedElsewhere(target, known) }) {
+                    busyMessage = null
+                    pendingConflict = document
+                    return@launch
+                }
+                val success = writeLock.withLock { withContext(Dispatchers.IO) { writeDocument(target, document, asRnote) } }
                 busyMessage = null
-                pendingConflict = document
-                return@launch
-            }
-            val success = writeLock.withLock { withContext(Dispatchers.IO) { writeDocument(target, document, asRnote) } }
-            busyMessage = null
-            if (success) {
-                afterSave(target, document)
-                Toast.makeText(this@MainActivity, "Saved ${document.title}", Toast.LENGTH_SHORT).show()
-            } else {
-                // The grant can be gone (file deleted, card pulled, permission revoked, or
-                // a read-only "Open with" grant), so fall back to asking for a destination
-                // rather than losing the edits.
-                currentDocumentUri = null
-                Toast.makeText(
-                    this@MainActivity, "Could not save over the file — choose a location", Toast.LENGTH_LONG
-                ).show()
-                launchSavePicker(document)
+                if (success) {
+                    afterSave(target, document)
+                    Toast.makeText(this@MainActivity, "Saved ${document.title}", Toast.LENGTH_SHORT).show()
+                } else {
+                    // The grant can be gone (file deleted, card pulled, permission revoked, or
+                    // a read-only "Open with" grant), so fall back to asking for a destination
+                    // rather than losing the edits.
+                    currentDocumentUri = null
+                    Toast.makeText(
+                        this@MainActivity, "Could not save over the file — choose a location", Toast.LENGTH_LONG
+                    ).show()
+                    launchSavePicker(document)
+                }
+            } finally {
+                savesRunning--
             }
         }
         return true
@@ -541,6 +571,111 @@ class MainActivity : ComponentActivity() {
             DocumentUri.lastModified(this@MainActivity, uri)
         }
         onSaveSucceeded?.invoke(document)
+        filesRefresh++
+    }
+
+    /**
+     * Writes of the open note under way, from the first byte until [afterSave] has taken
+     * the file's new last-modified time. Meanwhile the file looks changed although only
+     * this app changed it — the save on leaving the app can still be running on return —
+     * so [checkForNewerVersion] waits for the next chance.
+     */
+    private var savesRunning = 0
+
+    /**
+     * Whether the open note's file was written elsewhere since this app opened or saved
+     * it — Toni saving on the laptop, synced through Drive. With nothing unsaved here the
+     * newer version is simply loaded, the view kept where it was; with unsaved changes
+     * the conflict dialog asks what to do. Run on coming back to the app and on opening
+     * the side panel; a sync that lands later is noticed at the next of those, or on save.
+     */
+    private fun checkForNewerVersion() {
+        val uri = currentDocumentUri ?: return
+        val known = knownLastModified ?: return
+        if (busyMessage != null || pendingConflict != null || savesRunning > 0) return
+        lifecycleScope.launch {
+            val changed = withContext(Dispatchers.IO) { changedElsewhere(uri, known) }
+            // Something may have happened meanwhile: another note opened, a save.
+            if (!changed || uri != currentDocumentUri || known != knownLastModified ||
+                busyMessage != null || pendingConflict != null || savesRunning > 0
+            ) {
+                return@launch
+            }
+            val unsaved = unsavedDocument?.invoke()
+            if (unsaved == null) openDocument(uri, reload = true, automatic = true) else pendingConflict = unsaved
+        }
+    }
+
+    // ── Workspaces ────────────────────────────────────────────────────────────
+
+    /** Desktop Rnote's workspaces: the folders the side panel shows. */
+    private var workspaces by mutableStateOf<List<Workspaces.Workspace>>(emptyList())
+
+    /** The uri of the workspace the side panel shows. */
+    private var selectedWorkspace by mutableStateOf<String?>(null)
+
+    /** Bumped after a save or a new note, so the side panel lists its folder again. */
+    private var filesRefresh by mutableIntStateOf(0)
+
+    /** The subfolder of the workspace the side panel was left in (see WorkspaceBrowser). */
+    private var filesPath by mutableStateOf<List<Pair<String, String>>>(emptyList())
+
+    private val addWorkspaceLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { tree -> tree?.let { addWorkspace(it) } }
+
+    /**
+     * Keeps the grant to the folder [tree] and adds it as a workspace named after the
+     * folder — or, picked again after its grant was lost, brings the one there was back.
+     */
+    private fun addWorkspace(tree: Uri) {
+        try {
+            contentResolver.takePersistableUriPermission(
+                tree, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (e: SecurityException) {
+            e.printStackTrace()
+            Toast.makeText(this, "The app can't keep access to that folder", Toast.LENGTH_LONG).show()
+            return
+        }
+        lifecycleScope.launch {
+            val name = withContext(Dispatchers.IO) {
+                runCatching { DocumentUri.displayName(this@MainActivity, FolderBrowser.uriOf(tree, FolderBrowser.rootId(tree))) }
+                    .getOrNull()
+            } ?: "Workspace"
+            val key = tree.toString()
+            val existing = workspaces.firstOrNull { it.uri == key }
+            workspaces = if (existing != null) workspaces else workspaces + Workspaces.Workspace(key, name, Workspaces.nextColor(workspaces))
+            Workspaces.save(this@MainActivity, workspaces)
+            selectWorkspace(key)
+            filesRefresh++
+        }
+    }
+
+    private fun selectWorkspace(uri: String?) {
+        if (uri != selectedWorkspace) filesPath = emptyList()
+        selectedWorkspace = uri
+        Workspaces.saveSelected(this, uri)
+    }
+
+    private fun editWorkspace(workspace: Workspaces.Workspace, name: String, color: Int) {
+        workspaces = workspaces.map { if (it.uri == workspace.uri) it.copy(name = name, color = color) else it }
+        Workspaces.save(this, workspaces)
+    }
+
+    /** Takes [workspace] off the list and lets go of its grant; the folder and its files stay. */
+    private fun removeWorkspace(workspace: Workspaces.Workspace) {
+        workspaces = workspaces.filter { it.uri != workspace.uri }
+        Workspaces.save(this, workspaces)
+        if (selectedWorkspace == workspace.uri) selectWorkspace(workspaces.firstOrNull()?.uri)
+        try {
+            contentResolver.releasePersistableUriPermission(
+                Uri.parse(workspace.uri),
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (e: SecurityException) {
+            e.printStackTrace()
+        }
     }
 
     /**
@@ -564,17 +699,22 @@ class MainActivity : ComponentActivity() {
         val target = currentDocumentUri
         val asRnote = saveAsRnote
         val known = knownLastModified
-        val wrote = withContext(Dispatchers.IO) {
-            try {
-                Recovery.write(this@MainActivity, document, target, asRnote)
-            } catch (e: Throwable) {
-                e.printStackTrace()
+        savesRunning++
+        try {
+            val wrote = withContext(Dispatchers.IO) {
+                try {
+                    Recovery.write(this@MainActivity, document, target, asRnote)
+                } catch (e: Throwable) {
+                    e.printStackTrace()
+                }
+                target != null && busyMessage == null && !changedElsewhere(target, known) &&
+                    writeLock.withLock { writeDocument(target, document, asRnote) }
             }
-            target != null && busyMessage == null && !changedElsewhere(target, known) &&
-                writeLock.withLock { writeDocument(target, document, asRnote) }
+            if (wrote && target != null) afterSave(target, document)
+            return wrote
+        } finally {
+            savesRunning--
         }
-        if (wrote && target != null) afterSave(target, document)
-        return wrote
     }
 
     /** One write to a file at a time: autosave and a manual save can otherwise overlap. */
@@ -604,24 +744,29 @@ class MainActivity : ComponentActivity() {
         pendingDocumentToSave = null
         busyMessage = "Saving…"
         lifecycleScope.launch {
-            val success = writeLock.withLock { withContext(Dispatchers.IO) { writeDocument(uri, document, asRnote) } }
-            busyMessage = null
-            if (!success) {
-                Toast.makeText(this@MainActivity, "Save failed", Toast.LENGTH_SHORT).show()
-                return@launch
+            savesRunning++
+            try {
+                val success = writeLock.withLock { withContext(Dispatchers.IO) { writeDocument(uri, document, asRnote) } }
+                busyMessage = null
+                if (!success) {
+                    Toast.makeText(this@MainActivity, "Save failed", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                saveAsRnote = asRnote
+                // The picker lets the name be edited, so the note takes the name it was actually
+                // saved under — otherwise the title in the bar and the file on disk disagree.
+                val savedTitle = DocumentUri.displayName(this@MainActivity, uri)?.let(DocumentUri::titleFrom)
+                adoptDocumentUri(uri, savedTitle ?: document.title)
+                savedTitle?.let { onTitleAdopted?.invoke(it) }
+                afterSave(uri, document)
+                Toast.makeText(
+                    this@MainActivity,
+                    if (asRnote) "Saved as .rnote" else "Saved as .json",
+                    Toast.LENGTH_SHORT
+                ).show()
+            } finally {
+                savesRunning--
             }
-            saveAsRnote = asRnote
-            // The picker lets the name be edited, so the note takes the name it was actually
-            // saved under — otherwise the title in the bar and the file on disk disagree.
-            val savedTitle = DocumentUri.displayName(this@MainActivity, uri)?.let(DocumentUri::titleFrom)
-            adoptDocumentUri(uri, savedTitle ?: document.title)
-            savedTitle?.let { onTitleAdopted?.invoke(it) }
-            afterSave(uri, document)
-            Toast.makeText(
-                this@MainActivity,
-                if (asRnote) "Saved as .rnote" else "Saved as .json",
-                Toast.LENGTH_SHORT
-            ).show()
         }
     }
 
@@ -780,6 +925,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        workspaces = Workspaces.load(this)
+        selectedWorkspace = Workspaces.loadSelected(this)
         setContent {
             // Rnote's own breakpoint collapses its sidebar under 1250sp on a desktop window;
             // here, below Material's compact/medium 600dp boundary, the floating PenConfigStrip
@@ -840,6 +987,7 @@ class MainActivity : ComponentActivity() {
             var canvasTop by remember { mutableFloatStateOf(0f) }
             var textSessionCount by remember { mutableIntStateOf(0) }
             var showRecent by remember { mutableStateOf(false) }
+            var showFiles by remember { mutableStateOf(false) }
             var showPages by remember { mutableStateOf(false) }
             val snapshot = { DocSnapshot(strokes.toList(), documentNativeElements) }
             val restore = { state: DocSnapshot ->
@@ -937,6 +1085,55 @@ class MainActivity : ComponentActivity() {
                 knownLastModified = null
                 // Starting over discards the old note on purpose; don't offer it back.
                 Recovery.clear(this)
+            }
+
+            // ── Workspace panel ───────────────────────────────────────────────────
+            // A panel action that would replace a note never saved anywhere, waiting for
+            // a yes. A note with a file is saved on the way out instead (see openRecent).
+            var confirmDiscard by remember { mutableStateOf<(() -> Unit)?>(null) }
+            val unlessUnsavedNew: (() -> Unit) -> Unit = { action ->
+                if (isModified && currentDocumentUri == null) {
+                    confirmDiscard = action
+                } else {
+                    action()
+                }
+            }
+            // Desktop Rnote's "New file" in its browser: the file is made first, then the
+            // empty note written into it, so the note has its home from the start and
+            // every save goes straight back there.
+            val newNoteIn: (Uri, String, String) -> Unit = { tree, folderId, name ->
+                lifecycleScope.launch {
+                    if (busyMessage != null) return@launch
+                    if (!autosaveNow() && currentDocumentUri != null) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "This note couldn't be saved automatically — save it first",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        return@launch
+                    }
+                    val fileName = if (DocumentUri.isRnote(name)) name else "$name.rnote"
+                    val created = withContext(Dispatchers.IO) {
+                        FolderBrowser.createNote(this@MainActivity, tree, folderId, fileName)?.let { uri ->
+                            // A provider may pick another name when that one is taken.
+                            uri to (DocumentUri.displayName(this@MainActivity, uri) ?: fileName)
+                        }
+                    }
+                    if (created == null) {
+                        Toast.makeText(this@MainActivity, "Could not create the note there", Toast.LENGTH_LONG).show()
+                        return@launch
+                    }
+                    val (uri, actualName) = created
+                    val title = DocumentUri.titleFrom(actualName)
+                    startNewDocument()
+                    documentTitle = title
+                    adoptDocumentUri(uri, title)
+                    saveInPlace(NoteDocument(title = title, paperStyle = paperStyle))
+                }
+            }
+            // Coming to the files is a moment to look whether Toni saved the open note meanwhile.
+            LaunchedEffect(showFiles) {
+                if (showFiles) checkForNewerVersion()
             }
 
             // ── Save succeeded handler ────────────────────────────────────────────
@@ -1274,7 +1471,9 @@ class MainActivity : ComponentActivity() {
                                     isModified = true
                                 }
                             },
-                            onOpenPageSettings = { showPageSettings = true }
+                            onOpenPageSettings = { showPageSettings = true },
+                            filesOpen = showFiles,
+                            onToggleFiles = { showFiles = !showFiles }
                         )
                     }
                 ) { innerPadding ->
@@ -1600,6 +1799,83 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
+                        // ── Workspace browser, from the left as Rnote's sidebar ────────
+                        AnimatedVisibility(
+                            visible = showFiles,
+                            enter = slideInHorizontally { -it },
+                            exit = slideOutHorizontally { -it },
+                            modifier = Modifier.align(Alignment.CenterStart)
+                        ) {
+                            WorkspaceBrowser(
+                                workspaces = workspaces,
+                                selected = selectedWorkspace,
+                                currentDocument = currentDocumentUri,
+                                refreshKey = filesRefresh,
+                                path = filesPath,
+                                onPathChange = { filesPath = it },
+                                onSelectWorkspace = { selectWorkspace(it) },
+                                onAddWorkspace = { addWorkspaceLauncher.launch(null) },
+                                onEditWorkspace = { ws, name, color -> editWorkspace(ws, name, color) },
+                                onRemoveWorkspace = { removeWorkspace(it) },
+                                onOpen = { uri, kind ->
+                                    when (kind) {
+                                        FolderListing.Kind.NOTE -> if (!FolderBrowser.sameDocument(uri, currentDocumentUri)) {
+                                            unlessUnsavedNew {
+                                                showFiles = false
+                                                openRecent(uri)
+                                            }
+                                        } else {
+                                            showFiles = false
+                                        }
+                                        // Into the open note, as Rnote's browser does with them.
+                                        FolderListing.Kind.PDF -> {
+                                            showFiles = false
+                                            importPdf(uri)
+                                        }
+                                        FolderListing.Kind.IMAGE -> {
+                                            showFiles = false
+                                            insertImage(uri)
+                                        }
+                                        FolderListing.Kind.FOLDER -> Unit
+                                    }
+                                },
+                                onNewNote = { tree, folderId, name ->
+                                    unlessUnsavedNew {
+                                        showFiles = false
+                                        newNoteIn(tree, folderId, name)
+                                    }
+                                },
+                                onCurrentRenamed = { uri, name ->
+                                    currentDocumentUri?.let { RecentFiles.remove(this@MainActivity, it.toString()) }
+                                    val title = DocumentUri.titleFrom(name)
+                                    documentTitle = title
+                                    adoptDocumentUri(uri, title)
+                                    // Some providers count a rename as a change: not one made elsewhere.
+                                    lifecycleScope.launch {
+                                        knownLastModified = withContext(Dispatchers.IO) {
+                                            DocumentUri.lastModified(this@MainActivity, uri)
+                                        }
+                                    }
+                                },
+                                onCurrentDeleted = {
+                                    currentDocumentUri?.let { RecentFiles.remove(this@MainActivity, it.toString()) }
+                                    currentDocumentUri = null
+                                    knownLastModified = null
+                                    // Still open here, now with nowhere to go: Save asks where.
+                                    isModified = true
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Its file was deleted — the note is still open here; save it to keep it",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                },
+                                onClose = { showFiles = false },
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .then(if (isCompactWidth) Modifier.fillMaxWidth() else Modifier.width(340.dp))
+                            )
+                        }
+
                         // ── Progress card while a file is read or written ─────────────
                         busyMessage?.let { message ->
                             Column(
@@ -1758,6 +2034,26 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
+                    // ── A never-saved note about to be replaced from the panel ─────
+                    confirmDiscard?.let { action ->
+                        AlertDialog(
+                            onDismissRequest = { confirmDiscard = null },
+                            title = { Text("Discard this note?") },
+                            text = {
+                                Text("\"$documentTitle\" has never been saved. Opening another note discards it — save it first to keep it.")
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    confirmDiscard = null
+                                    action()
+                                }) { Text("Discard") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { confirmDiscard = null }) { Text("Cancel") }
+                            }
+                        )
+                    }
+
                     // ── New Document Confirmation ─────────────────────────────────
                     if (showNewDocumentDialog) {
                         AlertDialog(
@@ -1849,6 +2145,12 @@ class MainActivity : ComponentActivity() {
         knownLastModified = null
         incomingIsRecovered = true
         incomingDocument = recovered.document
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Toni may have saved the open note on the laptop meanwhile.
+        checkForNewerVersion()
     }
 
     override fun onStop() {

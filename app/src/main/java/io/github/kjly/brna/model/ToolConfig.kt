@@ -72,12 +72,12 @@ enum class BrushStyle {
 }
 
 /**
- * Rnote's `PenPathBuilderType` for the brush ("Path Modelling" in its settings): SIMPLE
- * draws through the pen's samples as they come; MODELED — Rnote's default — through what
- * its stroke modeler makes of them (see render.ModeledPathBuilder). Rnote's third, Curved,
- * writes curve segments, which this app's strokes cannot hold.
+ * Rnote's `PenPathBuilderType` for the brush ("Path Modelling" in its settings), in its
+ * order: SIMPLE draws through the pen's samples as they come; CURVED through cubic curves
+ * between them (see render.CurvedPathBuilder); MODELED — Rnote's default — through what
+ * its stroke modeler makes of them (see render.ModeledPathBuilder).
  */
-enum class PenPathBuilder { SIMPLE, MODELED }
+enum class PenPathBuilder { SIMPLE, CURVED, MODELED }
 
 /**
  * Matches desktop Rnote's RnStrokeWidthPicker gschema defaults exactly:
@@ -156,6 +156,16 @@ data class ToolConfig(
      * to the page's pattern. Off by default, as in Rnote; kept in the settings.
      */
     val snapPositions: Boolean = false,
+    /**
+     * Rnote's "Block Pinch to Zoom": two fingers still move the page, but no longer zoom
+     * it — so a hand resting on the screen can't. Off by default, as in Rnote.
+     */
+    val blockPinchZoom: Boolean = false,
+    /**
+     * Rnote's "Respect Borders When Pasting": an inserted image is shrunk until it stays
+     * clear of the next page border to the right and below. Off by default, as in Rnote.
+     */
+    val respectBorders: Boolean = false,
     /** When false (default), only stylus/S-Pen input can draw. Finger touch is reserved for pan & zoom. */
     val allowFingerDrawing: Boolean = false
 ) {

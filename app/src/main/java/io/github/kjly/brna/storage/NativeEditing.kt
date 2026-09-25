@@ -29,6 +29,7 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -672,14 +673,17 @@ object NativeEditing {
      * per pixel, shrunk — never grown — until the image fits in the view and, on a layout
      * of fixed width, on the page. The view is in document units; [offset] is too, and is
      * also kept free on the right and at the bottom, where Rnote lets the image touch the
-     * edge but the pen picker would sit on top of it here.
+     * edge but the pen picker would sit on top of it here. With [borders] — Rnote's
+     * "Respect Borders When Pasting" — it is shrunk until it also stays clear of the next
+     * page border to the right and below, on every layout.
      */
     fun placeImage(
         pixelWidth: Int, pixelHeight: Int,
         viewLeft: Float, viewTop: Float, viewRight: Float, viewBottom: Float,
         offset: Float,
         fixedPageWidth: Float?,
-        clampToOrigin: Boolean
+        clampToOrigin: Boolean,
+        borders: PageBorders? = null
     ): ImagePlacement {
         var x = viewLeft + offset
         var y = viewTop + offset
@@ -695,8 +699,17 @@ object NativeEditing {
         if (roomX > 0f) scale = minOf(scale, roomX / w)
         if (roomY > 0f) scale = minOf(scale, roomY / h)
         if (fixedPageWidth != null && fixedPageWidth > x) scale = minOf(scale, (fixedPageWidth - x) / w)
+        if (borders != null && borders.width > 0f && borders.height > 0f) {
+            // Rnote's `helper_calculate_page_next_limit`: the page border after the corner.
+            val nextX = (floor(x / borders.width) + 1f) * borders.width
+            val nextY = (floor(y / borders.height) + 1f) * borders.height
+            scale = minOf(scale, (nextX - x) / w, (nextY - y) / h)
+        }
         return ImagePlacement(x, y, scale.coerceAtLeast(IMAGE_SCALE_MIN))
     }
+
+    /** The page size the borders repeat at, for [placeImage]. */
+    data class PageBorders(val width: Float, val height: Float)
 
     /**
      * A new image, built as desktop Rnote's `BitmapImage::from_image_bytes` builds one and

@@ -65,7 +65,9 @@ import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.ToolsMode
 import io.github.kjly.brna.model.ViewportState
+import io.github.kjly.brna.render.CurvedPathBuilder
 import io.github.kjly.brna.render.ModeledPathBuilder
+import io.github.kjly.brna.render.PenPathBuilding
 import io.github.kjly.brna.render.NativeElementRenderer
 import io.github.kjly.brna.render.VectorImageRenderer
 import io.github.kjly.brna.storage.NativeEditing
@@ -261,8 +263,8 @@ fun DrawingCanvas(
     // The rough style's seed for the shape being drawn: new with every shape, however
     // many strokes of the pen it takes, as Rnote's shaper picks one when it starts one.
     var roughSeed by remember { mutableStateOf(0L) }
-    // Rnote's stroke modeler for the stroke being drawn, when the brush models its paths.
-    var pathBuilder by remember { mutableStateOf<ModeledPathBuilder?>(null) }
+    // Rnote's path builder for the stroke being drawn, when the brush curves or models its paths.
+    var pathBuilder by remember { mutableStateOf<PenPathBuilding?>(null) }
     /** Memoised stroke bounds and outlines, keyed by Stroke identity. See the draw block below. */
     val outlineCache = remember { IdentityHashMap<Stroke, CachedOutline>() }
     val lassoPoints = remember { mutableStateListOf<Offset>() }
@@ -356,8 +358,13 @@ fun DrawingCanvas(
                             } else {
                                 // Pan delta (translation of the centroid itself)
                                 val panDelta = midpoint - lastPinchMidpoint
-                                // Zoom delta (ratio of current spread to previous spread)
-                                val zoomDelta = if (lastPinchDistance > 0f) distance / lastPinchDistance else 1f
+                                // Zoom delta (ratio of current spread to previous spread); none at
+                                // all with Rnote's "Block Pinch to Zoom", which leaves the panning.
+                                val zoomDelta = if (lastPinchDistance > 0f && !toolConfig.blockPinchZoom) {
+                                    distance / lastPinchDistance
+                                } else {
+                                    1f
+                                }
                                 val newZoom = (viewportState.zoomScale * zoomDelta)
                                     .coerceIn(ViewportState.ZOOM_MIN, ViewportState.ZOOM_MAX)
                                 val actualZoomRatio = newZoom / viewportState.zoomScale
@@ -617,17 +624,22 @@ fun DrawingCanvas(
                         currentPoints.add(InkPoint(x, y, rawPressure))
                         lassoPoints.add(Offset(x, y))
                         texturedSeed = kotlin.random.Random.nextLong()
-                        // The stroke starts at the pen-down sample either way; with the
-                        // modeled builder, what follows is what the modeler makes of the pen.
                         // Rnote's brush: the marker squeaks once as it touches down, the
                         // others scratch for as long as they move.
                         if (activeTool == ToolType.BRUSH) {
                             if (toolConfig.brushStyle == BrushStyle.MARKER) penSounds?.marker() else penSounds?.brush()
                         }
-                        pathBuilder = if (activeTool == ToolType.BRUSH && toolConfig.penPathBuilder == PenPathBuilder.MODELED) {
-                            ModeledPathBuilder(InkPoint(x, y, rawPressure), eventSeconds(motionEvent, motionEvent.historySize))
-                        } else {
+                        // The stroke starts at the pen-down sample either way; with the
+                        // curved or modeled builder, what follows is what it makes of the pen.
+                        pathBuilder = if (activeTool != ToolType.BRUSH) {
                             null
+                        } else {
+                            when (toolConfig.penPathBuilder) {
+                                PenPathBuilder.SIMPLE -> null
+                                PenPathBuilder.CURVED -> CurvedPathBuilder(InkPoint(x, y, rawPressure))
+                                PenPathBuilder.MODELED ->
+                                    ModeledPathBuilder(InkPoint(x, y, rawPressure), eventSeconds(motionEvent, motionEvent.historySize))
+                            }
                         }
 
                         if (activeTool == ToolType.ERASER) {
@@ -777,8 +789,9 @@ fun DrawingCanvas(
                             // with every event. At the pen's own pressure, so the tip
                             // doesn't swell or thin on a guess.
                             predictedPoints.clear()
-                            // A modeled stroke trails the pen a little; Rnote draws the tip
-                            // catching up with it, and the pen's own prediction goes on from there.
+                            // A curved or modeled stroke trails the pen a little; Rnote draws
+                            // what it has not made into segments yet, and the pen's own
+                            // prediction goes on from there.
                             builder?.let { predictedPoints.addAll(it.prediction) }
                             if (isStylus && activeTool == ToolType.BRUSH && motionEvent.actionMasked == MotionEvent.ACTION_MOVE) {
                                 predictor.predict()?.takeIf { it.pointerCount > 0 }?.let { predicted ->

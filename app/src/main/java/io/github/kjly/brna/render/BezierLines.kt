@@ -1,6 +1,7 @@
 package io.github.kjly.brna.render
 
 import io.github.kjly.brna.model.SegmentCurve
+import io.github.kjly.brna.model.StrokePoint
 import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.ln
@@ -21,19 +22,54 @@ internal object BezierLines {
     private const val MAX_SUBSEGMENTS = 5
     private const val MIN_SUBSEGMENTS = 2
 
-    /** How many pieces a curve [length] long is cut into. */
-    fun count(length: Double): Int {
-        val n = if (length < MAX_HITBOX_DIAGONAL * MAX_SUBSEGMENTS) {
+    /** How many pieces a curve [length] long is drawn with. */
+    fun count(length: Double): Int = hitboxCount(length).coerceAtLeast(MIN_SUBSEGMENTS)
+
+    /**
+     * How many pieces a curve [length] long is hit-tested as: Rnote's hitboxes, which
+     * take `no_subsegments_for_segment_len` as it is, one piece for a short curve.
+     */
+    fun hitboxCount(length: Double): Int =
+        if (length < MAX_HITBOX_DIAGONAL * MAX_SUBSEGMENTS) {
             ceil(length / MAX_HITBOX_DIAGONAL).toInt().coerceAtLeast(1)
         } else {
             MAX_SUBSEGMENTS
         }
-        return n.coerceAtLeast(MIN_SUBSEGMENTS)
+
+    /** The pieces the curve from ([sx], [sy]) to ([ex], [ey]) is drawn with, each `[x0, y0, x1, y1]`. */
+    fun lines(sx: Float, sy: Float, ex: Float, ey: Float, curve: SegmentCurve): List<FloatArray> =
+        lines(sx, sy, ex, ey, curve, count(length(sx, sy, ex, ey, curve)))
+
+    /** The pieces the curve is hit-tested as: Rnote's hitboxes are their bounds. */
+    fun hitboxLines(sx: Float, sy: Float, ex: Float, ey: Float, curve: SegmentCurve): List<FloatArray> =
+        lines(sx, sy, ex, ey, curve, hitboxCount(length(sx, sy, ex, ey, curve)))
+
+    /**
+     * [points] with every curved segment replaced by the ends of its hitbox pieces, for
+     * testing what a stroke covers — never for drawing or keeping. [points] itself when
+     * nothing in it is curved.
+     */
+    fun flattened(points: List<StrokePoint>): List<StrokePoint> {
+        if (points.none { it.curve != null }) return points
+        val out = ArrayList<StrokePoint>(points.size * 2)
+        for ((i, p) in points.withIndex()) {
+            val curve = p.curve
+            if (i == 0 || curve == null) {
+                out += if (curve == null) p else p.copy(curve = null)
+                continue
+            }
+            val prev = points[i - 1]
+            val pieces = hitboxLines(prev.x, prev.y, p.x, p.y, curve)
+            for (k in 0 until pieces.size - 1) {
+                val t = (k + 1).toFloat() / pieces.size
+                out += StrokePoint(pieces[k][2], pieces[k][3], prev.pressure + (p.pressure - prev.pressure) * t)
+            }
+            out += p.copy(curve = null)
+        }
+        return out
     }
 
-    /** The pieces of the curve from ([sx], [sy]) to ([ex], [ey]), each `[x0, y0, x1, y1]`. */
-    fun lines(sx: Float, sy: Float, ex: Float, ey: Float, curve: SegmentCurve): List<FloatArray> {
-        val n = count(length(sx, sy, ex, ey, curve))
+    private fun lines(sx: Float, sy: Float, ex: Float, ey: Float, curve: SegmentCurve, n: Int): List<FloatArray> {
         val out = ArrayList<FloatArray>(n)
         var x0 = sx.toDouble()
         var y0 = sy.toDouble()

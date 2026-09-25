@@ -9,6 +9,7 @@ import io.github.kjly.brna.model.NativeCanvasElement
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
+import io.github.kjly.brna.render.BezierLines
 import io.github.kjly.brna.storage.NativeEditing
 import kotlin.math.hypot
 
@@ -21,7 +22,8 @@ object SelectionManager {
         if (lassoPoints.size < 3 || strokes.isEmpty()) return emptyList()
 
         return strokes.filter { stroke ->
-            val strokePoints = stroke.points
+            // A curved segment counts by its curve, not the line between its ends.
+            val strokePoints = BezierLines.flattened(stroke.points)
             if (strokePoints.isEmpty()) false
             else {
                 val insideCount = strokePoints.count { pt ->
@@ -40,7 +42,7 @@ object SelectionManager {
         val l = minOf(a.x, b.x); val r = maxOf(a.x, b.x)
         val t = minOf(a.y, b.y); val btm = maxOf(a.y, b.y)
         return strokes.filter { s ->
-            s.points.isNotEmpty() && s.points.all { it.x in l..r && it.y in t..btm }
+            s.points.isNotEmpty() && BezierLines.flattened(s.points).all { it.x in l..r && it.y in t..btm }
         }
     }
 
@@ -64,7 +66,8 @@ object SelectionManager {
                         NativeEditing.segmentHitsBox(path[j - 1].x, path[j - 1].y, path[j].x, path[j].y, l, t, r, b)
                     }
             }
-            val pts = s.points
+            // A curved segment is its pieces, each a hitbox of its own.
+            val pts = BezierLines.flattened(s.points)
             when (pts.size) {
                 0 -> false
                 1 -> crosses(pts[0], pts[0])
@@ -81,7 +84,7 @@ object SelectionManager {
     fun strokeAt(point: Offset, strokes: List<Stroke>, tolerance: Float): Stroke? =
         strokes.lastOrNull { s ->
             val reach = s.strokeWidth / 2f + tolerance
-            val pts = s.points
+            val pts = BezierLines.flattened(s.points)
             when (pts.size) {
                 0 -> false
                 1 -> hypot(point.x - pts[0].x, point.y - pts[0].y) <= reach
@@ -140,7 +143,7 @@ object SelectionManager {
         var maxY = -Float.MAX_VALUE
 
         for (stroke in selectedStrokes) {
-            for (pt in stroke.points) {
+            for (pt in BezierLines.flattened(stroke.points)) {
                 if (pt.x < minX) minX = pt.x
                 if (pt.y < minY) minY = pt.y
                 if (pt.x > maxX) maxX = pt.x

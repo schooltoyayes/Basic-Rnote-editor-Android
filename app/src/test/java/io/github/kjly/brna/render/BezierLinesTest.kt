@@ -97,4 +97,27 @@ class BezierLinesTest {
         assertEquals(36f + 2f, ys.max(), 1e-3f)
         assertTrue(ys.min() < 0f)
     }
+
+    @Test
+    fun `hit tests see a curve's pieces, a short curve as one`() {
+        // Rnote's hitboxes take the count as it is: one piece for a curve under 15 long.
+        assertEquals(1, BezierLines.hitboxCount(1.5))
+        assertEquals(3, BezierLines.hitboxCount(30.7))
+        assertEquals(5, BezierLines.hitboxCount(139.5))
+        val points = listOf(
+            StrokePoint(0f, 0f, 0.2f),
+            StrokePoint(100f, 0f, 0.6f, SegmentCurve.Cubic(0f, 50f, 100f, 50f)),
+            StrokePoint(110f, 0f, 0.6f)
+        )
+        val flat = BezierLines.flattened(points)
+        // The curve's four inner piece ends, then its end, then the straight segment's.
+        assertEquals(7, flat.size)
+        assertTrue(flat.all { it.curve == null })
+        assertEquals(24.0f, flat[1].y, 1e-3f)
+        assertEquals(36.0f, flat[2].y, 1e-3f)
+        assertEquals(0.28f, flat[1].pressure, 1e-6f)
+        // Nothing curved: the very same list.
+        val straight = listOf(StrokePoint(0f, 0f), StrokePoint(1f, 1f))
+        assertTrue(BezierLines.flattened(straight) === straight)
+    }
 }

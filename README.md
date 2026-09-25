@@ -33,8 +33,9 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   Rnote's six pressure curves for Solid — constant, linear, square and cubic root,
   quadratic and cubic. Rnote's path modelling: by default the pen's samples go through
   a port of the stroke modeler Rnote uses (ink-stroke-modeler-rs, with Rnote's
-  settings), which smooths out jitter and gives handwriting its curves; "Simple" draws
-  through the raw samples instead. Three size presets per tool plus a numeric adjuster, and
+  settings), which smooths out jitter and gives handwriting its curves; "Curved" draws
+  Rnote's cubic curves through them, and "Simple" straight lines through the raw
+  samples. Three size presets per tool plus a numeric adjuster, and
   four favorite slots that keep a style, color and width together.
 - **Shaper**: line, arrow, rectangle, ellipse, and — built from lines, as Rnote
   builds them — 2D, 3D and single-quadrant coordinate systems and a grid. Rnote's
@@ -66,7 +67,8 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   and its Laser, a red trail to point with that fades away and is never saved.
 - **Stylus-aware input**: stylus-only mode by default (finger pans and zooms),
   optional finger drawing, S-Pen barrel button as a momentary eraser, S-Pen Air
-  Actions mapped to undo/redo, two-finger pinch-zoom and pan. Every sample the pen
+  Actions mapped to undo/redo, two-finger pinch-zoom and pan — the zoom blockable, as
+  with Rnote's "Block Pinch to Zoom", so a resting hand can't. Every sample the pen
   reports is used, the ones Android batches between frames included, as Rnote uses
   them; the pen's events arrive unbuffered, and motion prediction draws the ink a
   little ahead of the pen, never saved. The finished note is drawn on a layer of its
@@ -92,8 +94,9 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   a round trip. Desktop brush strokes do too: one that isn't changed here is
   written back byte for byte, and one that is — moved, scaled, recolored, cut
   with the eraser — keeps its curves, since the curve segments of Rnote's
-  "Curved" pen path are read, drawn as Rnote draws them and written back as
-  curves. Autosave, crash recovery, a warning before overwriting a file
+  "Curved" pen path are read, drawn as Rnote draws them, hit by the eraser and the
+  selector where the curve runs, and written back as curves. With Rnote's "Respect
+  Borders When Pasting", an inserted image stays clear of the next page border. Autosave, crash recovery, a warning before overwriting a file
   that changed elsewhere (save a copy, overwrite, or load the other version) —
   judged by the file's content, so a sync that only touches its time is no
   alarm — a list of recent notes, and a page overview with thumbnails. Undo

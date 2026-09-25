@@ -2,8 +2,10 @@ package io.github.kjly.brna.ui.canvas
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import io.github.kjly.brna.model.SegmentCurve
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
+import io.github.kjly.brna.render.BezierLines
 import java.util.UUID
 import kotlin.math.ceil
 import kotlin.math.hypot
@@ -107,6 +109,17 @@ object EraserHitTest {
 
     /** Whether the eraser square hits the segment [a]–[b], checked as Rnote's hitboxes. */
     private fun segmentHit(eraserBounds: Rect, a: StrokePoint, b: StrokePoint, loosen: Float): Boolean {
+        // A curve is its pieces, each piece's box a hitbox, as in Rnote's `hitboxes_w_segs_indices`.
+        b.curve?.let { curve ->
+            return BezierLines.hitboxLines(a.x, a.y, b.x, b.y, curve).any { piece ->
+                eraserBounds.overlaps(
+                    Rect(
+                        min(piece[0], piece[2]) - loosen, min(piece[1], piece[3]) - loosen,
+                        max(piece[0], piece[2]) + loosen, max(piece[1], piece[3]) + loosen
+                    )
+                )
+            }
+        }
         val splits = subsegmentCount(hypot(b.x - a.x, b.y - a.y))
         for (s in 0 until splits) {
             val t0 = s.toFloat() / splits
@@ -130,6 +143,18 @@ object EraserHitTest {
             if (p.y < minY) minY = p.y
             if (p.x > maxX) maxX = p.x
             if (p.y > maxY) maxY = p.y
+            // A curve stays within its control points, so they bound it too.
+            when (val c = p.curve) {
+                null -> Unit
+                is SegmentCurve.Quad -> {
+                    minX = min(minX, c.cx); maxX = max(maxX, c.cx)
+                    minY = min(minY, c.cy); maxY = max(maxY, c.cy)
+                }
+                is SegmentCurve.Cubic -> {
+                    minX = min(minX, min(c.c1x, c.c2x)); maxX = max(maxX, max(c.c1x, c.c2x))
+                    minY = min(minY, min(c.c1y, c.c2y)); maxY = max(maxY, max(c.c1y, c.c2y))
+                }
+            }
         }
         return Rect(minX - loosen, minY - loosen, maxX + loosen, maxY + loosen)
     }

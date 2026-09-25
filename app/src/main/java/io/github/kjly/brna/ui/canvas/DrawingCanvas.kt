@@ -1,5 +1,6 @@
 package io.github.kjly.brna.ui.canvas
 
+import android.os.Build
 import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.compose.foundation.Canvas
@@ -49,6 +50,7 @@ import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.NativeTextElement
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PaperStyle
+import io.github.kjly.brna.model.PenPathBuilder
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RoughStyle
 import io.github.kjly.brna.model.SelectorMode
@@ -62,6 +64,7 @@ import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.ToolsMode
 import io.github.kjly.brna.model.ViewportState
+import io.github.kjly.brna.render.ModeledPathBuilder
 import io.github.kjly.brna.render.NativeElementRenderer
 import io.github.kjly.brna.render.VectorImageRenderer
 import io.github.kjly.brna.storage.NativeEditing
@@ -255,6 +258,8 @@ fun DrawingCanvas(
     // The rough style's seed for the shape being drawn: new with every shape, however
     // many strokes of the pen it takes, as Rnote's shaper picks one when it starts one.
     var roughSeed by remember { mutableStateOf(0L) }
+    // Rnote's stroke modeler for the stroke being drawn, when the brush models its paths.
+    var pathBuilder by remember { mutableStateOf<ModeledPathBuilder?>(null) }
     /** Memoised stroke bounds and outlines, keyed by Stroke identity. See the draw block below. */
     val outlineCache = remember { IdentityHashMap<Stroke, CachedOutline>() }
     val lassoPoints = remember { mutableStateListOf<Offset>() }
@@ -328,6 +333,7 @@ fun DrawingCanvas(
                         isDrawing = false
                         currentPoints.clear()
                         lassoPoints.clear()
+                        pathBuilder = null
                     }
 
                     val x0 = motionEvent.getX(0)
@@ -608,6 +614,13 @@ fun DrawingCanvas(
                         currentPoints.add(InkPoint(x, y, rawPressure))
                         lassoPoints.add(Offset(x, y))
                         texturedSeed = kotlin.random.Random.nextLong()
+                        // The stroke starts at the pen-down sample either way; with the
+                        // modeled builder, what follows is what the modeler makes of the pen.
+                        pathBuilder = if (activeTool == ToolType.BRUSH && toolConfig.penPathBuilder == PenPathBuilder.MODELED) {
+                            ModeledPathBuilder(InkPoint(x, y, rawPressure), eventSeconds(motionEvent, motionEvent.historySize))
+                        } else {
+                            null
+                        }
 
                         if (activeTool == ToolType.ERASER) {
                             eraserCursor = Offset(x, y)
@@ -720,6 +733,7 @@ fun DrawingCanvas(
                             // between as the event's history. Rnote takes every one (its input
                             // handling walks the event's history too), so a quick curve keeps
                             // the shape it was written with, and a quick eraser misses nothing.
+                            val builder = pathBuilder.takeIf { activeTool == ToolType.BRUSH }
                             for (h in 0..motionEvent.historySize) {
                                 val point = if (h < motionEvent.historySize) {
                                     val at = viewportState.screenToCanvas(
@@ -734,7 +748,11 @@ fun DrawingCanvas(
                                 } else {
                                     InkPoint(x, y, rawPressure)
                                 }
-                                currentPoints.add(point)
+                                if (builder != null) {
+                                    currentPoints.addAll(builder.move(point, eventSeconds(motionEvent, h)))
+                                } else {
+                                    currentPoints.add(point)
+                                }
                                 lassoPoints.add(Offset(point.x, point.y))
                                 if (activeTool == ToolType.ERASER) {
                                     eraseAt(Offset(point.x, point.y), eraserWidth, splitEraser, strokes, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
@@ -750,6 +768,9 @@ fun DrawingCanvas(
                             // with every event. At the pen's own pressure, so the tip
                             // doesn't swell or thin on a guess.
                             predictedPoints.clear()
+                            // A modeled stroke trails the pen a little; Rnote draws the tip
+                            // catching up with it, and the pen's own prediction goes on from there.
+                            builder?.let { predictedPoints.addAll(it.prediction) }
                             if (isStylus && activeTool == ToolType.BRUSH && motionEvent.actionMasked == MotionEvent.ACTION_MOVE) {
                                 predictor.predict()?.takeIf { it.pointerCount > 0 }?.let { predicted ->
                                     for (h in 0..predicted.historySize) {
@@ -882,6 +903,15 @@ fun DrawingCanvas(
                                 laserFading = true
                             } else if (activeTool == ToolType.BRUSH && currentPoints.isNotEmpty()) {
                                 val isMarker = toolConfig.brushStyle == BrushStyle.MARKER
+                                // Rnote hands the lift to its builder as the stroke's last
+                                // sample, where it is and as hard as the pen reports; a
+                                // cancelled stroke keeps what it has.
+                                val builder = pathBuilder
+                                if (builder != null && action == MotionEvent.ACTION_UP) {
+                                    currentPoints.addAll(
+                                        builder.up(InkPoint(x, y, rawPressure), eventSeconds(motionEvent, motionEvent.historySize))
+                                    )
+                                }
 
                                 onAddStroke(
                                     Stroke(
@@ -908,6 +938,7 @@ fun DrawingCanvas(
                         shapeEnd = null
                         selectionSnapCorner = null
                         predictedPoints.clear()
+                        pathBuilder = null
                         buttonEraserLatched = false
                         eraseSnapshotTaken = false
                         eraserCursorDown = false
@@ -1431,6 +1462,17 @@ private fun roughLines(
             ?.also { style = style?.advanced() }
     }
 }
+
+/**
+ * When sample [h] of [event] was taken — its history first, then the event itself — in
+ * seconds on the event clock; to the nanosecond where Android reports it so.
+ */
+private fun eventSeconds(event: MotionEvent, h: Int): Double =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        (if (h < event.historySize) event.getHistoricalEventTimeNanos(h) else event.eventTimeNanos) / 1e9
+    } else {
+        (if (h < event.historySize) event.getHistoricalEventTime(h) else event.eventTime) / 1e3
+    }
 
 /** Past this many lines, a shape built from lines is previewed as plain lines even when rough. */
 private const val ROUGH_PREVIEW_LINES_MAX = 32

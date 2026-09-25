@@ -72,6 +72,14 @@ enum class BrushStyle {
 }
 
 /**
+ * Rnote's `PenPathBuilderType` for the brush ("Path Modelling" in its settings): SIMPLE
+ * draws through the pen's samples as they come; MODELED — Rnote's default — through what
+ * its stroke modeler makes of them (see render.ModeledPathBuilder). Rnote's third, Curved,
+ * writes curve segments, which this app's strokes cannot hold.
+ */
+enum class PenPathBuilder { SIMPLE, MODELED }
+
+/**
  * Matches desktop Rnote's RnStrokeWidthPicker gschema defaults exactly:
  * brush/shaper 2.0/6.0/12.0, eraser 4.0/9.0/24.0. Real Rnote's width picker
  * doesn't have a separate scale for the Marker brush style — Solid and
@@ -108,6 +116,8 @@ data class ToolConfig(
     // Rnote's EraserConfig::WIDTH_DEFAULT is 12.0, which is deliberately not one of the
     // 4/9/24 palette presets — a fresh eraser starts between Small and Medium.
     val eraserWidth: Float = 12f,          // Eraser square side in canvas units
+    /** How the brush makes a stroke of the pen's samples; Rnote's default is modeled. */
+    val penPathBuilder: PenPathBuilder = PenPathBuilder.MODELED,
     /**
      * The Solid brush's pressure curve: Rnote's `SolidOptions::pressure_curve`, which its
      * brush settings let you pick and which starts linear.

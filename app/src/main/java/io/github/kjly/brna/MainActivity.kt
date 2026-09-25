@@ -1107,7 +1107,9 @@ class MainActivity : ComponentActivity() {
                 mutableStateOf(
                     ToolConfig(
                         allowFingerDrawing = SettingsManager.loadAllowFingerDrawing(this),
-                        snapPositions = SettingsManager.loadSnapPositions(this)
+                        snapPositions = SettingsManager.loadSnapPositions(this),
+                        blockPinchZoom = SettingsManager.loadBlockPinchZoom(this),
+                        respectBorders = SettingsManager.loadRespectBorders(this)
                     )
                 )
             }
@@ -1121,6 +1123,15 @@ class MainActivity : ComponentActivity() {
             val togglePenSounds: () -> Unit = {
                 penSoundsOn = !penSoundsOn
                 SettingsManager.savePenSounds(this@MainActivity, penSoundsOn)
+            }
+            // Rnote's other canvas menu switches, kept between sessions as Rnote keeps them.
+            val toggleBlockPinchZoom: () -> Unit = {
+                toolConfig = toolConfig.copy(blockPinchZoom = !toolConfig.blockPinchZoom)
+                SettingsManager.saveBlockPinchZoom(this@MainActivity, toolConfig.blockPinchZoom)
+            }
+            val toggleRespectBorders: () -> Unit = {
+                toolConfig = toolConfig.copy(respectBorders = !toolConfig.respectBorders)
+                SettingsManager.saveRespectBorders(this@MainActivity, toolConfig.respectBorders)
             }
             /** Rnote's canvas menu toggle, and Ctrl+Shift+P. */
             val toggleSnapPositions: () -> Unit = {
@@ -1673,7 +1684,12 @@ class MainActivity : ComponentActivity() {
                     // 32 document units at 100%.
                     offset = IMPORT_OFFSET / viewportState.zoomScale,
                     fixedPageWidth = paperStyle.effectivePageWidthPx.takeIf { fixedWidth && it > 0f },
-                    clampToOrigin = layout != LayoutMode.INFINITE
+                    clampToOrigin = layout != LayoutMode.INFINITE,
+                    borders = if (toolConfig.respectBorders) {
+                        NativeEditing.PageBorders(paperStyle.effectivePageWidthPx, paperStyle.effectivePageHeightPx)
+                    } else {
+                        null
+                    }
                 )
             }
             onImageInserted = { image ->
@@ -1986,8 +2002,12 @@ class MainActivity : ComponentActivity() {
                                 onToggleFiles = { showFiles = !showFiles },
                                 snapPositions = toolConfig.snapPositions,
                                 onToggleSnapPositions = toggleSnapPositions,
+                                respectBorders = toolConfig.respectBorders,
+                                onToggleRespectBorders = toggleRespectBorders,
                                 penSounds = penSoundsOn,
                                 onTogglePenSounds = togglePenSounds,
+                                blockPinchZoom = toolConfig.blockPinchZoom,
+                                onToggleBlockPinchZoom = toggleBlockPinchZoom,
                                 onZoomOut = { zoomBy(1f / (1f + ViewportState.ZOOM_STEP)) },
                                 onZoomIn = { zoomBy(1f + ViewportState.ZOOM_STEP) },
                                 onZoomFitWidth = zoomFitWidth,

@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.HorizontalRule
 import androidx.compose.material.icons.filled.NorthEast
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Timeline
+import androidx.compose.material.icons.filled.Waves
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -317,17 +318,16 @@ private fun FavoriteSlots(
     }
 }
 
-/**
- * Rnote's path builders for the brush, under the names and with the explanations of its
- * brush settings; its third, Curved, writes curve segments this app's strokes can't hold.
- */
+/** Rnote's path builders for the brush, under the names and with the explanations of its brush settings. */
 private val PATH_BUILDERS = listOf(
     Triple(PenPathBuilder.SIMPLE, "Simple", "Produces line segments from the raw input."),
+    Triple(PenPathBuilder.CURVED, "Curved", "Produces smooth, curved segments."),
     Triple(PenPathBuilder.MODELED, "Modeled", "Produces a modeled path with physics based algorithms. Results in the best looking handwriting.")
 )
 
 private fun pathBuilderIcon(builder: PenPathBuilder): ImageVector = when (builder) {
     PenPathBuilder.SIMPLE -> Icons.Default.Timeline
+    PenPathBuilder.CURVED -> Icons.Default.Waves
     PenPathBuilder.MODELED -> Icons.Default.Gesture
 }
 

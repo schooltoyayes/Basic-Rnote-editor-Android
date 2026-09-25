@@ -2424,6 +2424,9 @@ class MainActivity : ComponentActivity() {
                             onTextAlignmentSelected = onTextAlignmentSelected,
                             onPressureCurveSelected = { curve -> toolConfig = toolConfig.copy(pressureCurve = curve) },
                             onShapeLineChanged = { line -> toolConfig = toolConfig.copy(shapeLine = line) },
+                            onShaperStyleSelected = { style -> toolConfig = toolConfig.copy(shaperStyle = style) },
+                            onRoughFillSelected = { fill -> toolConfig = toolConfig.copy(roughFill = fill) },
+                            onRoughHachureDegreesChanged = { degrees -> toolConfig = toolConfig.copy(roughHachureDegrees = degrees) },
                             onInvertSelectionColors = invertSelectionColors,
                             onTexturedDensityChanged = { density -> toolConfig = toolConfig.copy(texturedDensity = density) },
                             onTexturedDistributionSelected = { distribution ->

@@ -182,6 +182,8 @@ data class NativeShapeElement(
     val lineStyle: String = "solid",
     /** Rnote's `line_cap`: true for "rounded". */
     val roundCap: Boolean = false,
+    /** Rnote's rough style, when the shape has it rather than the smooth one. */
+    val rough: RoughStyle? = null,
     /** The element exactly as the file had it, written back untouched on save. */
     val raw: com.google.gson.JsonElement? = null
 ) : NativeCanvasElement()

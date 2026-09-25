@@ -19,9 +19,11 @@ import io.github.kjly.brna.model.PathOp
 import io.github.kjly.brna.model.PathShape
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
+import io.github.kjly.brna.model.RoughStyle
 import io.github.kjly.brna.model.ShapeKind
 import io.github.kjly.brna.model.ShapeLine
 import io.github.kjly.brna.model.TextFormatting
+import io.github.kjly.brna.model.TexturedStyle
 import io.github.kjly.brna.model.TextToggle
 import java.util.Locale
 import kotlin.math.abs
@@ -471,7 +473,8 @@ object NativeEditing {
         color: RnoteNativeColor,
         strokeWidth: Float,
         fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT,
-        line: ShapeLine = ShapeLine()
+        line: ShapeLine = ShapeLine(),
+        rough: RoughStyle? = null
     ): NativeShapeElement? {
         if (abs(x2 - x1) < 1f && abs(y2 - y1) < 1f) return null
         val cx = (x1 + x2) / 2f; val cy = (y1 + y2) / 2f
@@ -488,7 +491,7 @@ object NativeEditing {
             // Several strokes of the pen each; see ShapeDraft, which ends in the ones below.
             ShapeKind.POLYLINE, ShapeKind.POLYGON, ShapeKind.QUADBEZ, ShapeKind.CUBBEZ, ShapeKind.FOCI_ELLIPSE -> return null
         }
-        return shapeElement(shape, color, strokeWidth, fillColor, line)
+        return shapeElement(shape, color, strokeWidth, fillColor, line, rough)
     }
 
     /**
@@ -502,13 +505,14 @@ object NativeEditing {
         color: RnoteNativeColor,
         strokeWidth: Float,
         fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT,
-        line: ShapeLine = ShapeLine()
+        line: ShapeLine = ShapeLine(),
+        rough: RoughStyle? = null
     ): NativeShapeElement? {
         if (points.size < (if (closed) 3 else 2)) return null
         val (sx, sy) = points.first()
         val path = points.drop(1).joinToString(",") { (x, y) -> pointJson(x, y) }
         val name = if (closed) "polygon" else "polyline"
-        return shapeElement("""{"$name":{"start":${pointJson(sx, sy)},"path":[$path]}}""", color, strokeWidth, fillColor, line)
+        return shapeElement("""{"$name":{"start":${pointJson(sx, sy)},"path":[$path]}}""", color, strokeWidth, fillColor, line, rough)
     }
 
     /**
@@ -520,7 +524,8 @@ object NativeEditing {
         color: RnoteNativeColor,
         strokeWidth: Float,
         fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT,
-        line: ShapeLine = ShapeLine()
+        line: ShapeLine = ShapeLine(),
+        rough: RoughStyle? = null
     ): NativeShapeElement? {
         val p = points.map { (x, y) -> pointJson(x, y) }
         val shape = when (p.size) {
@@ -528,7 +533,7 @@ object NativeEditing {
             4 -> """{"cubbez":{"start":${p[0]},"cp1":${p[1]},"cp2":${p[2]},"end":${p[3]}}}"""
             else -> return null
         }
-        return shapeElement(shape, color, strokeWidth, fillColor, line)
+        return shapeElement(shape, color, strokeWidth, fillColor, line, rough)
     }
 
     /**
@@ -541,7 +546,8 @@ object NativeEditing {
         color: RnoteNativeColor,
         strokeWidth: Float,
         fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT,
-        line: ShapeLine = ShapeLine()
+        line: ShapeLine = ShapeLine(),
+        rough: RoughStyle? = null
     ): NativeShapeElement? {
         val sum = hypot(px - f1x, py - f1y) + hypot(px - f2x, py - f2y)
         val d = hypot(f1x - f2x, f1y - f2y) * 0.5f
@@ -553,7 +559,7 @@ object NativeEditing {
         val angle = atan2(f2y - f1y, f2x - f1x)
         val shape = """{"ellipse":{"radii":${pointJson(semimajor, semiminor)},""" +
             """"transform":${affineText(cos(angle), sin(angle), (f1x + f2x) / 2f, (f1y + f2y) / 2f)}}}"""
-        return shapeElement(shape, color, strokeWidth, fillColor, line)
+        return shapeElement(shape, color, strokeWidth, fillColor, line, rough)
     }
 
     private fun num(v: Float) = String.format(Locale.ROOT, "%.3f", v)
@@ -573,12 +579,22 @@ object NativeEditing {
         color: RnoteNativeColor,
         strokeWidth: Float,
         fillColor: RnoteNativeColor,
-        line: ShapeLine
+        line: ShapeLine,
+        rough: RoughStyle?
     ): NativeShapeElement? {
         fun color(c: RnoteNativeColor) = """{"r":${num(c.r)},"g":${num(c.g)},"b":${num(c.b)},"a":${num(c.a)}}"""
-        val style = """{"smooth":{"stroke_width":${num(strokeWidth)},"stroke_color":${color(color)},""" +
-            """"fill_color":${color(fillColor)},"pressure_curve":"const",""" +
-            """"line_style":"${line.style.apiName}","line_cap":"${line.cap.apiName}"}}"""
+        val style = if (rough != null) {
+            // Rnote's `RoughOptions`, in its order: no line style, but a fill style, the
+            // hachure angle to three places as Rnote rounds it, and the seed.
+            """{"rough":{"stroke_color":${color(color)},"stroke_width":${num(strokeWidth)},""" +
+                """"fill_color":${color(fillColor)},"fill_style":"${rough.fillStyle.apiName}",""" +
+                """"hachure_angle":${String.format(Locale.ROOT, "%.3f", rough.hachureAngle)},""" +
+                """"seed":${TexturedStyle.seedJson(rough.seed)}}}"""
+        } else {
+            """{"smooth":{"stroke_width":${num(strokeWidth)},"stroke_color":${color(color)},""" +
+                """"fill_color":${color(fillColor)},"pressure_curve":"const",""" +
+                """"line_style":"${line.style.apiName}","line_cap":"${line.cap.apiName}"}}"""
+        }
         return RnoteNativeParser.parseElementJson("""{"shapestroke":{"shape":$shape,"style":$style}}""")
             as? NativeShapeElement
     }

@@ -136,6 +136,11 @@ data class ToolConfig(
     val shapeConstraints: ShapeConstraints = ShapeConstraints(),
     /** The Shaper's line style and line cap, as Rnote's shaper settings pick them. */
     val shapeLine: ShapeLine = ShapeLine(),
+    /** The Shaper's style: Rnote's smooth outlines, or its rough, sketched look. */
+    val shaperStyle: ShaperStyle = ShaperStyle.SMOOTH,
+    /** The rough style's fill, and the angle of its hatching in whole degrees, as Rnote's settings take it. */
+    val roughFill: RoughFillStyle = RoughFillStyle.DEFAULT,
+    val roughHachureDegrees: Int = RoughStyle.HACHURE_DEGREES_DEFAULT,
     /**
      * Rnote's "Snap Positions": shapes, moved selections, new text and vertical space go
      * to the page's pattern. Off by default, as in Rnote; kept in the settings.
@@ -176,6 +181,13 @@ data class ToolConfig(
      */
     fun strokeTextured(seed: Long): TexturedStyle? =
         if (brushStyle == BrushStyle.TEXTURED) TexturedStyle(seed, texturedDensity, texturedDistribution) else null
+
+    /**
+     * The rough style a new shape takes with [seed] — Rnote picks one each time the pen
+     * goes down — or null when the Shaper draws smooth shapes.
+     */
+    fun shapeRough(seed: Long): RoughStyle? =
+        if (shaperStyle == ShaperStyle.ROUGH) RoughStyle(roughFill, RoughStyle.hachureAngleOf(roughHachureDegrees), seed) else null
 
     /** The ink color for the active tool/style. */
     val currentActiveColor: Color

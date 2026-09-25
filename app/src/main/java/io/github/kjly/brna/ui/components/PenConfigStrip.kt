@@ -78,6 +78,9 @@ import androidx.compose.ui.window.Dialog
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.ConstraintRatio
 import io.github.kjly.brna.model.PressureCurve
+import io.github.kjly.brna.model.RoughFillStyle
+import io.github.kjly.brna.model.RoughStyle
+import io.github.kjly.brna.model.ShaperStyle
 import io.github.kjly.brna.model.TexturedDistribution
 import io.github.kjly.brna.model.TexturedStyle
 import io.github.kjly.brna.model.ShapeLine
@@ -144,6 +147,10 @@ fun PenConfigStrip(
     onPressureCurveSelected: (PressureCurve) -> Unit = {},
     /** The Shaper's line style or line cap picked, as in Rnote's shaper settings. */
     onShapeLineChanged: (ShapeLine) -> Unit = {},
+    /** The Shaper's style picked — smooth or rough — and the rough style's fill and hachure angle. */
+    onShaperStyleSelected: (ShaperStyle) -> Unit = {},
+    onRoughFillSelected: (RoughFillStyle) -> Unit = {},
+    onRoughHachureDegreesChanged: (Int) -> Unit = {},
     /** Rnote's "Invert Color Brightness of All Selected Strokes". */
     onInvertSelectionColors: () -> Unit = {},
     /** The Textured brush's dots: how many, and how they spread. */
@@ -176,7 +183,7 @@ fun PenConfigStrip(
                 )
                 ToolType.SHAPER -> ShaperConfigPage(
                     toolConfig, onShapeKindSelected, onSnapAnglesToggled, onShapeConstraintsChanged, onShapeLineChanged,
-                    onSizeChanged
+                    onShaperStyleSelected, onRoughFillSelected, onRoughHachureDegreesChanged, onSizeChanged
                 )
                 ToolType.TYPEWRITER -> TypewriterConfigPage(
                     toolConfig, onSizeChanged, textFormats, textFormatsEnabled, onToggleTextFormat,
@@ -446,6 +453,9 @@ private fun ShaperConfigPage(
     onSnapAnglesToggled: () -> Unit,
     onConstraintsChanged: (ShapeConstraints) -> Unit,
     onShapeLineChanged: (ShapeLine) -> Unit,
+    onShaperStyleSelected: (ShaperStyle) -> Unit,
+    onRoughFillSelected: (RoughFillStyle) -> Unit,
+    onRoughHachureDegreesChanged: (Int) -> Unit,
     onSizeChanged: (Float) -> Unit
 ) {
     val kind = toolConfig.shapeKind
@@ -468,7 +478,7 @@ private fun ShaperConfigPage(
     StripIconToggle(
         Icons.Default.Architecture, "Snap Lines to 15°", toolConfig.snapAngles, true, onClick = onSnapAnglesToggled
     )
-    LineStyleMenu(toolConfig.shapeLine, onShapeLineChanged)
+    ShapeStyleMenu(toolConfig, onShaperStyleSelected, onShapeLineChanged, onRoughFillSelected, onRoughHachureDegreesChanged)
     StripDivider()
     // Rnote's shaper shares the brush's 2 / 6 / 12 width presets.
     val presets = BrushSizePreset.entries.map { it to it.brushSolidPx }
@@ -572,54 +582,121 @@ private val LINE_CAPS = listOf(
     Triple(ShapeLineCap.ROUNDED, GeneratedIcons.LineCapRounded, "Round")
 )
 
+/** Rnote's two shaper styles, under the names of its shaper settings. */
+private val SHAPER_STYLES = listOf(
+    Triple(ShaperStyle.SMOOTH, GeneratedIcons.ShaperStyleSmooth, "Smooth"),
+    Triple(ShaperStyle.ROUGH, GeneratedIcons.ShaperStyleRough, "Rough")
+)
+
+/** Rnote's rough fill styles, in the order and under the names of its shaper settings. */
+private val ROUGH_FILLS = listOf(
+    RoughFillStyle.SOLID to "Solid",
+    RoughFillStyle.HACHURE to "Hachure",
+    RoughFillStyle.ZIG_ZAG to "Zig-Zag",
+    RoughFillStyle.ZIG_ZAG_LINE to "Zig-Zag Line",
+    RoughFillStyle.CROSSHATCH to "Crosshatch",
+    RoughFillStyle.DOTS to "Dots",
+    RoughFillStyle.DASHED to "Dashed"
+)
+
+/** How far one press turns the hachure angle: the step of Rnote's spin row. */
+private const val HACHURE_STEP = 2
+
 /**
- * Rnote's smooth-style settings for the Shaper, line style and line cap, as one button
- * showing the style and a menu with both — picking dotted rounds the cap, and a straight
- * cap makes a dotted line solid again, as in Rnote (see [ShapeLine]).
+ * Rnote's shaper settings, as one button and a menu: the style, then what that style
+ * has — for smooth, line style and line cap (picking dotted rounds the cap, and a
+ * straight cap makes a dotted line solid again, as in Rnote; see [ShapeLine]); for rough,
+ * the fill style and the angle of its hatching. The fill itself shows only with a fill
+ * colour picked, as in Rnote.
  */
 @Composable
-private fun LineStyleMenu(line: ShapeLine, onChanged: (ShapeLine) -> Unit) {
+private fun ShapeStyleMenu(
+    toolConfig: ToolConfig,
+    onStyleSelected: (ShaperStyle) -> Unit,
+    onLineChanged: (ShapeLine) -> Unit,
+    onRoughFillSelected: (RoughFillStyle) -> Unit,
+    onHachureDegreesChanged: (Int) -> Unit
+) {
     var open by remember { mutableStateOf(false) }
-    val (_, icon, label) = LINE_STYLES.first { it.first == line.style }
+    val line = toolConfig.shapeLine
+    val rough = toolConfig.shaperStyle == ShaperStyle.ROUGH
+    val (_, lineIcon, lineLabel) = LINE_STYLES.first { it.first == line.style }
     Box {
-        StripIconToggle(
-            icon, "Line Style: $label", selected = line != ShapeLine(), implemented = true
-        ) { open = true }
+        if (rough) {
+            StripIconToggle(GeneratedIcons.ShaperStyleRough, "Shaper Style: Rough", selected = true, implemented = true) { open = true }
+        } else {
+            StripIconToggle(lineIcon, "Line Style: $lineLabel", selected = line != ShapeLine(), implemented = true) { open = true }
+        }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            Text(
-                "Line Style",
-                fontSize = 12.sp,
-                color = Color.Gray,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-            )
-            for ((style, styleIcon, styleLabel) in LINE_STYLES) {
+            MenuHeading("Style")
+            for ((style, styleIcon, styleLabel) in SHAPER_STYLES) {
                 DropdownMenuItem(
                     leadingIcon = {
-                        Icon(styleIcon, null, tint = if (style == line.style) BrnaColors.Accent else LocalContentColor.current)
+                        Icon(styleIcon, null, tint = if (style == toolConfig.shaperStyle) BrnaColors.Accent else LocalContentColor.current)
                     },
                     text = { Text(styleLabel) },
-                    // Stays open, so the cap it may bring along shows below.
-                    onClick = { onChanged(line.withStyle(style)) }
+                    // Stays open, so the style's own settings show below.
+                    onClick = { onStyleSelected(style) }
                 )
             }
             HorizontalDivider()
-            Text(
-                "Line Cap",
-                fontSize = 12.sp,
-                color = Color.Gray,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-            )
-            for ((cap, capIcon, capLabel) in LINE_CAPS) {
-                DropdownMenuItem(
-                    leadingIcon = {
-                        Icon(capIcon, null, tint = if (cap == line.cap) BrnaColors.Accent else LocalContentColor.current)
-                    },
-                    text = { Text(capLabel) },
-                    onClick = { onChanged(line.withCap(cap)) }
-                )
+            if (rough) {
+                MenuHeading("Fill Style")
+                for ((fill, fillLabel) in ROUGH_FILLS) {
+                    DropdownMenuItem(
+                        leadingIcon = { CheckMark(fill == toolConfig.roughFill) },
+                        text = { Text(fillLabel) },
+                        onClick = { onRoughFillSelected(fill) }
+                    )
+                }
+                HorizontalDivider()
+                MenuHeading("Hachure Angle")
+                val degrees = toolConfig.roughHachureDegrees
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
+                    TextButton(onClick = { onHachureDegreesChanged(steppedHachure(degrees, -HACHURE_STEP)) }) { Text("−") }
+                    Text("$degrees°", modifier = Modifier.padding(horizontal = 8.dp))
+                    TextButton(onClick = { onHachureDegreesChanged(steppedHachure(degrees, HACHURE_STEP)) }) { Text("+") }
+                }
+            } else {
+                MenuHeading("Line Style")
+                for ((style, styleIcon, styleLabel) in LINE_STYLES) {
+                    DropdownMenuItem(
+                        leadingIcon = {
+                            Icon(styleIcon, null, tint = if (style == line.style) BrnaColors.Accent else LocalContentColor.current)
+                        },
+                        text = { Text(styleLabel) },
+                        // Stays open, so the cap it may bring along shows below.
+                        onClick = { onLineChanged(line.withStyle(style)) }
+                    )
+                }
+                HorizontalDivider()
+                MenuHeading("Line Cap")
+                for ((cap, capIcon, capLabel) in LINE_CAPS) {
+                    DropdownMenuItem(
+                        leadingIcon = {
+                            Icon(capIcon, null, tint = if (cap == line.cap) BrnaColors.Accent else LocalContentColor.current)
+                        },
+                        text = { Text(capLabel) },
+                        onClick = { onLineChanged(line.withCap(cap)) }
+                    )
+                }
             }
         }
     }
+}
+
+/** [degrees] turned by [step], kept to Rnote's −180° to 180°. */
+private fun steppedHachure(degrees: Int, step: Int): Int =
+    (degrees + step).coerceIn(RoughStyle.HACHURE_DEGREES_MIN, RoughStyle.HACHURE_DEGREES_MAX)
+
+@Composable
+private fun MenuHeading(text: String) {
+    Text(
+        text,
+        fontSize = 12.sp,
+        color = Color.Gray,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+    )
 }
 
 /**

@@ -19,10 +19,12 @@ import io.github.kjly.brna.model.PathShape
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RnoteNativeDocument
+import io.github.kjly.brna.model.RoughStyle
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.PressureCurve
 import io.github.kjly.brna.model.TexturedStyle
 import io.github.kjly.brna.model.PaperPattern
+import io.github.kjly.brna.render.RoughShapes
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import java.io.OutputStreamWriter
@@ -181,7 +183,8 @@ object RnoteNativeSerializer {
         for (el in elements) {
             val pad = when (el) {
                 is NativeBrushStroke   -> el.strokeWidth / 2f
-                is NativeShapeElement  -> el.strokeWidth / 2f
+                // A rough shape's bounds leave room for its wobble, as Rnote's do.
+                is NativeShapeElement  -> RoughShapes.margin(el)
                 else                   -> 0f
             }
             if (el.minX - pad < minX) minX = el.minX - pad
@@ -484,7 +487,26 @@ object RnoteNativeSerializer {
             }
         }
         append("""},"style":""")
-        appendSmoothStyle(el.color, el.strokeWidth, fillColor = el.fillColor)
+        val rough = el.rough
+        if (rough != null) appendRoughStyle(el.color, el.strokeWidth, el.fillColor, rough)
+        else appendSmoothStyle(el.color, el.strokeWidth, fillColor = el.fillColor)
+        append("}}")
+    }
+
+    /** Rnote's `RoughOptions`, with the names and in the order it writes them. */
+    private fun StringBuilder.appendRoughStyle(
+        color: RnoteNativeColor,
+        strokeWidth: Float,
+        fillColor: RnoteNativeColor,
+        rough: RoughStyle
+    ) {
+        append("""{"rough":{""")
+        append(""""stroke_color":${color.toJson()},""")
+        append(""""stroke_width":$strokeWidth,""")
+        append(""""fill_color":${fillColor.toJson()},""")
+        append(""""fill_style":"${rough.fillStyle.apiName}",""")
+        append(""""hachure_angle":${rough.hachureAngle},""")
+        append(""""seed":${TexturedStyle.seedJson(rough.seed)}""")
         append("}}")
     }
 

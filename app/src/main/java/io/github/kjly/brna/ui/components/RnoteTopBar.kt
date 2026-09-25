@@ -109,6 +109,9 @@ fun RnoteTopBar(
     /** Rnote's "Snap Positions", a switch in its canvas menu. */
     snapPositions: Boolean = false,
     onToggleSnapPositions: () -> Unit = {},
+    /** Rnote's "Pen Sounds", the switch after it in its canvas menu. */
+    penSounds: Boolean = false,
+    onTogglePenSounds: () -> Unit = {},
     /** Rnote's canvas menu zoom row: out, in, and to the page's width. */
     onZoomOut: () -> Unit = {},
     onZoomIn: () -> Unit = {},
@@ -312,6 +315,11 @@ fun RnoteTopBar(
                         text = { Text("Snap Positions") },
                         trailingIcon = { KeyHint("Ctrl+Shift+P") },
                         onClick = onToggleSnapPositions
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { CheckMark(penSounds) },
+                        text = { Text("Pen Sounds") },
+                        onClick = onTogglePenSounds
                     )
                 }
             }

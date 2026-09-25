@@ -33,6 +33,7 @@ object SettingsManager {
     private const val KEY_CUSTOM_GRID_COLOR  = "customGridColor"
     private const val KEY_BORDER_COLOR       = "formatBorderColor"
     private const val KEY_SNAP_POSITIONS     = "snapPositions"
+    private const val KEY_PEN_SOUNDS         = "penSounds"
 
     fun save(
         context: Context,
@@ -107,6 +108,18 @@ object SettingsManager {
     fun loadSnapPositions(context: Context): Boolean =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(KEY_SNAP_POSITIONS, false)
+
+    /** Rnote's "Pen Sounds", kept between sessions as Rnote keeps it; off until switched on. */
+    fun loadPenSounds(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_PEN_SOUNDS, false)
+
+    fun savePenSounds(context: Context, on: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_PEN_SOUNDS, on)
+            .apply()
+    }
 
     fun saveSnapPositions(context: Context, on: Boolean) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

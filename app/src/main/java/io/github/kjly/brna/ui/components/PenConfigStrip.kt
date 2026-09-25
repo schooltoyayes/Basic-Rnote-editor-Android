@@ -35,12 +35,14 @@ import androidx.compose.material.icons.filled.FormatBold
 import androidx.compose.material.icons.filled.FormatItalic
 import androidx.compose.material.icons.filled.FormatStrikethrough
 import androidx.compose.material.icons.filled.FormatUnderlined
+import androidx.compose.material.icons.filled.Gesture
 import androidx.compose.material.icons.filled.Grain
 import androidx.compose.material.icons.filled.Height
 import androidx.compose.material.icons.filled.Highlight
 import androidx.compose.material.icons.filled.HorizontalRule
 import androidx.compose.material.icons.filled.NorthEast
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -77,6 +79,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.ConstraintRatio
+import io.github.kjly.brna.model.PenPathBuilder
 import io.github.kjly.brna.model.PressureCurve
 import io.github.kjly.brna.model.RoughFillStyle
 import io.github.kjly.brna.model.RoughStyle
@@ -155,7 +158,9 @@ fun PenConfigStrip(
     onInvertSelectionColors: () -> Unit = {},
     /** The Textured brush's dots: how many, and how they spread. */
     onTexturedDensityChanged: (Double) -> Unit = {},
-    onTexturedDistributionSelected: (TexturedDistribution) -> Unit = {}
+    onTexturedDistributionSelected: (TexturedDistribution) -> Unit = {},
+    /** Rnote's "Path Modelling" for the brush picked: simple or modeled. */
+    onPenPathBuilderSelected: (PenPathBuilder) -> Unit = {}
 ) {
     Surface(
         modifier = modifier.width(60.dp),
@@ -171,7 +176,7 @@ fun PenConfigStrip(
             when (toolConfig.activeTool) {
                 ToolType.BRUSH -> BrushConfigPage(
                     toolConfig, onBrushStyleSelected, onPressureCurveSelected,
-                    onTexturedDensityChanged, onTexturedDistributionSelected, onSizeChanged,
+                    onTexturedDensityChanged, onTexturedDistributionSelected, onPenPathBuilderSelected, onSizeChanged,
                     favorites, onApplyFavorite, onStoreFavorite, onClearFavorite
                 )
                 ToolType.ERASER -> EraserConfigPage(toolConfig, onEraserModeSelected, onSizeChanged)
@@ -204,6 +209,7 @@ private fun BrushConfigPage(
     onPressureCurveSelected: (PressureCurve) -> Unit,
     onTexturedDensityChanged: (Double) -> Unit,
     onTexturedDistributionSelected: (TexturedDistribution) -> Unit,
+    onPenPathBuilderSelected: (PenPathBuilder) -> Unit,
     onSizeChanged: (Float) -> Unit,
     favorites: List<PenFavorite?>,
     onApplyFavorite: (PenFavorite) -> Unit,
@@ -229,6 +235,7 @@ private fun BrushConfigPage(
             onTexturedDensityChanged, onTexturedDistributionSelected
         )
     }
+    PathModellingMenu(toolConfig.penPathBuilder, onPenPathBuilderSelected)
     StripDivider()
     val presets = BrushSizePreset.entries.map { it to it.sizeForTool(ToolType.BRUSH, toolConfig.brushStyle) }
     StrokeWidthPicker(toolConfig.currentActiveSize, presets, maxRange = if (toolConfig.brushStyle == BrushStyle.MARKER) 128f else 64f, onSizeChanged)
@@ -303,6 +310,56 @@ private fun FavoriteSlots(
                     onClick = {
                         showMenu = false
                         onClear(slot)
+                    }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Rnote's path builders for the brush, under the names and with the explanations of its
+ * brush settings; its third, Curved, writes curve segments this app's strokes can't hold.
+ */
+private val PATH_BUILDERS = listOf(
+    Triple(PenPathBuilder.SIMPLE, "Simple", "Produces line segments from the raw input."),
+    Triple(PenPathBuilder.MODELED, "Modeled", "Produces a modeled path with physics based algorithms. Results in the best looking handwriting.")
+)
+
+private fun pathBuilderIcon(builder: PenPathBuilder): ImageVector = when (builder) {
+    PenPathBuilder.SIMPLE -> Icons.Default.Timeline
+    PenPathBuilder.MODELED -> Icons.Default.Gesture
+}
+
+/** Rnote's "Path Modelling": one button showing how strokes are built, a menu to pick. */
+@Composable
+private fun PathModellingMenu(builder: PenPathBuilder, onSelected: (PenPathBuilder) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val label = PATH_BUILDERS.first { it.first == builder }.second
+    Box {
+        StripIconToggle(
+            pathBuilderIcon(builder), "Path Modelling: $label",
+            selected = builder != PenPathBuilder.MODELED, implemented = true
+        ) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            MenuHeading("Path Modelling")
+            for ((each, eachLabel, explanation) in PATH_BUILDERS) {
+                DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(
+                            pathBuilderIcon(each), null,
+                            tint = if (each == builder) BrnaColors.Accent else LocalContentColor.current
+                        )
+                    },
+                    text = {
+                        Column(modifier = Modifier.width(260.dp)) {
+                            Text(eachLabel)
+                            Text(explanation, fontSize = 12.sp, color = Color.Gray)
+                        }
+                    },
+                    onClick = {
+                        open = false
+                        onSelected(each)
                     }
                 )
             }

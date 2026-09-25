@@ -2432,6 +2432,7 @@ class MainActivity : ComponentActivity() {
                             onTexturedDistributionSelected = { distribution ->
                                 toolConfig = toolConfig.copy(texturedDistribution = distribution)
                             },
+                            onPenPathBuilderSelected = { builder -> toolConfig = toolConfig.copy(penPathBuilder = builder) },
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 18.dp)

@@ -31,7 +31,10 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   a port of the random number generator and samplers Rnote uses (Pcg64, rand,
   rand_distr), so a textured stroke looks the same on both sides, dot for dot.
   Rnote's six pressure curves for Solid — constant, linear, square and cubic root,
-  quadratic and cubic. Three size presets per tool plus a numeric adjuster, and
+  quadratic and cubic. Rnote's path modelling: by default the pen's samples go through
+  a port of the stroke modeler Rnote uses (ink-stroke-modeler-rs, with Rnote's
+  settings), which smooths out jitter and gives handwriting its curves; "Simple" draws
+  through the raw samples instead. Three size presets per tool plus a numeric adjuster, and
   four favorite slots that keep a style, color and width together.
 - **Shaper**: line, arrow, rectangle, ellipse, and — built from lines, as Rnote
   builds them — 2D, 3D and single-quadrant coordinate systems and a grid. Rnote's

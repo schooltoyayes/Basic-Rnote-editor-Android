@@ -47,4 +47,9 @@ class ToolConfigPressureTest {
         assertEquals(9f, textured.updateActiveSize(9f).texturedWidth, 0f)
         assertEquals(2f, textured.updateActiveSize(9f).strokeWidth, 0f)
     }
+
+    @Test
+    fun `the brush models its paths by default, as Rnote's does`() {
+        assertEquals(PenPathBuilder.MODELED, ToolConfig().penPathBuilder)
+    }
 }

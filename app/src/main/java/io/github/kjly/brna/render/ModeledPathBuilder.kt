@@ -12,7 +12,7 @@ import io.github.kjly.brna.render.StrokeModeler.Rejection
  * handed back begin with that sample again, as Rnote's first segment does. Times are in
  * seconds, on any clock that only moves forward.
  */
-internal class ModeledPathBuilder(start: StrokePoint, now: Double) {
+internal class ModeledPathBuilder(start: StrokePoint, now: Double) : PenPathBuilding {
 
     private val modeler = StrokeModeler(PARAMS)
     private var startTime = now
@@ -22,7 +22,7 @@ internal class ModeledPathBuilder(start: StrokePoint, now: Double) {
      * Where the tip would get to if the pen stopped now: drawn after the stroke while it is
      * being drawn, never kept. Empty once the pen is lifted.
      */
-    var prediction: List<StrokePoint> = emptyList()
+    override var prediction: List<StrokePoint> = emptyList()
         private set
 
     init {
@@ -30,13 +30,13 @@ internal class ModeledPathBuilder(start: StrokePoint, now: Double) {
     }
 
     /** A sample while the pen is down; the points it adds to the stroke. */
-    fun move(point: StrokePoint, now: Double): List<StrokePoint> {
+    override fun move(point: StrokePoint, now: Double): List<StrokePoint> {
         feed(point, EventType.MOVE, now)
         return drain()
     }
 
     /** The pen lifted at [point]; the stroke's last points, the tip catching up included. */
-    fun up(point: StrokePoint, now: Double): List<StrokePoint> {
+    override fun up(point: StrokePoint, now: Double): List<StrokePoint> {
         feed(point, EventType.UP, now)
         return drain()
     }

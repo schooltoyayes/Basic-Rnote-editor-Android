@@ -386,4 +386,22 @@ class NativeEditingTest {
         val inverted = NativeEditing.withInvertedColors(rect) as NativeShapeElement
         assertEquals(0f, inverted.fillColor.a, 0f)
     }
+
+    @Test
+    fun `with borders respected, an image stops short of the next page border`() {
+        // A 200 x 50 image 10 in from the top-left of a 100 x 100 page, the view far larger.
+        fun place(borders: NativeEditing.PageBorders?) = NativeEditing.placeImage(
+            200, 50, 0f, 0f, 1000f, 1000f, offset = 10f,
+            fixedPageWidth = null, clampToOrigin = true, borders = borders
+        )
+        assertEquals(1f, place(null).scale, 1e-6f)
+        // Rnote's `calculate_resize_ratio`: 90 to the right-hand border for 200 pixels.
+        assertEquals(0.45f, place(NativeEditing.PageBorders(100f, 100f)).scale, 1e-6f)
+        // Past the first page, the next border is the one after.
+        val further = NativeEditing.placeImage(
+            200, 50, 150f, 0f, 1000f, 1000f, offset = 10f,
+            fixedPageWidth = null, clampToOrigin = true, borders = NativeEditing.PageBorders(100f, 100f)
+        )
+        assertEquals(40f / 200f, further.scale, 1e-6f)
+    }
 }

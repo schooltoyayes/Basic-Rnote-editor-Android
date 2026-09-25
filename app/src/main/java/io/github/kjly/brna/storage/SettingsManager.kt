@@ -34,6 +34,8 @@ object SettingsManager {
     private const val KEY_BORDER_COLOR       = "formatBorderColor"
     private const val KEY_SNAP_POSITIONS     = "snapPositions"
     private const val KEY_PEN_SOUNDS         = "penSounds"
+    private const val KEY_BLOCK_PINCH_ZOOM   = "blockPinchZoom"
+    private const val KEY_RESPECT_BORDERS    = "respectBorders"
 
     fun save(
         context: Context,
@@ -108,6 +110,30 @@ object SettingsManager {
     fun loadSnapPositions(context: Context): Boolean =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(KEY_SNAP_POSITIONS, false)
+
+    /** Rnote's "Block Pinch to Zoom", kept between sessions as Rnote keeps it. */
+    fun loadBlockPinchZoom(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_BLOCK_PINCH_ZOOM, false)
+
+    fun saveBlockPinchZoom(context: Context, on: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_BLOCK_PINCH_ZOOM, on)
+            .apply()
+    }
+
+    /** Rnote's "Respect Borders When Pasting", kept between sessions as Rnote keeps it. */
+    fun loadRespectBorders(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_RESPECT_BORDERS, false)
+
+    fun saveRespectBorders(context: Context, on: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_RESPECT_BORDERS, on)
+            .apply()
+    }
 
     /** Rnote's "Pen Sounds", kept between sessions as Rnote keeps it; off until switched on. */
     fun loadPenSounds(context: Context): Boolean =

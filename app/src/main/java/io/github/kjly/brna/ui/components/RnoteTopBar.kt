@@ -109,9 +109,13 @@ fun RnoteTopBar(
     /** Rnote's "Snap Positions", a switch in its canvas menu. */
     snapPositions: Boolean = false,
     onToggleSnapPositions: () -> Unit = {},
-    /** Rnote's "Pen Sounds", the switch after it in its canvas menu. */
+    /** Rnote's "Respect Borders When Pasting", "Pen Sounds" and "Block Pinch to Zoom", in its canvas menu. */
+    respectBorders: Boolean = false,
+    onToggleRespectBorders: () -> Unit = {},
     penSounds: Boolean = false,
     onTogglePenSounds: () -> Unit = {},
+    blockPinchZoom: Boolean = false,
+    onToggleBlockPinchZoom: () -> Unit = {},
     /** Rnote's canvas menu zoom row: out, in, and to the page's width. */
     onZoomOut: () -> Unit = {},
     onZoomIn: () -> Unit = {},
@@ -317,9 +321,19 @@ fun RnoteTopBar(
                         onClick = onToggleSnapPositions
                     )
                     DropdownMenuItem(
+                        leadingIcon = { CheckMark(respectBorders) },
+                        text = { Text("Respect Borders When Pasting") },
+                        onClick = onToggleRespectBorders
+                    )
+                    DropdownMenuItem(
                         leadingIcon = { CheckMark(penSounds) },
                         text = { Text("Pen Sounds") },
                         onClick = onTogglePenSounds
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { CheckMark(blockPinchZoom) },
+                        text = { Text("Block Pinch to Zoom") },
+                        onClick = onToggleBlockPinchZoom
                     )
                 }
             }

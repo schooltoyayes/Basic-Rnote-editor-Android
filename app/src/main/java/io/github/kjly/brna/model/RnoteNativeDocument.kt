@@ -34,7 +34,13 @@ sealed class NativeCanvasElement {
 }
 
 /** A single sampled point on a brush stroke. */
-data class NativeStrokePoint(val x: Float, val y: Float, val pressure: Float)
+data class NativeStrokePoint(
+    val x: Float,
+    val y: Float,
+    val pressure: Float,
+    /** The curve of the segment ending here; see [SegmentCurve]. */
+    val curve: SegmentCurve? = null
+)
 
 /** Freehand pen or highlighter stroke. */
 data class NativeBrushStroke(
@@ -47,7 +53,9 @@ data class NativeBrushStroke(
     /** The style's `pressure_curve`; see [PressureCurve] for why it can't be dropped. */
     val pressureCurve: PressureCurve = PressureCurve.DEFAULT,
     /** The seed and dots of a stroke in Rnote's `textured` style; null for `smooth`. */
-    val textured: TexturedStyle? = null
+    val textured: TexturedStyle? = null,
+    /** The value of its `brushstroke` exactly as the file had it, written back while the stroke is unchanged. */
+    val raw: String? = null
 ) : NativeCanvasElement()
 
 /** Keyboard-typed text element with an affine transform. */

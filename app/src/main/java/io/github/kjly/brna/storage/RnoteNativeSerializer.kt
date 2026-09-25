@@ -20,6 +20,7 @@ import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RnoteNativeDocument
 import io.github.kjly.brna.model.RoughStyle
+import io.github.kjly.brna.model.SegmentCurve
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.PressureCurve
 import io.github.kjly.brna.model.TexturedStyle
@@ -85,7 +86,7 @@ object RnoteNativeSerializer {
             // Rnote's `Element::new` clamps pressure to [0, 1] and its serde reader
             // assumes that range; Android reports stylus pressure that can exceed 1.0.
             val pts = stroke.points.map {
-                io.github.kjly.brna.model.NativeStrokePoint(it.x, it.y, it.pressure.coerceIn(0f, 1f))
+                io.github.kjly.brna.model.NativeStrokePoint(it.x, it.y, it.pressure.coerceIn(0f, 1f), it.curve)
             }
             val color = RnoteNativeColor(
                 stroke.color.red, stroke.color.green, stroke.color.blue, stroke.color.alpha
@@ -96,7 +97,9 @@ object RnoteNativeSerializer {
             val maxY = pts.maxOfOrNull { it.y } ?: 0f
             NativeBrushStroke(
                 pts, stroke.strokeWidth, color, stroke.isHighlighter,
-                minX, minY, maxX, maxY, stroke.pressureCurve, stroke.textured
+                minX, minY, maxX, maxY, stroke.pressureCurve, stroke.textured,
+                // A desktop stroke nothing has changed goes back exactly as it came.
+                raw = stroke.source?.takeIf { it.describes(stroke) }?.json
             )
         }
 
@@ -315,6 +318,7 @@ object RnoteNativeSerializer {
     // ── BrushStroke ───────────────────────────────────────────────────────────
 
     private fun StringBuilder.appendBrushStroke(el: NativeBrushStroke) {
+        el.raw?.let { append("""{"brushstroke":""").append(it).append('}'); return }
         append("""{"brushstroke":{""")
         append(""""path":""")
         appendPenPath(el.points)
@@ -352,8 +356,15 @@ object RnoteNativeSerializer {
         append(""","segments":[""")
         for (i in 1 until points.size) {
             if (i > 1) append(',')
-            append("""{"lineto":{"end":""")
-            appendPathPoint(points[i])
+            val pt = points[i]
+            // Rnote's `Segment` variants, their fields in its order.
+            when (val curve = pt.curve) {
+                null -> append("""{"lineto":{"end":""")
+                is SegmentCurve.Quad -> append("""{"quadbezto":{"cp":[${curve.cx},${curve.cy}],"end":""")
+                is SegmentCurve.Cubic ->
+                    append("""{"cubbezto":{"cp1":[${curve.c1x},${curve.c1y}],"cp2":[${curve.c2x},${curve.c2y}],"end":""")
+            }
+            appendPathPoint(pt)
             append("""}}""")
         }
         append("]}")

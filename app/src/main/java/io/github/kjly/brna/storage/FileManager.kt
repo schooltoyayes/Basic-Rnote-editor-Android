@@ -13,6 +13,7 @@ import io.github.kjly.brna.model.PageSize
 import io.github.kjly.brna.model.NativeBrushStroke
 import io.github.kjly.brna.model.NativeCanvasElement
 import io.github.kjly.brna.model.RnoteNativeDocument
+import io.github.kjly.brna.model.RnoteStrokeSource
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
 import java.io.BufferedReader
@@ -180,14 +181,16 @@ object FileManager {
             when (el) {
                 is NativeBrushStroke -> {
                     val color = el.color.toComposeColor()
-                    Stroke(
-                        points = el.points.map { StrokePoint(it.x, it.y, it.pressure) },
+                    val stroke = Stroke(
+                        points = el.points.map { StrokePoint(it.x, it.y, it.pressure, it.curve) },
                         color  = color,
                         strokeWidth = el.strokeWidth,
                         isHighlighter = el.isHighlighter,
                         pressureCurve = el.pressureCurve,
                         textured = el.textured
                     )
+                    // Kept alongside, to be written back byte for byte while it is unchanged.
+                    el.raw?.let { stroke.copy(source = RnoteStrokeSource(it, stroke)) } ?: stroke
                 }
                 // Non-stroke elements: preserved in nativeElements, not yet editable
                 else -> null

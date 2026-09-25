@@ -100,7 +100,6 @@ import io.github.kjly.brna.model.PenFavorite
 import io.github.kjly.brna.model.brushFavorite
 import io.github.kjly.brna.model.withFavorite
 import io.github.kjly.brna.model.Stroke
-import io.github.kjly.brna.model.StrokePoint
 import io.github.kjly.brna.model.TextAlignment
 import io.github.kjly.brna.model.TextFormatting
 import io.github.kjly.brna.model.TextToggle
@@ -2296,12 +2295,9 @@ class MainActivity : ComponentActivity() {
                             }
                             pushUndo()
                             redoStack.clear()
-                            val newStrokes = clip.strokes.map { s ->
-                                s.copy(
-                                    id = java.util.UUID.randomUUID().toString(),
-                                    points = s.points.map { p -> StrokePoint(p.x + dx, p.y + dy, p.pressure) }
-                                )
-                            }
+                            // Moved as the selector moves strokes, curves and all.
+                            val newStrokes = SelectionManager.translateStrokes(clip.strokes, Offset(dx, dy))
+                                .map { it.copy(id = java.util.UUID.randomUUID().toString()) }
                             // Always new instances: the document tells its elements apart by identity.
                             val newNatives = clip.natives.map { NativeEditing.translate(it, dx, dy) }
                             strokes.addAll(newStrokes)
@@ -2320,12 +2316,8 @@ class MainActivity : ComponentActivity() {
                                 pushUndo()
                                 redoStack.clear()
                                 val offset = 20f
-                                val duplicates = selectedStrokes.map { s ->
-                                    s.copy(
-                                        id = java.util.UUID.randomUUID().toString(),
-                                        points = s.points.map { p -> StrokePoint(p.x + offset, p.y + offset, p.pressure) }
-                                    )
-                                }
+                                val duplicates = SelectionManager.translateStrokes(selectedStrokes.toList(), Offset(offset, offset))
+                                    .map { it.copy(id = java.util.UUID.randomUUID().toString()) }
                                 strokes.addAll(duplicates)
                                 selectedStrokes.clear()
                                 selectedStrokes.addAll(duplicates)

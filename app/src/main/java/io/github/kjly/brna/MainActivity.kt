@@ -2,6 +2,7 @@ package io.github.kjly.brna
 
 import android.content.ActivityNotFoundException
 import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -213,6 +214,10 @@ private const val IMPORT_OFFSET = 32f
 /** How long a shared file is kept for the app it went to, in ms. */
 private const val SHARED_FILE_LIFETIME_MS = 60 * 60 * 1000L
 
+/** Rnote's `StrokeContent::CLIPBOARD_EXPORT_MARGIN` and `Engine::STROKE_EXPORT_IMAGE_SCALE`. */
+private const val CLIPBOARD_IMAGE_MARGIN = 6f
+private const val CLIPBOARD_IMAGE_SCALE = 1.8f
+
 /**
  * The text box the Typewriter is typing into: where a new one goes (or where the box
  * stands), the box as it is in the document now — null until the first character, and
@@ -285,6 +290,9 @@ class MainActivity : ComponentActivity() {
 
     /** Set when [incomingDocument] is the open note reloaded from its file. */
     private var incomingKeepsView = false
+
+    /** Set when [incomingDocument] is a Xournal++ file made into a note: new, and not yet saved anywhere. */
+    private var incomingUnsaved = false
 
     // ── Tabs ──────────────────────────────────────────────────────────────────
 
@@ -564,12 +572,22 @@ class MainActivity : ComponentActivity() {
                 // The bytes decide the format it saves back as. The old test was the
                 // "Imported Note" placeholder title, which said nothing about the file.
                 saveAsRnote = loaded.isNativeRnote
-                adoptDocumentUri(uri, title)
-                // Set here on the main thread together with incomingDocument, never earlier:
-                // autosave must not see the new file's baseline while the old note is still
-                // open, or it would write that note over the file just read.
-                knownLastModified = lastModified
-                knownContentHash = loaded.contentHash
+                if (loaded.imported) {
+                    // A Xournal++ file becomes a new note, as in Rnote: saved as an .rnote
+                    // beside it, never written back over it.
+                    currentDocumentUri = null
+                    pickerStartUri = uri
+                    knownLastModified = null
+                    knownContentHash = null
+                    incomingUnsaved = true
+                } else {
+                    adoptDocumentUri(uri, title)
+                    // Set here on the main thread together with incomingDocument, never earlier:
+                    // autosave must not see the new file's baseline while the old note is still
+                    // open, or it would write that note over the file just read.
+                    knownLastModified = lastModified
+                    knownContentHash = loaded.contentHash
+                }
                 incomingKeepsView = reload
                 incomingDocument = loaded.document.copy(title = title)
                 Toast.makeText(
@@ -577,6 +595,7 @@ class MainActivity : ComponentActivity() {
                     when {
                         automatic -> "Newer version of $title loaded"
                         reload -> "Loaded their version of $title"
+                        loaded.imported -> "Imported: $title — Save keeps it as an .rnote"
                         else -> "Opened: $title"
                     },
                     Toast.LENGTH_SHORT
@@ -963,6 +982,10 @@ class MainActivity : ComponentActivity() {
         CreateDocumentNear(ExportFormat.PDF.mimeType)
     ) { uri -> uri?.let { finishSingleExport(it) } }
 
+    private val exportXoppLauncher = registerForActivityResult(
+        CreateDocumentNear(ExportFormat.XOPP.mimeType)
+    ) { uri -> uri?.let { finishSingleExport(it) } }
+
     /** Page export writes a file per page, so it asks for a folder, not a file name. */
     private val exportFolderLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -980,6 +1003,7 @@ class MainActivity : ComponentActivity() {
                 ExportFormat.PNG -> exportPngLauncher.launch(fileName)
                 ExportFormat.JPEG -> exportJpegLauncher.launch(fileName)
                 ExportFormat.PDF -> exportPdfLauncher.launch(fileName)
+                ExportFormat.XOPP -> exportXoppLauncher.launch(fileName)
             }
         }
     }
@@ -1066,6 +1090,49 @@ class MainActivity : ComponentActivity() {
                 startActivity(Intent.createChooser(send, null))
             } catch (e: ActivityNotFoundException) {
                 Toast.makeText(this@MainActivity, "No app to share with", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /**
+     * The selection on Android's clipboard as a picture, as Rnote's selector puts it on the
+     * desktop's with its own copy: drawn without background or pattern, 6 px round it, at
+     * 1.8 times its size (`StrokeContent::CLIPBOARD_EXPORT_MARGIN`,
+     * `Engine::STROKE_EXPORT_IMAGE_SCALE`). Another app pastes it as an image; this one
+     * pastes its own copy of the ink, which stays ink.
+     */
+    private fun copySelectionImage(document: NoteDocument, selection: List<Stroke>, natives: List<NativeCanvasElement>) {
+        lifecycleScope.launch {
+            val uri = withContext(Dispatchers.IO) {
+                try {
+                    val dir = java.io.File(cacheDir, "clipboard").apply { mkdirs() }
+                    // Only the newest copy is on the clipboard, so only it is kept; a new name
+                    // each time, so nothing that read the last one is shown this one under it.
+                    dir.listFiles()?.forEach { it.delete() }
+                    val file = java.io.File(dir, "selection-${System.currentTimeMillis()}.png")
+                    val uri = FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", file)
+                    val prefs = ExportPrefs(
+                        scope = ExportScope.SELECTION,
+                        format = ExportFormat.PNG,
+                        withBackground = false,
+                        withPattern = false,
+                        optimizePrinterOutput = false,
+                        bitmapScaleFactor = CLIPBOARD_IMAGE_SCALE,
+                        marginPx = CLIPBOARD_IMAGE_MARGIN
+                    )
+                    val result = DocumentExporter.exportSingle(this@MainActivity, uri, document, selection, prefs, natives)
+                    uri.takeIf { result is DocumentExporter.Result.Success }
+                } catch (e: Throwable) {
+                    // OutOfMemoryError included: the copy inside the app has been made anyway.
+                    e.printStackTrace()
+                    null
+                }
+            } ?: return@launch
+            try {
+                getSystemService(ClipboardManager::class.java)
+                    ?.setPrimaryClip(ClipData.newUri(contentResolver, "Selection", uri))
+            } catch (e: RuntimeException) {
+                e.printStackTrace()
             }
         }
     }
@@ -1326,6 +1393,11 @@ class MainActivity : ComponentActivity() {
                     val view = viewportState
                     onDocumentLoaded(pendingDocument)
                     incomingDocument = null
+                    if (incomingUnsaved) {
+                        // Imported, not yet anywhere: unsaved, as Rnote marks it.
+                        incomingUnsaved = false
+                        isModified = true
+                    }
                     if (incomingKeepsView) {
                         // Reloaded: stay on the part of the note that was on screen.
                         incomingKeepsView = false
@@ -2340,6 +2412,17 @@ class MainActivity : ComponentActivity() {
                         val copySelection: () -> Unit = {
                             if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
                                 SelectionClipboard.clip = Clip(selectedStrokes.toList(), selectedNatives.toList())
+                                // And for other apps, as a picture of it.
+                                copySelectionImage(
+                                    NoteDocument(
+                                        title = documentTitle,
+                                        paperStyle = paperStyle,
+                                        strokes = strokes.toList(),
+                                        nativeElements = documentNativeElements
+                                    ),
+                                    selectedStrokes.toList(),
+                                    selectedNatives.toList()
+                                )
                             }
                         }
                         val pasteClipboard: () -> Unit = paste@{
@@ -2588,6 +2671,11 @@ class MainActivity : ComponentActivity() {
                                         FolderListing.Kind.NOTE -> {
                                             showFiles = false
                                             if (!FolderBrowser.sameDocument(uri, currentDocumentUri)) openRecent(uri)
+                                        }
+                                        // Made into a new note, as Rnote opens one.
+                                        FolderListing.Kind.XOPP -> {
+                                            showFiles = false
+                                            openRecent(uri)
                                         }
                                         // Into the open note, as Rnote's browser does with them.
                                         FolderListing.Kind.PDF -> {

@@ -2,13 +2,14 @@ package io.github.kjly.brna.storage
 
 /**
  * What the workspace browser lists and in what order, after desktop Rnote's
- * (rnote-ui/src/workspacebrowser): folders first, then notes, then the files a note can
- * take in — PDFs and pictures — each sorted the way people count, "Page 2" before
- * "Page 10". Hidden files (a leading dot) and everything else are left out.
+ * (rnote-ui/src/workspacebrowser): folders first, then notes and the Xournal++ files
+ * Rnote opens as notes, then the files a note can take in — PDFs and pictures — each
+ * sorted the way people count, "Page 2" before "Page 10". Hidden files (a leading dot)
+ * and everything else are left out.
  */
 object FolderListing {
 
-    enum class Kind { FOLDER, NOTE, PDF, IMAGE }
+    enum class Kind { FOLDER, NOTE, XOPP, PDF, IMAGE }
 
     /** One thing in a folder. [id] is the storage provider's document id. */
     data class Entry(val id: String, val name: String, val kind: Kind, val lastModified: Long?)
@@ -22,6 +23,7 @@ object FolderListing {
         return when {
             mime == FOLDER_MIME -> Kind.FOLDER
             lower.endsWith(".rnote") || mime == "application/rnote" -> Kind.NOTE
+            lower.endsWith(".xopp") || mime == "application/x-xopp" -> Kind.XOPP
             lower.endsWith(".pdf") || mime == "application/pdf" -> Kind.PDF
             lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
                 mime == "image/png" || mime == "image/jpeg" -> Kind.IMAGE
@@ -34,7 +36,7 @@ object FolderListing {
         compareBy<Entry> {
             when (it.kind) {
                 Kind.FOLDER -> 0
-                Kind.NOTE -> 1
+                Kind.NOTE, Kind.XOPP -> 1
                 Kind.PDF, Kind.IMAGE -> 2
             }
         }.thenComparator { a, b -> naturalCompare(a.name, b.name) }

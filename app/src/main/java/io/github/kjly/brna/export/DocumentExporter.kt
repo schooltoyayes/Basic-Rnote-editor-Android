@@ -7,6 +7,9 @@ import androidx.compose.ui.geometry.Rect
 import io.github.kjly.brna.model.NativeCanvasElement
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.Stroke
+import io.github.kjly.brna.storage.RnoteNativeSerializer
+import io.github.kjly.brna.storage.XoppConvert
+import io.github.kjly.brna.storage.XoppFile
 import java.io.OutputStream
 import java.util.Locale
 
@@ -90,9 +93,42 @@ object DocumentExporter {
                     val pdfPages = pages.ifEmpty { listOf(region) }
                     PdfExporter.export(paperStyle, strokes, pdfPages, prefs, out, natives)
                 }
+                ExportFormat.XOPP -> {
+                    out.write(exportXopp(document, prefs, region))
+                    true
+                }
             }
         }
         return if (ok) Result.Success(1) else Result.Failure("Could not write the file")
+    }
+
+    /**
+     * The document as a Xournal++ file, as Rnote writes one (see [XoppConvert.fromNative]):
+     * the pages of the format grid with something on them — not the imported PDF's, which
+     * Rnote doesn't follow here — or, without pages, one round [region].
+     */
+    private fun exportXopp(document: NoteDocument, prefs: ExportPrefs, region: Rect): ByteArray {
+        val native = RnoteNativeSerializer.bridgeToNative(document)
+        val pages = pagesFor(document, prefs.copy(pagesFromImportedPdf = false)).ifEmpty { listOf(region) }
+            .map { XoppConvert.PageRect(it.left.toDouble(), it.top.toDouble(), it.right.toDouble(), it.bottom.toDouble()) }
+        // Rnote's `export_to_bitmap_image_bytes`: the element alone, no background, at 1.8.
+        val imagePrefs = ExportPrefs(
+            format = ExportFormat.PNG,
+            withBackground = false,
+            withPattern = false,
+            optimizePrinterOutput = false,
+            bitmapScaleFactor = XoppConvert.IMAGE_SCALE.toFloat()
+        )
+        val root = XoppConvert.fromNative(native, pages) { el ->
+            val bounds = Rect(el.minX, el.minY, el.maxX, el.maxY)
+            if (bounds.width <= 0f || bounds.height <= 0f) return@fromNative null
+            val png = java.io.ByteArrayOutputStream()
+            val drawn = ImageExporter.exportBitmap(
+                document.paperStyle, emptyList(), bounds, imagePrefs, png, emptyList(), listOf(el)
+            )
+            if (drawn) png.toByteArray() else null
+        }
+        return XoppFile.save(root)
     }
 
     /**
@@ -124,6 +160,8 @@ object DocumentExporter {
                     )
                 ExportFormat.PDF ->
                     PdfExporter.export(paperStyle, document.strokes, listOf(region), prefs, out, document.nativeElements)
+                // Only ever offered for the whole document.
+                ExportFormat.XOPP -> false
             }
         }
         return if (ok) Result.Success(1) else Result.Failure("Could not write the file")

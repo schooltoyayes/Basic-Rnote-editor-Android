@@ -39,7 +39,12 @@ object FileManager {
         val document: NoteDocument,
         val isNativeRnote: Boolean,
         /** The file's bytes' [ContentHash], as they were read. */
-        val contentHash: String? = null
+        val contentHash: String? = null,
+        /**
+         * A Xournal++ file made into a note, as Rnote opens one: a new, unsaved note, never
+         * written back over the `.xopp` it came from.
+         */
+        val imported: Boolean = false
     )
 
     /**
@@ -51,13 +56,18 @@ object FileManager {
             context.contentResolver.openInputStream(uri)?.use { raw ->
                 // Fingerprinted on the way through, so the file is read only once.
                 val digest = ContentHash.newDigest()
-                val buffered = BufferedInputStream(DigestInputStream(raw, digest), 4)
-                buffered.mark(2)
+                val buffered = BufferedInputStream(DigestInputStream(raw, digest), SNIFF_LIMIT)
+                buffered.mark(SNIFF_LIMIT)
                 val b1 = buffered.read()
                 val b2 = buffered.read().toByte()
                 buffered.reset()
 
-                val loaded = if (b1 == GZIP_MAGIC_1 && b2 == GZIP_MAGIC_2) {
+                val gzip = b1 == GZIP_MAGIC_1 && b2 == GZIP_MAGIC_2
+                val loaded = if (gzip && isXopp(buffered)) {
+                    // Xournal++, gzipped XML where Rnote has JSON: made into a note as Rnote does.
+                    val native = XoppConvert.toNative(XoppFile.load(buffered.readBytes()), ImageImport::decodeForXopp)
+                    LoadedDocument(bridgeNativeToNoteDocument(native), isNativeRnote = true, imported = true)
+                } else if (gzip) {
                     // Native .rnote — parse then bridge to our editable model
                     val native = RnoteNativeParser.parse(buffered)
                     LoadedDocument(bridgeNativeToNoteDocument(native), isNativeRnote = true)
@@ -75,6 +85,27 @@ object FileManager {
         } catch (e: Exception) {
             e.printStackTrace()
             null
+        }
+    }
+
+    /** How far into a file its format is looked for: the gzip header and the start of what it holds. */
+    private const val SNIFF_LIMIT = 64 * 1024
+
+    /**
+     * Whether the gzipped file at the start of [buffered] holds XML, as a Xournal++ file
+     * does, rather than an `.rnote`'s JSON. Leaves the stream where it was.
+     */
+    private fun isXopp(buffered: BufferedInputStream): Boolean {
+        buffered.mark(SNIFF_LIMIT)
+        return try {
+            // Not closed: that would close the file under it.
+            val head = ByteArray(64)
+            val n = java.util.zip.GZIPInputStream(buffered, 512).read(head)
+            n > 0 && XoppFile.looksLikeXml(head.copyOf(n))
+        } catch (e: java.io.IOException) {
+            false
+        } finally {
+            buffered.reset()
         }
     }
 

@@ -7,6 +7,7 @@ import io.github.kjly.brna.model.LayoutMode
 import io.github.kjly.brna.model.PageSize
 import io.github.kjly.brna.model.PaperPattern
 import io.github.kjly.brna.model.PaperStyle
+import io.github.kjly.brna.model.PenShortcuts
 
 /**
  * Persists user preferences (paper style, tool settings) across app sessions
@@ -36,6 +37,7 @@ object SettingsManager {
     private const val KEY_PEN_SOUNDS         = "penSounds"
     private const val KEY_BLOCK_PINCH_ZOOM   = "blockPinchZoom"
     private const val KEY_RESPECT_BORDERS    = "respectBorders"
+    private const val KEY_PEN_SHORTCUTS      = "penShortcuts"
 
     fun save(
         context: Context,
@@ -144,6 +146,19 @@ object SettingsManager {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(KEY_PEN_SOUNDS, on)
+            .apply()
+    }
+
+    /** Rnote's "Button Shortcuts", kept between sessions as Rnote keeps them; Rnote's defaults until changed. */
+    fun loadPenShortcuts(context: Context): PenShortcuts =
+        PenShortcuts.decode(
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_PEN_SHORTCUTS, null)
+        )
+
+    fun savePenShortcuts(context: Context, shortcuts: PenShortcuts) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_PEN_SHORTCUTS, shortcuts.encode())
             .apply()
     }
 

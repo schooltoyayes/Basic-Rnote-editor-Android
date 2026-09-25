@@ -13,7 +13,17 @@ enum class ToolType(val isImplemented: Boolean = true) {
     TYPEWRITER,
     ERASER,
     SELECTOR,
-    TOOLS
+    TOOLS;
+
+    /** Rnote's name for the pen, as its `PenStyle` is written in its settings. */
+    val apiName: String get() = name.lowercase()
+
+    /** The pen's name in Rnote's menus: "Brush", "Shaper", … */
+    val displayName: String get() = name.lowercase().replaceFirstChar { it.uppercaseChar() }
+
+    companion object {
+        fun fromApiName(name: String): ToolType? = entries.firstOrNull { it.apiName == name }
+    }
 }
 
 /**

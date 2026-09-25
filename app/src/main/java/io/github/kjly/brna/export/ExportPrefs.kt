@@ -5,9 +5,6 @@ package io.github.kjly.brna.export
  * document pages, Export selection (rnote-ui/src/dialogs/export.rs) — each backed by
  * its own prefs struct in rnote-engine/src/engine/export.rs. BRNA collapses the three
  * into one sheet with a scope switch; the options and their defaults below are Rnote's.
- *
- * Two of Rnote's document formats are deliberately absent: Xopp (Xournal++), which is a
- * whole second file format to write, and nothing here can produce it.
  */
 enum class ExportScope(val displayName: String) {
     /** Rnote's "Export document": the whole thing as one file. */
@@ -26,7 +23,9 @@ enum class ExportFormat(
     SVG("SVG", "image/svg+xml", "svg"),
     PNG("PNG", "image/png", "png"),
     JPEG("JPEG", "image/jpeg", "jpg"),
-    PDF("PDF", "application/pdf", "pdf");
+    PDF("PDF", "application/pdf", "pdf"),
+    /** Xournal++'s own format, Rnote's `DocExportFormat::Xopp`. */
+    XOPP("Xournal++", "application/x-xopp", "xopp");
 
     val isBitmap: Boolean get() = this == PNG || this == JPEG
 }
@@ -75,10 +74,10 @@ data class ExportPrefs(
     }
 
     companion object {
-        /** Mirrors Rnote's per-dialog format enums, minus Xopp. */
+        /** Mirrors Rnote's per-dialog format enums. */
         fun formatsFor(scope: ExportScope): List<ExportFormat> = when (scope) {
-            // DocExportFormat: Svg, Pdf (, Xopp)
-            ExportScope.DOCUMENT -> listOf(ExportFormat.SVG, ExportFormat.PDF)
+            // DocExportFormat: Svg, Pdf, Xopp
+            ExportScope.DOCUMENT -> listOf(ExportFormat.SVG, ExportFormat.PDF, ExportFormat.XOPP)
             // DocPagesExportFormat / SelectionExportFormat: Svg, Png, Jpeg
             ExportScope.PAGES,
             ExportScope.SELECTION -> listOf(ExportFormat.SVG, ExportFormat.PNG, ExportFormat.JPEG)

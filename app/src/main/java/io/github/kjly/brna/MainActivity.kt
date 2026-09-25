@@ -2,6 +2,7 @@ package io.github.kjly.brna
 
 import android.content.ActivityNotFoundException
 import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -105,6 +106,8 @@ import io.github.kjly.brna.model.TextFormatting
 import io.github.kjly.brna.model.TextToggle
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
+import io.github.kjly.brna.model.PenShortcutState
+import io.github.kjly.brna.model.ShortcutKey
 import io.github.kjly.brna.model.UndoHistory
 import io.github.kjly.brna.model.ViewportState
 import io.github.kjly.brna.model.SnapPositions
@@ -211,6 +214,10 @@ private const val IMPORT_OFFSET = 32f
 /** How long a shared file is kept for the app it went to, in ms. */
 private const val SHARED_FILE_LIFETIME_MS = 60 * 60 * 1000L
 
+/** Rnote's `StrokeContent::CLIPBOARD_EXPORT_MARGIN` and `Engine::STROKE_EXPORT_IMAGE_SCALE`. */
+private const val CLIPBOARD_IMAGE_MARGIN = 6f
+private const val CLIPBOARD_IMAGE_SCALE = 1.8f
+
 /**
  * The text box the Typewriter is typing into: where a new one goes (or where the box
  * stands), the box as it is in the document now — null until the first character, and
@@ -283,6 +290,9 @@ class MainActivity : ComponentActivity() {
 
     /** Set when [incomingDocument] is the open note reloaded from its file. */
     private var incomingKeepsView = false
+
+    /** Set when [incomingDocument] is a Xournal++ file made into a note: new, and not yet saved anywhere. */
+    private var incomingUnsaved = false
 
     // ── Tabs ──────────────────────────────────────────────────────────────────
 
@@ -404,6 +414,10 @@ class MainActivity : ComponentActivity() {
 
     /** Installed by the UI: carries out a keyboard shortcut; false when there was nothing to do. */
     private var shortcutHandler: ((Shortcut) -> Boolean)? = null
+
+    /** Installed by the UI: Rnote's Ctrl+Space button shortcut went down (true) or came up. */
+    private var penShortcutKeyHandler: ((ShortcutKey, Boolean) -> Unit)? = null
+    private var ctrlSpaceDown = false
 
     /** Renders the PDF's pages off the main thread and adds them to the open note. */
     private fun importPdf(uri: Uri) {
@@ -558,12 +572,22 @@ class MainActivity : ComponentActivity() {
                 // The bytes decide the format it saves back as. The old test was the
                 // "Imported Note" placeholder title, which said nothing about the file.
                 saveAsRnote = loaded.isNativeRnote
-                adoptDocumentUri(uri, title)
-                // Set here on the main thread together with incomingDocument, never earlier:
-                // autosave must not see the new file's baseline while the old note is still
-                // open, or it would write that note over the file just read.
-                knownLastModified = lastModified
-                knownContentHash = loaded.contentHash
+                if (loaded.imported) {
+                    // A Xournal++ file becomes a new note, as in Rnote: saved as an .rnote
+                    // beside it, never written back over it.
+                    currentDocumentUri = null
+                    pickerStartUri = uri
+                    knownLastModified = null
+                    knownContentHash = null
+                    incomingUnsaved = true
+                } else {
+                    adoptDocumentUri(uri, title)
+                    // Set here on the main thread together with incomingDocument, never earlier:
+                    // autosave must not see the new file's baseline while the old note is still
+                    // open, or it would write that note over the file just read.
+                    knownLastModified = lastModified
+                    knownContentHash = loaded.contentHash
+                }
                 incomingKeepsView = reload
                 incomingDocument = loaded.document.copy(title = title)
                 Toast.makeText(
@@ -571,6 +595,7 @@ class MainActivity : ComponentActivity() {
                     when {
                         automatic -> "Newer version of $title loaded"
                         reload -> "Loaded their version of $title"
+                        loaded.imported -> "Imported: $title — Save keeps it as an .rnote"
                         else -> "Opened: $title"
                     },
                     Toast.LENGTH_SHORT
@@ -957,6 +982,10 @@ class MainActivity : ComponentActivity() {
         CreateDocumentNear(ExportFormat.PDF.mimeType)
     ) { uri -> uri?.let { finishSingleExport(it) } }
 
+    private val exportXoppLauncher = registerForActivityResult(
+        CreateDocumentNear(ExportFormat.XOPP.mimeType)
+    ) { uri -> uri?.let { finishSingleExport(it) } }
+
     /** Page export writes a file per page, so it asks for a folder, not a file name. */
     private val exportFolderLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -974,6 +1003,7 @@ class MainActivity : ComponentActivity() {
                 ExportFormat.PNG -> exportPngLauncher.launch(fileName)
                 ExportFormat.JPEG -> exportJpegLauncher.launch(fileName)
                 ExportFormat.PDF -> exportPdfLauncher.launch(fileName)
+                ExportFormat.XOPP -> exportXoppLauncher.launch(fileName)
             }
         }
     }
@@ -1064,6 +1094,49 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * The selection on Android's clipboard as a picture, as Rnote's selector puts it on the
+     * desktop's with its own copy: drawn without background or pattern, 6 px round it, at
+     * 1.8 times its size (`StrokeContent::CLIPBOARD_EXPORT_MARGIN`,
+     * `Engine::STROKE_EXPORT_IMAGE_SCALE`). Another app pastes it as an image; this one
+     * pastes its own copy of the ink, which stays ink.
+     */
+    private fun copySelectionImage(document: NoteDocument, selection: List<Stroke>, natives: List<NativeCanvasElement>) {
+        lifecycleScope.launch {
+            val uri = withContext(Dispatchers.IO) {
+                try {
+                    val dir = java.io.File(cacheDir, "clipboard").apply { mkdirs() }
+                    // Only the newest copy is on the clipboard, so only it is kept; a new name
+                    // each time, so nothing that read the last one is shown this one under it.
+                    dir.listFiles()?.forEach { it.delete() }
+                    val file = java.io.File(dir, "selection-${System.currentTimeMillis()}.png")
+                    val uri = FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", file)
+                    val prefs = ExportPrefs(
+                        scope = ExportScope.SELECTION,
+                        format = ExportFormat.PNG,
+                        withBackground = false,
+                        withPattern = false,
+                        optimizePrinterOutput = false,
+                        bitmapScaleFactor = CLIPBOARD_IMAGE_SCALE,
+                        marginPx = CLIPBOARD_IMAGE_MARGIN
+                    )
+                    val result = DocumentExporter.exportSingle(this@MainActivity, uri, document, selection, prefs, natives)
+                    uri.takeIf { result is DocumentExporter.Result.Success }
+                } catch (e: Throwable) {
+                    // OutOfMemoryError included: the copy inside the app has been made anyway.
+                    e.printStackTrace()
+                    null
+                }
+            } ?: return@launch
+            try {
+                getSystemService(ClipboardManager::class.java)
+                    ?.setPrimaryClip(ClipData.newUri(contentResolver, "Selection", uri))
+            } catch (e: RuntimeException) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     private fun reportExport(result: DocumentExporter.Result) {
         val message = when (result) {
             is DocumentExporter.Result.Success ->
@@ -1138,6 +1211,10 @@ class MainActivity : ComponentActivity() {
                 toolConfig = toolConfig.copy(snapPositions = !toolConfig.snapPositions)
                 SettingsManager.saveSnapPositions(this@MainActivity, toolConfig.snapPositions)
             }
+            // Rnote's "Button Shortcuts", kept between sessions as Rnote keeps them, and what
+            // pressing one has done to the pen (see PenShortcutState).
+            var penShortcuts by remember { mutableStateOf(SettingsManager.loadPenShortcuts(this)) }
+            val penShortcutState = remember { PenShortcutState() }
             // Rnote's Focus Mode: the pen picker, the colour picker and the pen settings put
             // away, leaving the page and the headerbar. Neither is kept once the app closes,
             // in Rnote as here.
@@ -1316,6 +1393,11 @@ class MainActivity : ComponentActivity() {
                     val view = viewportState
                     onDocumentLoaded(pendingDocument)
                     incomingDocument = null
+                    if (incomingUnsaved) {
+                        // Imported, not yet anywhere: unsaved, as Rnote marks it.
+                        incomingUnsaved = false
+                        isModified = true
+                    }
                     if (incomingKeepsView) {
                         // Reloaded: stay on the part of the note that was on screen.
                         incomingKeepsView = false
@@ -1698,6 +1780,7 @@ class MainActivity : ComponentActivity() {
                 // Last, so on top of the images already there, as a new stroke is in Rnote.
                 documentNativeElements = documentNativeElements + image
                 // Selected, as desktop Rnote leaves an imported image: ready to move or resize.
+                penShortcutState.picked()
                 toolConfig = toolConfig.copy(activeTool = ToolType.SELECTOR)
                 selectedStrokes.clear()
                 selectedNatives.clear()
@@ -1921,12 +2004,45 @@ class MainActivity : ComponentActivity() {
                     isModified = true
                 }
             }
-            val selectTool: (ToolType) -> Unit = { newTool ->
+            /** The pen switched, by hand or by a button shortcut; the selection goes with the selector. */
+            val switchTool: (ToolType) -> Unit = { newTool ->
                 toolConfig = toolConfig.copy(activeTool = newTool)
                 if (newTool != ToolType.SELECTOR) {
                     selectedStrokes.clear()
                     selectedNatives.clear()
                 }
+            }
+            val selectTool: (ToolType) -> Unit = { newTool ->
+                // A pen picked by hand takes a button's temporary pen off, as in Rnote.
+                penShortcutState.picked()
+                switchTool(newTool)
+            }
+            /**
+             * Whether a temporary pen from a button still has something on the go, as Rnote's
+             * pen reports it has not finished: a selection held, a text box open.
+             */
+            val shortcutPenBusy: () -> Boolean = {
+                when (toolConfig.activeTool) {
+                    ToolType.SELECTOR -> selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()
+                    ToolType.TYPEWRITER -> textSession != null
+                    else -> false
+                }
+            }
+            /** A button shortcut went down or came up; the pen in use after it. */
+            val onShortcutKey: (ShortcutKey, Boolean) -> ToolType = { key, down ->
+                val next = if (down) {
+                    penShortcutState.press(key, penShortcuts, toolConfig.activeTool)
+                } else {
+                    penShortcutState.release(key, shortcutPenBusy())
+                }
+                next?.let(switchTool)
+                toolConfig.activeTool
+            }
+            penShortcutKeyHandler = { key, down -> onShortcutKey(key, down) }
+            // The selection let go or the text box left: a temporary pen done with goes.
+            val shortcutBusyNow = shortcutPenBusy()
+            LaunchedEffect(shortcutBusyNow) {
+                penShortcutState.settle(shortcutBusyNow)?.let(switchTool)
             }
             // Which of the colour picker's two pads the palette sets; Rnote's starts on the stroke.
             var fillPadActive by remember { mutableStateOf(false) }
@@ -2049,6 +2165,10 @@ class MainActivity : ComponentActivity() {
                     ) {
                         DrawingCanvas(
                             toolConfig = toolConfig,
+                            onShortcutKey = onShortcutKey,
+                            onPenGestureEnd = {
+                                penShortcutState.gestureEnded(shortcutPenBusy())?.let(switchTool)
+                            },
                             paperStyle = paperStyle,
                             viewportState = viewportState,
                             strokes = strokes,
@@ -2292,6 +2412,17 @@ class MainActivity : ComponentActivity() {
                         val copySelection: () -> Unit = {
                             if (selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()) {
                                 SelectionClipboard.clip = Clip(selectedStrokes.toList(), selectedNatives.toList())
+                                // And for other apps, as a picture of it.
+                                copySelectionImage(
+                                    NoteDocument(
+                                        title = documentTitle,
+                                        paperStyle = paperStyle,
+                                        strokes = strokes.toList(),
+                                        nativeElements = documentNativeElements
+                                    ),
+                                    selectedStrokes.toList(),
+                                    selectedNatives.toList()
+                                )
                             }
                         }
                         val pasteClipboard: () -> Unit = paste@{
@@ -2505,6 +2636,11 @@ class MainActivity : ComponentActivity() {
                                     persistSettings(it)
                                     isModified = true
                                 },
+                                penShortcuts = penShortcuts,
+                                onPenShortcutsChanged = {
+                                    penShortcuts = it
+                                    SettingsManager.savePenShortcuts(this@MainActivity, it)
+                                },
                                 onDismiss = { showPageSettings = false },
                                 dockedAsSidePanel = !isCompactWidth,
                                 modifier = Modifier.align(Alignment.CenterEnd)
@@ -2535,6 +2671,11 @@ class MainActivity : ComponentActivity() {
                                         FolderListing.Kind.NOTE -> {
                                             showFiles = false
                                             if (!FolderBrowser.sameDocument(uri, currentDocumentUri)) openRecent(uri)
+                                        }
+                                        // Made into a new note, as Rnote opens one.
+                                        FolderListing.Kind.XOPP -> {
+                                            showFiles = false
+                                            openRecent(uri)
                                         }
                                         // Into the open note, as Rnote's browser does with them.
                                         FolderListing.Kind.PDF -> {
@@ -2916,6 +3057,14 @@ class MainActivity : ComponentActivity() {
         // The pen's press is acted on as it is let go (onKeyUp); its going down is the
         // pen's too, and must not start the music as a Play key would.
         if (PenRemote.isPenKey(keyCode) && isPenRemote(event)) return true
+        // Rnote's Ctrl+Space button shortcut: held down, it goes down once.
+        if (keyCode == KeyEvent.KEYCODE_SPACE && event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed) {
+            if (event.repeatCount == 0 && !ctrlSpaceDown) {
+                ctrlSpaceDown = true
+                penShortcutKeyHandler?.invoke(ShortcutKey.KEYBOARD_CTRL_SPACE, true)
+            }
+            return true
+        }
         // What the key types with no modifier held, on the keyboard's own layout.
         val char = event.getUnicodeChar(0).takeIf { it > 0 }?.toChar()
         val shortcut = KeyboardShortcuts.of(
@@ -2947,6 +3096,11 @@ class MainActivity : ComponentActivity() {
      * Only for the pen: the same keys from a keyboard or headset do what they do anywhere.
      */
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_SPACE && ctrlSpaceDown) {
+            ctrlSpaceDown = false
+            penShortcutKeyHandler?.invoke(ShortcutKey.KEYBOARD_CTRL_SPACE, false)
+            return true
+        }
         if (!PenRemote.isPenKey(keyCode) || !isPenRemote(event)) return super.onKeyUp(keyCode, event)
         if (keyCode == KeyEvent.KEYCODE_PAGE_UP) performRedoAction?.invoke() else performUndoAction?.invoke()
         return true

@@ -217,7 +217,7 @@ fun RnoteTopBar(
 
             // Page settings
             IconButton(onClick = onOpenPageSettings) {
-                Icon(Icons.Default.Article, contentDescription = "Page Settings", tint = iconTint)
+                Icon(Icons.Default.Article, contentDescription = "Settings", tint = iconTint)
             }
 
             // Rnote's Focus Mode button, beside its canvas menu in the headerbar.

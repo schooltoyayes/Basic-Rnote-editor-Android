@@ -71,6 +71,9 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   them; the pen's events arrive unbuffered, and motion prediction draws the ink a
   little ahead of the pen, never saved. The finished note is drawn on a layer of its
   own and only as far as it is in view, so a long note writes like a short one.
+- **Pen sounds**, Rnote's own, switched on in the canvas menu as in Rnote: a pencil
+  scratching while the brush draws, a squeak at each marker stroke, and a
+  typewriter — with its bell for a new line — for the Typewriter.
 - **Paper**: six patterns (dots, grid, lines, isometric grid, isometric dots,
   blank), A2–A6 / Letter / Legal / custom / infinite page sizes, four layout
   modes (fixed size, continuous vertical, semi-infinite, infinite), custom
@@ -213,6 +216,10 @@ always welcome.
   Working out how to stream the format is the hard part of reading it, and that
   groundwork was theirs — done and shared freely with an invitation to adapt it.
   (See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the details.)
+- **Pen sounds**, as Rnote ships them, from [freesound.org](https://freesound.org/):
+  "Pencil, Writing, Close, A" by InspectorJ (CC BY 3.0); the marker sounds, and the
+  typewriter's by KVProds and knufds, CC0. (Details in
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).)
 
 ## License
 

@@ -40,6 +40,7 @@ import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntSize
+import io.github.kjly.brna.audio.PenSounds
 import io.github.kjly.brna.model.Affine
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.EraserMode
@@ -118,6 +119,8 @@ fun DrawingCanvas(
     selectedNatives: SnapshotStateList<NativeCanvasElement>? = null,
     /** What the Shaper just finished drawing: one shape, or the lines of a grid or axes. */
     onAddShapes: (List<NativeShapeElement>) -> Unit = {},
+    /** Rnote's pen sounds, when they are switched on. */
+    penSounds: PenSounds? = null,
     /** Shapes the eraser went over; part of the same gesture as [onEraseStrokes]. */
     onEraseNatives: (List<NativeCanvasElement>) -> Unit = {},
     /** Desktop elements the selector moved: old instance -> moved copy. */
@@ -616,6 +619,11 @@ fun DrawingCanvas(
                         texturedSeed = kotlin.random.Random.nextLong()
                         // The stroke starts at the pen-down sample either way; with the
                         // modeled builder, what follows is what the modeler makes of the pen.
+                        // Rnote's brush: the marker squeaks once as it touches down, the
+                        // others scratch for as long as they move.
+                        if (activeTool == ToolType.BRUSH) {
+                            if (toolConfig.brushStyle == BrushStyle.MARKER) penSounds?.marker() else penSounds?.brush()
+                        }
                         pathBuilder = if (activeTool == ToolType.BRUSH && toolConfig.penPathBuilder == PenPathBuilder.MODELED) {
                             ModeledPathBuilder(InkPoint(x, y, rawPressure), eventSeconds(motionEvent, motionEvent.historySize))
                         } else {
@@ -734,6 +742,7 @@ fun DrawingCanvas(
                             // handling walks the event's history too), so a quick curve keeps
                             // the shape it was written with, and a quick eraser misses nothing.
                             val builder = pathBuilder.takeIf { activeTool == ToolType.BRUSH }
+                            if (activeTool == ToolType.BRUSH && toolConfig.brushStyle != BrushStyle.MARKER) penSounds?.brush()
                             for (h in 0..motionEvent.historySize) {
                                 val point = if (h < motionEvent.historySize) {
                                     val at = viewportState.screenToCanvas(

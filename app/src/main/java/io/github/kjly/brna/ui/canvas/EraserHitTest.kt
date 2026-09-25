@@ -87,7 +87,9 @@ object EraserHitTest {
 
         val pieces = mutableListOf<Stroke>()
         val first = hits.first()
-        if (first > 0) pieces += stroke.copy(points = points.subList(0, first + 1).toList())
+        // Each piece keeps the curves of the segments it keeps; its first point starts it
+        // and brings no segment along. Cut, it is no longer what the file had.
+        if (first > 0) pieces += stroke.copy(points = points.subList(0, first + 1).toList(), source = null)
         for (k in hits.indices) {
             val cut = hits[k]
             val nextCut = if (k + 1 < hits.size) hits[k + 1] else points.size - 1
@@ -95,7 +97,8 @@ object EraserHitTest {
             if (nextCut - cut > 1) {
                 pieces += stroke.copy(
                     id = UUID.randomUUID().toString(),
-                    points = points.subList(cut + 1, nextCut + 1).toList()
+                    points = points.subList(cut + 1, nextCut + 1).toList(),
+                    source = null
                 )
             }
         }

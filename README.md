@@ -115,18 +115,25 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   Ctrl+W, Ctrl+Tab / Ctrl+Shift+Tab.
 - **Workspaces**: Rnote's workspace browser as a side panel — folders on the
   device or in Google Drive, each with a name and a color, listed as Rnote lists
-  them. Open notes, drop PDFs and pictures into the open note, make new notes
+  them. Open notes and Xournal++ files, drop PDFs and pictures into the open note, make new notes
   and folders, rename, duplicate and delete. When the open note was saved on
   another device meanwhile, returning to the app or opening the panel loads the
   newer version — or, with changes on both sides, asks what to keep. While the
   app is open it also looks every 30 seconds, and loads a newer version when
   nothing here is unsaved, so the tablet follows along as the laptop saves.
 - **Import**: PDF pages, and pictures from the gallery or the camera, written
-  the way desktop Rnote writes its own imports.
+  the way desktop Rnote writes its own imports. A Xournal++ `.xopp` opens as a new
+  note, as Rnote opens one — its strokes with their pressure, highlighters, text and
+  pictures, the pages one below the other — and is saved as an `.rnote` beside it,
+  never over it.
 - **Export, share and print**: PDF, SVG, PNG, and JPEG, with page-range and
-  split options and one page per imported PDF page. A Share button sends the
+  split options and one page per imported PDF page, and Xournal++ (`.xopp`) for the
+  whole note as Rnote writes it: strokes stay strokes, shapes, text and pictures go in
+  as pictures, one Xournal++ page for each page with something on it. A Share button sends the
   current page, the selection or the whole note to another app; Print sends
-  every page, background and pattern included, to Android's print dialog.
+  every page, background and pattern included, to Android's print dialog. Copying
+  a selection also puts a picture of it on Android's clipboard, as Rnote puts one on
+  the desktop's, to paste into a document or a message.
 - **View**: Rnote's canvas menu — zoom out, reset and in, Zoom to Page Width — its
   Focus Mode, which puts the pen picker, the colors and the pen settings away, and
   Fullscreen, which hides Android's bars.

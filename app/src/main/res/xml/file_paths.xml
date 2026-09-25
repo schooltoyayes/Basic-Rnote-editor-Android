@@ -4,4 +4,6 @@
     <cache-path name="camera" path="camera/" />
     <!-- Files handed to other apps by the Share button (see MainActivity.shareExport). -->
     <cache-path name="share" path="share/" />
+    <!-- A picture of the selection put on the clipboard by Copy (see MainActivity.copySelectionImage). -->
+    <cache-path name="clipboard" path="clipboard/" />
 </paths>

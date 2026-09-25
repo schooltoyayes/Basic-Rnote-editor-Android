@@ -43,6 +43,26 @@ object ImageImport {
         }
     }
 
+    /**
+     * A Xournal++ image's encoded bytes as Rnote's `Image::try_from_encoded_bytes` makes
+     * them: every pixel, premultiplied RGBA, not scaled down as a photo is. Null if they
+     * aren't a picture Android can read.
+     */
+    internal fun decodeForXopp(bytes: ByteArray): XoppConvert.Pixels? {
+        val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+        val bitmap = if (decoded.config == Bitmap.Config.ARGB_8888) decoded else {
+            decoded.copy(Bitmap.Config.ARGB_8888, false).also { decoded.recycle() }
+        }
+        return try {
+            val buffer = ByteBuffer.allocate(bitmap.width * bitmap.height * 4)
+            bitmap.copyPixelsToBuffer(buffer)
+            XoppConvert.Pixels(java.util.Base64.getEncoder().encodeToString(buffer.array()), bitmap.width, bitmap.height)
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
     private fun decode(context: Context, uri: Uri): Bitmap? {
         val resolver = context.contentResolver
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

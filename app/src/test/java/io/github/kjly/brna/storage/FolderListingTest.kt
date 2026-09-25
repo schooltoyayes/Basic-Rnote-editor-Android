@@ -22,6 +22,9 @@ class FolderListingTest {
         assertEquals(Kind.FOLDER, FolderListing.kindOf("Physik", FolderListing.FOLDER_MIME))
         // A folder is a folder whatever it is called.
         assertEquals(Kind.FOLDER, FolderListing.kindOf("Alt.rnote", FolderListing.FOLDER_MIME))
+        // Xournal++'s, which Rnote opens as a note.
+        assertEquals(Kind.XOPP, FolderListing.kindOf("Tafelbild.xopp", null))
+        assertEquals(Kind.XOPP, FolderListing.kindOf("Tafelbild", "application/x-xopp"))
     }
 
     @Test

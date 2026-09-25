@@ -31,6 +31,8 @@
                 <data android:mimeType="application/rnote" />
                 <data android:mimeType="application/gzip" />
                 <data android:mimeType="application/x-gzip" />
+                <!-- Xournal++'s own, which Rnote opens too. -->
+                <data android:mimeType="application/x-xopp" />
             </intent-filter>
             <!-- ... and those that keep the file name in the uri are matched by it. -->
             <intent-filter>
@@ -42,6 +44,8 @@
                 <data android:mimeType="*/*" />
                 <data android:pathPattern=".*\\.rnote" />
                 <data android:pathPattern=".*\\..*\\.rnote" />
+                <data android:pathPattern=".*\\.xopp" />
+                <data android:pathPattern=".*\\..*\\.xopp" />
             </intent-filter>
         </activity>
         <!-- Hands files to other apps: the camera writes a photo into one ("Take photo…"),

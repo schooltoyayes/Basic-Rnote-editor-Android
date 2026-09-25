@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Description
@@ -432,6 +433,7 @@ private fun EntryRow(
     val icon: ImageVector = when (entry.kind) {
         FolderListing.Kind.FOLDER -> Icons.Default.Folder
         FolderListing.Kind.NOTE -> Icons.Default.Description
+        FolderListing.Kind.XOPP -> Icons.Default.Article
         FolderListing.Kind.PDF -> Icons.Default.PictureAsPdf
         FolderListing.Kind.IMAGE -> Icons.Default.Image
     }

@@ -26,15 +26,18 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
 **Working**
 
 - **Brush** with stylus pressure sensitivity, in Solid and Marker (translucent)
-  styles. Three size presets per tool plus a numeric adjuster, and four favorite
-  slots that keep a style, color and width together.
+  styles, and Rnote's six pressure curves for Solid — constant, linear, square and
+  cubic root, quadratic and cubic. Three size presets per tool plus a numeric
+  adjuster, and four favorite slots that keep a style, color and width together.
 - **Shaper**: line, arrow, rectangle, ellipse, and — built from lines, as Rnote
   builds them — 2D, 3D and single-quadrant coordinate systems and a grid. Rnote's
   shapes of several strokes too: polyline and polygon (a corner per stroke; put the
   pen down on the last corner again to finish), quadratic and cubic curves, and the
   ellipse through a point from its two foci. Rnote's constraints — 1:1, 3:2, the
   golden ratio, level and upright — with Ctrl to switch them while drawing. Lines
-  and arrows can also snap to 15° steps. The color picker's fill pad fills shapes.
+  and arrows can also snap to 15° steps. Rnote's line styles — solid, dotted and
+  three kinds of dashed — and straight or round line caps. The color picker's fill
+  pad fills shapes.
 - **Typewriter**: tap and type straight onto the page, into a new text box or
   an existing one. Bold, italic, underline and strikethrough — from the strip,
   or Ctrl+B / Ctrl+I / Ctrl+U on a keyboard — stored as Rnote stores them, so
@@ -46,7 +49,8 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   Rnote's four styles: lasso, rectangle, single (tap, tap again to add) and
   intersecting path. Select all / deselect / duplicate / delete, drag-to-move,
   scale and rotate handles with an aspect-ratio lock, copy / cut / paste between
-  notes, and recoloring the selection — its lines and text, or its shapes' fill.
+  notes, recoloring the selection — its lines and text, or its shapes' fill — and
+  Rnote's Invert Color Brightness, which turns its colors light for dark.
 - **Tools**: Rnote's Vertical Space — drag down to open up room, up to close it —
   and its Laser, a red trail to point with that fades away and is never saved.
 - **Stylus-aware input**: stylus-only mode by default (finger pans and zooms),
@@ -58,9 +62,11 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   own and only as far as it is in view, so a long note writes like a short one.
 - **Paper**: six patterns (dots, grid, lines, isometric grid, isometric dots,
   blank), A2–A6 / Letter / Legal / custom / infinite page sizes, four layout
-  modes (fixed page, continuous vertical, semi-infinite, infinite), custom
+  modes (fixed size, continuous vertical, semi-infinite, infinite), custom
   background and pattern colors, adjustable spacing and DPI,
-  portrait/landscape, dark mode. The isometric patterns stand on an upright edge,
+  portrait/landscape, dark mode. A Fixed Size document has as many pages as Rnote
+  gives it: Add Page, Remove Page and Resize to Fit Content in the canvas menu, and
+  pages for an imported PDF. The isometric patterns stand on an upright edge,
   as Rnote draws them. Rnote's Snap Positions (menu, or Ctrl+Shift+P): shapes,
   moved and resized selections, new text and vertical space go to the pattern and
   the page edges. The full palette has GTK's Custom row: a color editor
@@ -93,10 +99,14 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   split options and one page per imported PDF page. A Share button sends the
   current page, the selection or the whole note to another app; Print sends
   every page, background and pattern included, to Android's print dialog.
+- **View**: Rnote's canvas menu — zoom out, reset and in, Zoom to Page Width — its
+  Focus Mode, which puts the pen picker, the colors and the pen settings away, and
+  Fullscreen, which hides Android's bars.
 - **Keyboard shortcuts** for a hardware keyboard, Rnote's own: Ctrl+Z / Ctrl+Shift+Z
   (and Ctrl+Y), Ctrl+S / Ctrl+Shift+S, Ctrl+O, Ctrl+N, Ctrl+P, Ctrl+Shift+I,
-  Ctrl+L, Ctrl+Shift+O, Ctrl+Shift+P, Ctrl+C / X / V / A / D, Delete and Escape
-  for the selection, Ctrl++ / Ctrl+- / Ctrl+0 to zoom, Ctrl+1 to Ctrl+6 for the pens.
+  Ctrl+L, Ctrl+Shift+O, Ctrl+Shift+P, Ctrl+Shift+A / Ctrl+Shift+R for pages, F11,
+  Ctrl+C / X / V / A / D, Delete and Escape for the selection, Ctrl++ / Ctrl+- /
+  Ctrl+0 to zoom, Ctrl+1 to Ctrl+6 for the pens.
   They follow the keyboard's layout, so Ctrl+Z is the Z key on a German
   keyboard too.
 

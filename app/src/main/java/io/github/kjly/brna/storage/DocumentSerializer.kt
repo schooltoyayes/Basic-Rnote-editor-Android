@@ -34,6 +34,7 @@ object DocumentSerializer {
         // Omitting this let the layout reset to PaperStyle's default on every reload, the
         // same defect the .rnote writer had -- only to a different default.
         paperObj.put("layoutMode", document.paperStyle.layoutMode.name)
+        paperObj.put("fixedPageCount", document.paperStyle.fixedPages)
         root.put("paperStyle", paperObj)
 
         // Strokes Array
@@ -99,7 +100,8 @@ object DocumentSerializer {
                 isDarkMode = isDarkMode,
                 dotDensityDpi = dotDensityDpi,
                 pageSize = pageSize,
-                layoutMode = layoutMode
+                layoutMode = layoutMode,
+                fixedPageCount = paperObj.optInt("fixedPageCount", 1)
             )
         }
 

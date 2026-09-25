@@ -52,8 +52,8 @@ import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.SelectorMode
 import io.github.kjly.brna.model.ShapeKind
+import io.github.kjly.brna.model.ShapeLineCap
 import io.github.kjly.brna.model.SnapPositions
-import io.github.kjly.brna.model.PressureCurve
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
 import io.github.kjly.brna.model.ToolConfig
@@ -820,7 +820,7 @@ fun DrawingCanvas(
                                         lifted.finished?.let { points ->
                                             ShapeDraft.toShape(
                                                 pending.kind, points, nativeColorOf(toolConfig.penColor),
-                                                toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor)
+                                                toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor), toolConfig.shapeLine
                                             )?.let { onAddShapes(listOf(it)) }
                                         }
                                     } else {
@@ -855,12 +855,13 @@ fun DrawingCanvas(
                                             ShapeBuilders.axes(kind, start.x, start.y, end.x, end.y)
                                         else -> null
                                     }
+                                    val line = toolConfig.shapeLine
                                     val shapes = if (lines != null) {
                                         lines.mapNotNull {
-                                            NativeEditing.createShape(ShapeKind.LINE, it.x1, it.y1, it.x2, it.y2, color, width, fill)
+                                            NativeEditing.createShape(ShapeKind.LINE, it.x1, it.y1, it.x2, it.y2, color, width, fill, line)
                                         }
                                     } else {
-                                        listOfNotNull(NativeEditing.createShape(kind, start.x, start.y, end.x, end.y, color, width, fill))
+                                        listOfNotNull(NativeEditing.createShape(kind, start.x, start.y, end.x, end.y, color, width, fill, line))
                                     }
                                     if (shapes.isNotEmpty()) onAddShapes(shapes)
                                 }
@@ -882,7 +883,7 @@ fun DrawingCanvas(
                                         strokeWidth = toolConfig.currentActiveSize,
                                         toolType = activeTool,
                                         isHighlighter = isMarker,
-                                        pressureCurve = pressureCurveFor(toolConfig)
+                                        pressureCurve = toolConfig.strokePressureCurve
                                     )
                                 )
                             }
@@ -1051,7 +1052,7 @@ fun DrawingCanvas(
                     val path = composeStrokePath(
                         if (predictedPoints.isEmpty()) currentPoints else currentPoints + predictedPoints,
                         toolConfig.currentActiveSize,
-                        pressureCurveFor(toolConfig)
+                        toolConfig.strokePressureCurve
                     )
                     drawPath(path = path, color = toolConfig.currentActiveColor)
                 }
@@ -1083,18 +1084,26 @@ fun DrawingCanvas(
                         else -> null
                     }
                     if (lines != null) {
+                        // Dashed and capped as the lines will be, which costs nothing per line.
+                        val rounded = toolConfig.shapeLine.cap == ShapeLineCap.ROUNDED
+                        val dashes = NativeElementRenderer.dashPattern(
+                            toolConfig.shapeLine.style.apiName, toolConfig.shaperWidth, rounded
+                        )?.let { PathEffect.dashPathEffect(it, 0f) }
                         for (line in lines) {
                             drawLine(
                                 color = toolConfig.penColor,
                                 start = Offset(line.x1, line.y1),
                                 end = Offset(line.x2, line.y2),
-                                strokeWidth = toolConfig.shaperWidth
+                                strokeWidth = toolConfig.shaperWidth,
+                                cap = if (rounded) StrokeCap.Round else StrokeCap.Butt,
+                                pathEffect = dashes
                             )
                         }
                     } else if (dragging) {
                         NativeEditing.createShape(
                             kind, previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y,
-                            nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor)
+                            nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor),
+                            toolConfig.shapeLine
                         )?.let { preview ->
                             drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, preview, cache = false) }
                         }
@@ -1289,18 +1298,6 @@ fun DrawingCanvas(
 }
 
 /**
- * The pressure curve a stroke drawn with [toolConfig] should carry, following how
- * desktop Rnote configures its own brushes in `pensconfig/brushconfig.rs`.
- */
-private fun pressureCurveFor(toolConfig: ToolConfig): PressureCurve = when {
-    // Rnote's MarkerOptions pin the curve to Const: a marker is a constant-width nib.
-    toolConfig.brushStyle == BrushStyle.MARKER -> PressureCurve.CONST
-    // Our "pressure sensitivity" switch is the same choice Rnote exposes as the curve.
-    !toolConfig.isPressureSensitive -> PressureCurve.CONST
-    else -> PressureCurve.LINEAR
-}
-
-/**
  * One UI's proprietary MotionEvent actions for a stylus gesture with the barrel button
  * held, which it substitutes for ACTION_DOWN / ACTION_UP / ACTION_MOVE. Not in the SDK;
  * measured on an SM-T870 by logging every event the canvas receives.
@@ -1352,17 +1349,18 @@ private fun DrawScope.drawDraft(
     val color = nativeColorOf(toolConfig.penColor)
     val fill = nativeColorOf(toolConfig.fillColor)
     val width = toolConfig.shaperWidth
+    val line = toolConfig.shapeLine
     val kind = draft.kind
     val isPoly = kind == ShapeKind.POLYLINE || kind == ShapeKind.POLYGON
     val current = draft.current
     val placed = if (current != null && !draft.finishing) draft.points + current else draft.points
     val preview = when {
         // Two corners of a polygon are only a line so far.
-        kind == ShapeKind.POLYGON && placed.size == 2 -> ShapeDraft.toShape(ShapeKind.POLYLINE, placed, color, width, fill)
-        isPoly -> ShapeDraft.toShape(kind, placed, color, width, fill)
+        kind == ShapeKind.POLYGON && placed.size == 2 -> ShapeDraft.toShape(ShapeKind.POLYLINE, placed, color, width, fill, line)
+        isPoly -> ShapeDraft.toShape(kind, placed, color, width, fill, line)
         placed.size == 3 && (kind == ShapeKind.QUADBEZ || kind == ShapeKind.FOCI_ELLIPSE) ->
-            ShapeDraft.toShape(kind, placed, color, width, fill)
-        placed.size == 4 && kind == ShapeKind.CUBBEZ -> ShapeDraft.toShape(kind, placed, color, width, fill)
+            ShapeDraft.toShape(kind, placed, color, width, fill, line)
+        placed.size == 4 && kind == ShapeKind.CUBBEZ -> ShapeDraft.toShape(kind, placed, color, width, fill, line)
         else -> null
     }
     preview?.let(drawShape)

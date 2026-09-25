@@ -104,7 +104,11 @@ data class ToolConfig(
     // Rnote's EraserConfig::WIDTH_DEFAULT is 12.0, which is deliberately not one of the
     // 4/9/24 palette presets — a fresh eraser starts between Small and Medium.
     val eraserWidth: Float = 12f,          // Eraser square side in canvas units
-    val isPressureSensitive: Boolean = true,
+    /**
+     * The Solid brush's pressure curve: Rnote's `SolidOptions::pressure_curve`, which its
+     * brush settings let you pick and which starts linear.
+     */
+    val pressureCurve: PressureCurve = PressureCurve.LINEAR,
     /** The Shaper's current shape and width; Rnote's shaper defaults to a 2.0 line. */
     val shapeKind: ShapeKind = ShapeKind.LINE,
     val shaperWidth: Float = 2f,
@@ -126,6 +130,8 @@ data class ToolConfig(
     val textAlignment: TextAlignment = TextAlignment.START,
     /** The Shaper's constraints (1:1, level, upright …), off by default as in Rnote. */
     val shapeConstraints: ShapeConstraints = ShapeConstraints(),
+    /** The Shaper's line style and line cap, as Rnote's shaper settings pick them. */
+    val shapeLine: ShapeLine = ShapeLine(),
     /**
      * Rnote's "Snap Positions": shapes, moved selections, new text and vertical space go
      * to the page's pattern. Off by default, as in Rnote; kept in the settings.
@@ -145,6 +151,14 @@ data class ToolConfig(
             isMarker -> highlighterWidth
             else -> strokeWidth
         }
+
+    /**
+     * The curve a new brush stroke carries, as Rnote's `pensconfig/brushconfig.rs` sets
+     * it: the marker's is pinned to Const — a constant-width nib — the solid brush's is
+     * [pressureCurve].
+     */
+    val strokePressureCurve: PressureCurve
+        get() = if (brushStyle == BrushStyle.MARKER) PressureCurve.CONST else pressureCurve
 
     /** The ink color for the active tool/style. */
     val currentActiveColor: Color

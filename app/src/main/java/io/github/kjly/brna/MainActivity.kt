@@ -50,6 +50,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Alignment
@@ -67,6 +68,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -79,6 +83,7 @@ import io.github.kjly.brna.export.NotePrintAdapter
 import io.github.kjly.brna.export.PageThumbnails
 import io.github.kjly.brna.export.ShareTarget
 import io.github.kjly.brna.model.BrushStyle
+import io.github.kjly.brna.model.FixedPages
 import io.github.kjly.brna.model.LayoutMode
 import io.github.kjly.brna.model.NativeBitmapElement
 import io.github.kjly.brna.model.NativeBrushStroke
@@ -1110,6 +1115,22 @@ class MainActivity : ComponentActivity() {
                 toolConfig = toolConfig.copy(snapPositions = !toolConfig.snapPositions)
                 SettingsManager.saveSnapPositions(this@MainActivity, toolConfig.snapPositions)
             }
+            // Rnote's Focus Mode: the pen picker, the colour picker and the pen settings put
+            // away, leaving the page and the headerbar. Neither is kept once the app closes,
+            // in Rnote as here.
+            var focusMode by rememberSaveable { mutableStateOf(false) }
+            // Rnote's Fullscreen (F11): here, Android's status and navigation bars put away,
+            // a swipe from the edge bringing them back for a moment.
+            var fullscreen by rememberSaveable { mutableStateOf(false) }
+            LaunchedEffect(fullscreen) {
+                val bars = WindowCompat.getInsetsController(window, window.decorView)
+                if (fullscreen) {
+                    bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    bars.hide(WindowInsetsCompat.Type.systemBars())
+                } else {
+                    bars.show(WindowInsetsCompat.Type.systemBars())
+                }
+            }
 
             // ── Document state ────────────────────────────────────────────────────
             var documentTitle by remember { mutableStateOf("My Note") }
@@ -1169,6 +1190,57 @@ class MainActivity : ComponentActivity() {
                 documentNativeElements = state.natives
                 selectedStrokes.clear()
                 selectedNatives.clear()
+            }
+
+            // ── The pages of a Fixed Size document (see FixedPages) ───────────────
+            // Rnote's Resize to Fit Content, which it also does to a Fixed Size document
+            // when the format or the layout changes and after an import.
+            val fitPagesToContent: () -> Unit = {
+                if (paperStyle.layoutMode == LayoutMode.FIXED_SIZE) {
+                    val pages = FixedPages.fitting(
+                        ExportLayout.contentBounds(strokes, documentNativeElements),
+                        paperStyle.effectivePageHeightPx
+                    )
+                    if (pages != paperStyle.fixedPages) {
+                        paperStyle = paperStyle.copy(fixedPageCount = pages)
+                        isModified = true
+                    }
+                }
+            }
+            val addPage: () -> Unit = {
+                if (paperStyle.layoutMode == LayoutMode.FIXED_SIZE) {
+                    paperStyle = paperStyle.copy(fixedPageCount = paperStyle.fixedPages + 1)
+                    isModified = true
+                }
+            }
+            // As in Rnote, what lies wholly on the page taken away goes with it, and undo
+            // brings that back — the page itself stays gone, Rnote's history holding the
+            // content and not the document's size.
+            val removePage: () -> Unit = {
+                if (paperStyle.layoutMode == LayoutMode.FIXED_SIZE && paperStyle.fixedPages > 1) {
+                    textSession = null
+                    val pages = paperStyle.fixedPages - 1
+                    val bottom = pages * paperStyle.effectivePageHeightPx
+                    val goneIds = strokes.filter { stroke ->
+                        val top = stroke.points.minOfOrNull { it.y } ?: return@filter false
+                        FixedPages.goesWithRemovedPage(top - stroke.strokeWidth / 2f, bottom)
+                    }.map { it.id }.toSet()
+                    val goneNatives = java.util.Collections.newSetFromMap(
+                        java.util.IdentityHashMap<NativeCanvasElement, Boolean>()
+                    ).apply {
+                        addAll(documentNativeElements.filter { FixedPages.goesWithRemovedPage(it.minY, bottom) })
+                    }
+                    if (goneIds.isNotEmpty() || goneNatives.isNotEmpty()) {
+                        pushUndo()
+                        redoStack.clear()
+                        strokes.removeAll { it.id in goneIds }
+                        selectedStrokes.removeAll { it.id in goneIds }
+                        documentNativeElements = documentNativeElements.filter { it !in goneNatives }
+                        selectedNatives.removeAll { it in goneNatives }
+                    }
+                    paperStyle = paperStyle.copy(fixedPageCount = pages)
+                    isModified = true
+                }
             }
 
             // ── Page indicator (2D grid position) ────────────────────────────────
@@ -1562,6 +1634,8 @@ class MainActivity : ComponentActivity() {
                 redoStack.clear()
                 documentNativeElements = pages + documentNativeElements
                 isModified = true
+                // A Fixed Size document gets the pages the PDF needs, as in Rnote.
+                fitPagesToContent()
                 // Bring the first imported page into view at the current zoom.
                 viewportState = viewportState.copy(
                     panOffset = androidx.compose.ui.geometry.Offset(
@@ -1601,6 +1675,7 @@ class MainActivity : ComponentActivity() {
                 selectedNatives.clear()
                 selectedNatives.add(image)
                 isModified = true
+                fitPagesToContent()
             }
 
             // ── Typewriter ────────────────────────────────────────────────────────
@@ -1822,6 +1897,18 @@ class MainActivity : ComponentActivity() {
             }
             // Which of the colour picker's two pads the palette sets; Rnote's starts on the stroke.
             var fillPadActive by remember { mutableStateOf(false) }
+            /** Zoomed by [factor] about the middle of the view, as Rnote's zoom keys do. */
+            val zoomBy: (Float) -> Unit = { factor ->
+                val middle = Offset(canvasSize.width / 2f, canvasSize.height / 2f)
+                viewportState = viewportState.zoomedAround(middle, viewportState.zoomScale * factor)
+            }
+            val zoomFitWidth: () -> Unit = {
+                viewportState = viewportState.fittedToWidth(
+                    canvasSize.width.toFloat(),
+                    canvasSize.height.toFloat(),
+                    if (paperStyle.pageSize.isInfinite) 0f else paperStyle.effectivePageWidthPx
+                )
+            }
 
             BabyRnoteTheme(darkTheme = paperStyle.isDarkMode) {
                 Scaffold(
@@ -1881,7 +1968,19 @@ class MainActivity : ComponentActivity() {
                                 filesOpen = showFiles,
                                 onToggleFiles = { showFiles = !showFiles },
                                 snapPositions = toolConfig.snapPositions,
-                                onToggleSnapPositions = toggleSnapPositions
+                                onToggleSnapPositions = toggleSnapPositions,
+                                onZoomOut = { zoomBy(1f / (1f + ViewportState.ZOOM_STEP)) },
+                                onZoomIn = { zoomBy(1f + ViewportState.ZOOM_STEP) },
+                                onZoomFitWidth = zoomFitWidth,
+                                isFixedSize = paperStyle.layoutMode == LayoutMode.FIXED_SIZE,
+                                canRemovePage = paperStyle.fixedPages > 1,
+                                onAddPage = addPage,
+                                onRemovePage = removePage,
+                                onResizeToFitContent = fitPagesToContent,
+                                focusMode = focusMode,
+                                onToggleFocusMode = { focusMode = !focusMode },
+                                fullscreen = fullscreen,
+                                onToggleFullscreen = { fullscreen = !fullscreen }
                             )
                             // Desktop Rnote's tab bar: there once more than one note is open.
                             if (tabOrder.size > 1) {
@@ -2086,8 +2185,33 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        // Rnote's "Invert Color Brightness of All Selected Strokes": every
+                        // colour of the selection, light for dark, in one undo step.
+                        val invertSelectionColors: () -> Unit = {
+                            val affected = selectedStrokes.isNotEmpty() ||
+                                selectedNatives.any { it is NativeShapeElement || it is NativeTextElement }
+                            if (affected) {
+                                pushUndo()
+                                redoStack.clear()
+                                val inverted = SelectionManager.inverted(selectedStrokes.toList())
+                                val byId = inverted.associateBy { it.id }
+                                for (i in strokes.indices) {
+                                    byId[strokes[i].id]?.let { strokes[i] = it }
+                                }
+                                selectedStrokes.clear()
+                                selectedStrokes.addAll(inverted)
+                                val swapped = java.util.IdentityHashMap<NativeCanvasElement, NativeCanvasElement>()
+                                for (el in selectedNatives) swapped[el] = NativeEditing.withInvertedColors(el)
+                                documentNativeElements = documentNativeElements.map { swapped[it] ?: it }
+                                val kept = selectedNatives.map { swapped[it] ?: it }
+                                selectedNatives.clear()
+                                selectedNatives.addAll(kept)
+                                isModified = true
+                            }
+                        }
+
                         // Top-center: stroke and fill color + palette (matches Rnote's colorpicker.ui)
-                        ColorPicker(
+                        if (!focusMode) ColorPicker(
                             activeColor = toolConfig.currentActiveColor,
                             onColorSelected = { newColor ->
                                 toolConfig = if (toolConfig.activeTool == ToolType.BRUSH && toolConfig.brushStyle == BrushStyle.MARKER) {
@@ -2202,11 +2326,6 @@ class MainActivity : ComponentActivity() {
                             selectedStrokes.clear()
                             selectedNatives.clear()
                         }
-                        /** Zoomed by [factor] about the middle of the view, as Rnote's zoom keys do. */
-                        val zoomBy: (Float) -> Unit = { factor ->
-                            val middle = Offset(canvasSize.width / 2f, canvasSize.height / 2f)
-                            viewportState = viewportState.zoomedAround(middle, viewportState.zoomScale * factor)
-                        }
 
                         // ── Keyboard shortcuts (see KeyboardShortcuts) ─────────────────
                         shortcutHandler = handler@{ shortcut ->
@@ -2225,6 +2344,9 @@ class MainActivity : ComponentActivity() {
                                 Shortcut.CLEAR -> clearCanvas()
                                 Shortcut.PAGE_OVERVIEW -> showPages = true
                                 Shortcut.SNAP_POSITIONS -> toggleSnapPositions()
+                                Shortcut.ADD_PAGE -> if (paperStyle.layoutMode == LayoutMode.FIXED_SIZE) addPage() else return@handler false
+                                Shortcut.REMOVE_PAGE -> if (paperStyle.layoutMode == LayoutMode.FIXED_SIZE) removePage() else return@handler false
+                                Shortcut.FULLSCREEN -> fullscreen = !fullscreen
                                 Shortcut.UNDO -> performUndoAction?.invoke()
                                 Shortcut.REDO -> performRedoAction?.invoke()
                                 Shortcut.COPY -> if (hasSelection) copySelection() else return@handler false
@@ -2262,7 +2384,7 @@ class MainActivity : ComponentActivity() {
 
                         // Left edge, vertically centered: per-pen config (matches RnPensSideBar).
                         // Hidden below the width breakpoint (see isCompactWidth, top of file).
-                        if (!isCompactWidth) PenConfigStrip(
+                        if (!isCompactWidth && !focusMode) PenConfigStrip(
                             toolConfig = toolConfig,
                             hasActiveSelection = selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty(),
                             onBrushStyleSelected = { style -> toolConfig = toolConfig.copy(brushStyle = style) },
@@ -2300,13 +2422,16 @@ class MainActivity : ComponentActivity() {
                             onToggleTextFormat = onToggleTextFormat,
                             textAlignment = textAlignment,
                             onTextAlignmentSelected = onTextAlignmentSelected,
+                            onPressureCurveSelected = { curve -> toolConfig = toolConfig.copy(pressureCurve = curve) },
+                            onShapeLineChanged = { line -> toolConfig = toolConfig.copy(shapeLine = line) },
+                            onInvertSelectionColors = invertSelectionColors,
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 18.dp)
                         )
 
                         // Bottom-center: pen switcher + undo/redo (matches Rnote's penpicker.ui)
-                        PenPicker(
+                        if (!focusMode) PenPicker(
                             toolConfig = toolConfig,
                             canUndo = undoStack.isNotEmpty(),
                             canRedo = redoStack.isNotEmpty(),
@@ -2324,7 +2449,15 @@ class MainActivity : ComponentActivity() {
                             PageSettingsSheet(
                                 paperStyle = paperStyle,
                                 onPaperStyleChanged = {
+                                    // Rnote fits a Fixed Size document to its content again
+                                    // when the format or the layout changes.
+                                    val refit = it.layoutMode == LayoutMode.FIXED_SIZE && (
+                                        it.layoutMode != paperStyle.layoutMode ||
+                                            it.effectivePageWidthPx != paperStyle.effectivePageWidthPx ||
+                                            it.effectivePageHeightPx != paperStyle.effectivePageHeightPx
+                                        )
                                     paperStyle = it
+                                    if (refit) fitPagesToContent()
                                     // An explicit choice is both an edit to this document
                                     // and the default the next new note should start from.
                                     persistSettings(it)

@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.Uri
 import io.github.kjly.brna.export.DocumentExporter
 import io.github.kjly.brna.export.ExportPrefs
+import io.github.kjly.brna.model.FixedPages
+import io.github.kjly.brna.model.LayoutMode
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.PaperPattern
 import io.github.kjly.brna.model.PaperStyle
@@ -195,6 +197,7 @@ object FileManager {
         val formatW = native.pageWidth
         val formatH = native.pageHeight
         val bg = native.background
+        val layout = LayoutMode.fromApiName(native.layout)
 
         val paperStyle = PaperStyle(
             pattern = when (bg.pattern) {
@@ -215,7 +218,10 @@ object FileManager {
             isLandscape = formatW > formatH,
             // A file with no layout at all used to land on FIXED_SIZE here, which is how
             // an infinite document silently became a single page on reload.
-            layoutMode = io.github.kjly.brna.model.LayoutMode.fromApiName(native.layout),
+            layoutMode = layout,
+            // A Fixed Size document is as many pages tall as it says; Rnote keeps that
+            // height, so a note with pages added on the laptop keeps them here.
+            fixedPageCount = if (layout == LayoutMode.FIXED_SIZE) FixedPages.countFor(native.totalHeight, formatH) else 1,
             customWidthPx = if (formatW > formatH) formatH else formatW,
             customHeightPx = if (formatW > formatH) formatW else formatH,
             customGridSpacingPx = bg.patternWidth,

@@ -141,4 +141,41 @@ class ViewportStateTest {
             shown.canvasToScreen(Offset(800f, 0f))
         )
     }
+
+    @Test
+    fun `zoom to page width fits the page and Rnote's overshoot across the view, centred`() {
+        // The middle of the view is over the first page, at x = 400.
+        val viewport = ViewportState(panOffset = Offset(400f, -700f), zoomScale = 0.5f, displayScale = 2f)
+        val fitted = viewport.fittedToWidth(viewportWidthPx = 1600f, viewportHeightPx = 2400f, pageWidthPx = 800f)
+        // 800 units of page and 96 either side across 1600 px.
+        assertEquals(1600f / (800f + 2f * ViewportState.FIT_WIDTH_OVERSHOOT), fitted.effectiveScale, eps)
+        val left = fitted.canvasToScreen(Offset(0f, 0f)).x
+        val right = fitted.canvasToScreen(Offset(800f, 0f)).x
+        assertEquals(1600f - right, left, eps)
+    }
+
+    @Test
+    fun `zoom to page width keeps the middle of the view where it is, up and down`() {
+        val viewport = ViewportState(panOffset = Offset(40f, -900f), zoomScale = 1f, displayScale = 2f)
+        val middle = Offset(800f, 1200f)
+        val before = viewport.screenToCanvas(middle).y
+        val fitted = viewport.fittedToWidth(1600f, 2400f, 800f)
+        assertEquals(before, fitted.screenToCanvas(middle).y, eps)
+    }
+
+    @Test
+    fun `zoom to page width does nothing without a page`() {
+        val viewport = ViewportState(panOffset = Offset(12f, 34f), zoomScale = 1.3f)
+        assertEquals(viewport, viewport.fittedToWidth(1600f, 2400f, 0f))
+    }
+
+    @Test
+    fun `zoom to page width centres the page under the middle of the view, not the first`() {
+        // The middle is at x = 1100, over the second page of an infinite layout's row.
+        val viewport = ViewportState(panOffset = Offset(-300f, 0f), zoomScale = 0.5f, displayScale = 2f)
+        val fitted = viewport.fittedToWidth(1600f, 2400f, 800f)
+        val left = fitted.canvasToScreen(Offset(800f, 0f)).x
+        val right = fitted.canvasToScreen(Offset(1600f, 0f)).x
+        assertEquals(1600f - right, left, eps)
+    }
 }

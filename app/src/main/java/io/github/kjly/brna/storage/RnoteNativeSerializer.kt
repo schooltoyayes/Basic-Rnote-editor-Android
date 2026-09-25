@@ -108,9 +108,10 @@ object RnoteNativeSerializer {
         val ink = inkBounds(allElements)
         var minX = 0f; var minY = 0f; var maxX = pageW; var maxY = pageH
         when (doc.paperStyle.layoutMode) {
-            // A fixed-size document is the format box, full stop. Content drawn outside it
-            // is still kept (Rnote keeps it too) but does not grow the page.
-            LayoutMode.FIXED_SIZE -> Unit
+            // A fixed-size document is its pages of the format, one below the other.
+            // Content drawn outside them is still kept (Rnote keeps it too) but does not
+            // add a page: only Add Page and Resize to Fit Content do, in Rnote as here.
+            LayoutMode.FIXED_SIZE -> maxY = pageH * doc.paperStyle.fixedPages
 
             // Width is pinned to the format; height is the content plus one page of room
             // to keep writing — the +height is Rnote's, not padding of our own.
@@ -141,7 +142,9 @@ object RnoteNativeSerializer {
                 color        = bgColor,
                 pattern      = nativePattern,
                 patternWidth = doc.paperStyle.gridSpacingPx,
-                patternHeight = doc.paperStyle.gridSpacingPx,
+                // Rnote's `pattern_size` is two numbers; writing the width twice lost a
+                // height set on either side, and ruled paper is where they differ.
+                patternHeight = doc.paperStyle.patternHeightPx,
                 patternColor = gridColor
             ),
             elements = allElements,

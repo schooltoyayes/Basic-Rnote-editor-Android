@@ -2,6 +2,7 @@ package io.github.kjly.brna.ui.components
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.CheckBox
@@ -24,6 +25,8 @@ import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.SaveAs
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -34,6 +37,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,9 +47,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.kjly.brna.export.ShareTarget
 import io.github.kjly.brna.model.PaperStyle
+import io.github.kjly.brna.ui.icons.GeneratedIcons
 import io.github.kjly.brna.ui.theme.BrnaColors
 
 /**
@@ -102,9 +108,26 @@ fun RnoteTopBar(
     onToggleFiles: () -> Unit = {},
     /** Rnote's "Snap Positions", a switch in its canvas menu. */
     snapPositions: Boolean = false,
-    onToggleSnapPositions: () -> Unit = {}
+    onToggleSnapPositions: () -> Unit = {},
+    /** Rnote's canvas menu zoom row: out, in, and to the page's width. */
+    onZoomOut: () -> Unit = {},
+    onZoomIn: () -> Unit = {},
+    onZoomFitWidth: () -> Unit = {},
+    /** Rnote's page buttons, which only a Fixed Size document has a use for. */
+    isFixedSize: Boolean = false,
+    canRemovePage: Boolean = false,
+    onAddPage: () -> Unit = {},
+    onRemovePage: () -> Unit = {},
+    onResizeToFitContent: () -> Unit = {},
+    /** Rnote's headerbar Focus Mode: the pens, colours and their settings put away. */
+    focusMode: Boolean = false,
+    onToggleFocusMode: () -> Unit = {},
+    /** Rnote's app menu Fullscreen (F11): Android's status and navigation bars put away. */
+    fullscreen: Boolean = false,
+    onToggleFullscreen: () -> Unit = {}
 ) {
     var showOverflowMenu by remember { mutableStateOf(false) }
+    var showCanvasMenu by remember { mutableStateOf(false) }
     var showShareMenu by remember { mutableStateOf(false) }
     val iconTint = if (paperStyle.isDarkMode) Color.White else Color(0xFF1E1E24)
 
@@ -190,6 +213,15 @@ fun RnoteTopBar(
                 Icon(Icons.Default.Article, contentDescription = "Page Settings", tint = iconTint)
             }
 
+            // Rnote's Focus Mode button, beside its canvas menu in the headerbar.
+            IconButton(onClick = onToggleFocusMode) {
+                Icon(
+                    GeneratedIcons.FocusMode,
+                    contentDescription = if (focusMode) "Focus Mode: ON" else "Focus Mode: OFF",
+                    tint = if (focusMode) BrnaColors.Accent else iconTint
+                )
+            }
+
             // Share: to a chat, a mail or the class's course, through Android's share sheet.
             IconButton(onClick = { showShareMenu = true }) {
                 Icon(Icons.Default.Share, contentDescription = "Share", tint = iconTint)
@@ -219,6 +251,67 @@ fun RnoteTopBar(
                         leadingIcon = { Icon(Icons.Default.Description, null) },
                         text = { Text("Whole note as PDF") },
                         onClick = { showShareMenu = false; onShare(ShareTarget.NOTE_PDF) }
+                    )
+                }
+            }
+
+            // Rnote's canvas menu: zoom, the pages of a Fixed Size document, Snap Positions.
+            IconButton(onClick = { showCanvasMenu = true }) {
+                Icon(GeneratedIcons.CanvasMenu, contentDescription = "Canvas Menu", tint = iconTint)
+
+                DropdownMenu(
+                    expanded = showCanvasMenu,
+                    onDismissRequest = { showCanvasMenu = false }
+                ) {
+                    // Buttons that stay open, as Rnote's do: zoom until it is right.
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    ) {
+                        IconButton(onClick = onZoomOut) { Icon(Icons.Default.ZoomOut, "Zoom out") }
+                        TextButton(onClick = onResetZoom) { Text("${(zoomScale * 100).toInt()}%") }
+                        IconButton(onClick = onZoomIn) { Icon(Icons.Default.ZoomIn, "Zoom in") }
+                        IconButton(onClick = { showCanvasMenu = false; onZoomFitWidth() }) {
+                            Icon(GeneratedIcons.ZoomFitWidth, "Zoom to Page Width")
+                        }
+                    }
+                    HorizontalDivider()
+                    // Always listed, as in Rnote, and only usable in the layout they are for.
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(GeneratedIcons.AddPage, null) },
+                        text = { Text("Add Page") },
+                        trailingIcon = { KeyHint("Ctrl+Shift+A") },
+                        enabled = isFixedSize,
+                        onClick = onAddPage
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(GeneratedIcons.RemovePage, null) },
+                        text = { Text("Remove Page") },
+                        trailingIcon = { KeyHint("Ctrl+Shift+R") },
+                        enabled = isFixedSize && canRemovePage,
+                        onClick = onRemovePage
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(GeneratedIcons.ResizeToFitContent, null) },
+                        text = { Text("Resize to Fit Content") },
+                        enabled = isFixedSize,
+                        onClick = onResizeToFitContent
+                    )
+                    if (!isFixedSize) {
+                        Text(
+                            "Page buttons: Fixed Size layout only",
+                            fontSize = 12.sp,
+                            color = Color.Gray,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                    }
+                    HorizontalDivider()
+                    // A switch, as in Rnote's canvas menu: the menu stays open to show it flip.
+                    DropdownMenuItem(
+                        leadingIcon = { CheckMark(snapPositions) },
+                        text = { Text("Snap Positions") },
+                        trailingIcon = { KeyHint("Ctrl+Shift+P") },
+                        onClick = onToggleSnapPositions
                     )
                 }
             }
@@ -280,18 +373,12 @@ fun RnoteTopBar(
                         )
                     }
                     HorizontalDivider()
-                    // A switch, as in Rnote's canvas menu: the menu stays open to show it flip.
+                    // In Rnote's app menu too; a switch that leaves the menu open to show it.
                     DropdownMenuItem(
-                        leadingIcon = {
-                            Icon(
-                                if (snapPositions) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
-                                null,
-                                tint = if (snapPositions) BrnaColors.Accent else LocalContentColor.current
-                            )
-                        },
-                        text = { Text("Snap Positions") },
-                        trailingIcon = { KeyHint("Ctrl+Shift+P") },
-                        onClick = onToggleSnapPositions
+                        leadingIcon = { CheckMark(fullscreen) },
+                        text = { Text("Fullscreen") },
+                        trailingIcon = { KeyHint("F11") },
+                        onClick = onToggleFullscreen
                     )
                     HorizontalDivider()
                     // One entry, not one per format: scope and format are both chosen
@@ -320,6 +407,16 @@ fun RnoteTopBar(
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = paperStyle.currentBackgroundColor.copy(alpha = 0.95f)
         )
+    )
+}
+
+/** A switch's state in a menu, ticked when it is on. */
+@Composable
+private fun CheckMark(on: Boolean) {
+    Icon(
+        if (on) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+        null,
+        tint = if (on) BrnaColors.Accent else LocalContentColor.current
     )
 }
 

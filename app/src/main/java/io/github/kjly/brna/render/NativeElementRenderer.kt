@@ -50,12 +50,20 @@ class NativeElementRenderer {
 
     private val textLayouts = IdentityHashMap<NativeTextElement, StaticLayout>()
     private val shapePaths = IdentityHashMap<NativeShapeElement, Path>()
+    private val roughShapes = IdentityHashMap<NativeShapeElement, RoughPaths>()
 
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeJoin = Paint.Join.ROUND
     }
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    /** A rough shape's lines: as piet strokes by default, butt ends and mitred corners. */
+    private val roughPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.BUTT
+        strokeJoin = Paint.Join.MITER
+        strokeMiter = 10f
+    }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
 
     /** Rnote's `TextStroke::draw`: the laid-out text, its top-left at the transform's origin. */
@@ -69,6 +77,13 @@ class NativeElementRenderer {
 
     /** [cache] false for a shape drawn only once, like the Shaper's preview. */
     fun drawShape(canvas: Canvas, el: NativeShapeElement, cache: Boolean = true) {
+        if (el.rough != null) {
+            val rough = roughShapes[el] ?: roughPathsOf(el)?.also { if (cache) roughShapes[el] = it }
+            if (rough != null) {
+                drawRough(canvas, el, rough)
+                return
+            }
+        }
         val path = if (cache) shapePaths.getOrPut(el) { pathOf(el.shape) } else pathOf(el.shape)
         if (el.fillColor.a > 0f) {
             fillPaint.color = argb(el.fillColor)
@@ -81,6 +96,69 @@ class NativeElementRenderer {
             strokePaint.pathEffect = dashEffect(el.lineStyle, el.strokeWidth, el.roundCap)
             canvas.drawPath(path, strokePaint)
         }
+    }
+
+    /** One of roughr's sets, ready to draw: the line of a shape, its fill, or its fill's sketch. */
+    private class RoughPart(val path: Path, val type: RoughSetType, val width: Float)
+
+    private class RoughPaths(val parts: List<RoughPart>, val matrix: Matrix?)
+
+    /**
+     * rough_piet's `KurboDrawable::draw`: a shape's line in its colour and width, a solid
+     * fill filled — even-odd for curves and polygons — and a sketched fill drawn in the
+     * fill colour at the fill weight.
+     */
+    private fun drawRough(canvas: Canvas, el: NativeShapeElement, rough: RoughPaths) {
+        canvas.save()
+        rough.matrix?.let { canvas.concat(it) }
+        for (part in rough.parts) {
+            when (part.type) {
+                RoughSetType.PATH -> {
+                    roughPaint.color = argb(el.color)
+                    roughPaint.strokeWidth = part.width
+                    canvas.drawPath(part.path, roughPaint)
+                }
+                RoughSetType.FILL_PATH -> {
+                    fillPaint.color = argb(el.fillColor)
+                    canvas.drawPath(part.path, fillPaint)
+                }
+                RoughSetType.FILL_SKETCH -> {
+                    roughPaint.color = argb(el.fillColor)
+                    roughPaint.strokeWidth = part.width
+                    canvas.drawPath(part.path, roughPaint)
+                }
+            }
+        }
+        canvas.restore()
+    }
+
+    private fun roughPathsOf(el: NativeShapeElement): RoughPaths? {
+        val composed = RoughShapes.compose(el) ?: return null
+        val parts = ArrayList<RoughPart>()
+        for (drawable in composed.drawables) {
+            for (set in drawable.sets) {
+                val path = Path()
+                for (op in set.ops) {
+                    when (op) {
+                        is RoughOp.Move -> path.moveTo(op.x.toFloat(), op.y.toFloat())
+                        is RoughOp.Line -> path.lineTo(op.x.toFloat(), op.y.toFloat())
+                        is RoughOp.Curve -> path.cubicTo(
+                            op.x1.toFloat(), op.y1.toFloat(), op.x2.toFloat(), op.y2.toFloat(), op.x.toFloat(), op.y.toFloat()
+                        )
+                    }
+                }
+                val width = when (set.type) {
+                    RoughSetType.PATH -> drawable.options.strokeWidth
+                    RoughSetType.FILL_PATH -> {
+                        path.fillType = if (drawable.evenOdd) Path.FillType.EVEN_ODD else Path.FillType.WINDING
+                        0f
+                    }
+                    RoughSetType.FILL_SKETCH -> drawable.fillWeight
+                }
+                parts += RoughPart(path, set.type, width)
+            }
+        }
+        return RoughPaths(parts, composed.transform?.let { matrixOf(it) })
     }
 
     /** [bitmap] is [decodeBitmap]'s result for [el], decoded ahead of time off the UI thread. */
@@ -106,6 +184,7 @@ class NativeElementRenderer {
         keep.addAll(elements)
         textLayouts.keys.retainAll(keep)
         shapePaths.keys.retainAll(keep)
+        roughShapes.keys.retainAll(keep)
     }
 
     companion object {

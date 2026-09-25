@@ -3,6 +3,7 @@ package io.github.kjly.brna.storage
 import androidx.compose.ui.geometry.Offset
 import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.RnoteNativeColor
+import io.github.kjly.brna.model.RoughStyle
 import io.github.kjly.brna.model.ShapeConstraints
 import io.github.kjly.brna.model.ShapeKind
 import io.github.kjly.brna.model.ShapeLine
@@ -108,21 +109,22 @@ data class ShapeDraft(
             color: RnoteNativeColor,
             strokeWidth: Float,
             fill: RnoteNativeColor,
-            line: ShapeLine = ShapeLine()
+            line: ShapeLine = ShapeLine(),
+            rough: RoughStyle? = null
         ): NativeShapeElement? {
             if (points.isEmpty()) return null
             val spread = maxOf(points.maxOf { it.x } - points.minOf { it.x }, points.maxOf { it.y } - points.minOf { it.y })
             if (spread < 1f) return null
             val pairs = points.map { it.x to it.y }
             return when (kind) {
-                ShapeKind.POLYLINE -> NativeEditing.createPolyShape(false, pairs, color, strokeWidth, fill, line)
-                ShapeKind.POLYGON -> NativeEditing.createPolyShape(true, pairs, color, strokeWidth, fill, line)
-                ShapeKind.QUADBEZ, ShapeKind.CUBBEZ -> NativeEditing.createCurve(pairs, color, strokeWidth, fill, line)
+                ShapeKind.POLYLINE -> NativeEditing.createPolyShape(false, pairs, color, strokeWidth, fill, line, rough)
+                ShapeKind.POLYGON -> NativeEditing.createPolyShape(true, pairs, color, strokeWidth, fill, line, rough)
+                ShapeKind.QUADBEZ, ShapeKind.CUBBEZ -> NativeEditing.createCurve(pairs, color, strokeWidth, fill, line, rough)
                 ShapeKind.FOCI_ELLIPSE -> if (points.size == 3) {
                     // Foci on top of each other make a circle; Rnote allows that, and so does this.
                     NativeEditing.createFociEllipse(
                         points[0].x, points[0].y, points[1].x, points[1].y, points[2].x, points[2].y,
-                        color, strokeWidth, fill, line
+                        color, strokeWidth, fill, line, rough
                     )
                 } else null
                 else -> null

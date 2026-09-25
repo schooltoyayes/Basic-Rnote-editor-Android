@@ -39,9 +39,13 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   pen down on the last corner again to finish), quadratic and cubic curves, and the
   ellipse through a point from its two foci. Rnote's constraints — 1:1, 3:2, the
   golden ratio, level and upright — with Ctrl to switch them while drawing. Lines
-  and arrows can also snap to 15° steps. Rnote's line styles — solid, dotted and
-  three kinds of dashed — and straight or round line caps. The color picker's fill
-  pad fills shapes.
+  and arrows can also snap to 15° steps. Rnote's two styles: Smooth, with its line
+  styles — solid, dotted and three kinds of dashed — and straight or round line
+  caps; and Rough, sketched as if by hand, with its seven fill styles (solid,
+  hachure, zig-zag, zig-zag line, crosshatch, dots, dashed) and hachure angle. The
+  wobble comes from the shape's seed through a port of roughr and the random number
+  generator it uses (rand's ChaCha12), so a rough shape looks the same on both
+  sides. The color picker's fill pad fills shapes.
 - **Typewriter**: tap and type straight onto the page, into a new text box or
   an existing one. Bold, italic, underline and strikethrough — from the strip,
   or Ctrl+B / Ctrl+I / Ctrl+U on a keyboard — stored as Rnote stores them, so

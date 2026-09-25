@@ -50,8 +50,10 @@ import io.github.kjly.brna.model.NativeTextElement
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.RnoteNativeColor
+import io.github.kjly.brna.model.RoughStyle
 import io.github.kjly.brna.model.SelectorMode
 import io.github.kjly.brna.model.ShapeKind
+import io.github.kjly.brna.model.ShapeLine
 import io.github.kjly.brna.model.ShapeLineCap
 import io.github.kjly.brna.model.SnapPositions
 import io.github.kjly.brna.model.Stroke
@@ -250,6 +252,9 @@ fun DrawingCanvas(
     // The Textured brush's seed for the stroke being drawn: a new one for every stroke,
     // as Rnote's `new_style_seeds` gives, so its dots stay put while it is drawn.
     var texturedSeed by remember { mutableStateOf(0L) }
+    // The rough style's seed for the shape being drawn: new with every shape, however
+    // many strokes of the pen it takes, as Rnote's shaper picks one when it starts one.
+    var roughSeed by remember { mutableStateOf(0L) }
     /** Memoised stroke bounds and outlines, keyed by Stroke identity. See the draw block below. */
     val outlineCache = remember { IdentityHashMap<Stroke, CachedOutline>() }
     val lassoPoints = remember { mutableStateListOf<Offset>() }
@@ -576,6 +581,7 @@ fun DrawingCanvas(
                             // A draft of another shape (the shape was switched a moment ago) starts over.
                             val pending = draft?.takeIf { it.kind == toolConfig.shapeKind }
                             if (ShapeDraft.isMultiStroke(toolConfig.shapeKind)) {
+                                if (pending == null) roughSeed = kotlin.random.Random.nextLong()
                                 // The next stroke of a shape drawn in several; the first starts it.
                                 draft = pending?.down(
                                     pos,
@@ -588,6 +594,7 @@ fun DrawingCanvas(
                                 // The grid's second drag spans from its first cell's corner,
                                 // wherever the pen comes down, as in Rnote's GridBuilder.
                                 val cell = gridCell.takeIf { toolConfig.shapeKind == ShapeKind.GRID }
+                                if (cell == null) roughSeed = kotlin.random.Random.nextLong()
                                 val start = cell?.start ?: pos
                                 shapeStart = start
                                 shapeEnd = shapeEndFor(toolConfig, start, pos, ctrlHeld)
@@ -824,7 +831,8 @@ fun DrawingCanvas(
                                         lifted.finished?.let { points ->
                                             ShapeDraft.toShape(
                                                 pending.kind, points, nativeColorOf(toolConfig.penColor),
-                                                toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor), toolConfig.shapeLine
+                                                toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor), toolConfig.shapeLine,
+                                                toolConfig.shapeRough(roughSeed)
                                             )?.let { onAddShapes(listOf(it)) }
                                         }
                                     } else {
@@ -860,12 +868,11 @@ fun DrawingCanvas(
                                         else -> null
                                     }
                                     val line = toolConfig.shapeLine
+                                    val rough = toolConfig.shapeRough(roughSeed)
                                     val shapes = if (lines != null) {
-                                        lines.mapNotNull {
-                                            NativeEditing.createShape(ShapeKind.LINE, it.x1, it.y1, it.x2, it.y2, color, width, fill, line)
-                                        }
+                                        roughLines(lines, color, width, fill, line, rough)
                                     } else {
-                                        listOfNotNull(NativeEditing.createShape(kind, start.x, start.y, end.x, end.y, color, width, fill, line))
+                                        listOfNotNull(NativeEditing.createShape(kind, start.x, start.y, end.x, end.y, color, width, fill, line, rough))
                                     }
                                     if (shapes.isNotEmpty()) onAddShapes(shapes)
                                 }
@@ -1072,7 +1079,8 @@ fun DrawingCanvas(
                     val kind = toolConfig.shapeKind
                     val cell = gridCell
                     // Shapes made of lines are previewed as plain lines: a grid can be thousands
-                    // of them, far too many to build as shapes on every frame.
+                    // of them, far too many to build as shapes on every frame. A few rough ones
+                    // are built, since plain lines would not show their wobble.
                     val lines: List<ShapeBuilders.Segment>? = when {
                         kind == ShapeKind.GRID && cell != null ->
                             if (dragging) {
@@ -1090,7 +1098,17 @@ fun DrawingCanvas(
                             else emptyList()
                         else -> null
                     }
-                    if (lines != null) {
+                    val rough = toolConfig.shapeRough(roughSeed)
+                    if (lines != null && rough != null && lines.size <= ROUGH_PREVIEW_LINES_MAX) {
+                        // Rough lines wobble as the placed ones will, which a few of can afford.
+                        val shapes = roughLines(
+                            lines, nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth,
+                            nativeColorOf(toolConfig.fillColor), toolConfig.shapeLine, rough
+                        )
+                        drawIntoCanvas { canvas ->
+                            for (shape in shapes) nativeRenderer.drawShape(canvas.nativeCanvas, shape, cache = false)
+                        }
+                    } else if (lines != null) {
                         // Dashed and capped as the lines will be, which costs nothing per line.
                         val rounded = toolConfig.shapeLine.cap == ShapeLineCap.ROUNDED
                         val dashes = NativeElementRenderer.dashPattern(
@@ -1110,7 +1128,7 @@ fun DrawingCanvas(
                         NativeEditing.createShape(
                             kind, previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y,
                             nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor),
-                            toolConfig.shapeLine
+                            toolConfig.shapeLine, rough
                         )?.let { preview ->
                             drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, preview, cache = false) }
                         }
@@ -1120,7 +1138,7 @@ fun DrawingCanvas(
                     draft?.let { pending ->
                         val hover = hoverOffset?.let { viewportState.screenToCanvas(it) }
                         drawDraft(
-                            pending, hover, toolConfig, viewportState.effectiveScale,
+                            pending, hover, toolConfig, rough, viewportState.effectiveScale,
                             maxOf(ShapeDraft.FINISH_DISTANCE, FINISH_TOLERANCE_PX / viewportState.effectiveScale)
                         ) { shape ->
                             drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, shape, cache = false) }
@@ -1349,6 +1367,7 @@ private fun DrawScope.drawDraft(
     draft: ShapeDraft,
     hover: Offset?,
     toolConfig: ToolConfig,
+    rough: RoughStyle?,
     scale: Float,
     finishDistance: Float,
     drawShape: (NativeShapeElement) -> Unit
@@ -1363,11 +1382,11 @@ private fun DrawScope.drawDraft(
     val placed = if (current != null && !draft.finishing) draft.points + current else draft.points
     val preview = when {
         // Two corners of a polygon are only a line so far.
-        kind == ShapeKind.POLYGON && placed.size == 2 -> ShapeDraft.toShape(ShapeKind.POLYLINE, placed, color, width, fill, line)
-        isPoly -> ShapeDraft.toShape(kind, placed, color, width, fill, line)
+        kind == ShapeKind.POLYGON && placed.size == 2 -> ShapeDraft.toShape(ShapeKind.POLYLINE, placed, color, width, fill, line, rough)
+        isPoly -> ShapeDraft.toShape(kind, placed, color, width, fill, line, rough)
         placed.size == 3 && (kind == ShapeKind.QUADBEZ || kind == ShapeKind.FOCI_ELLIPSE) ->
-            ShapeDraft.toShape(kind, placed, color, width, fill, line)
-        placed.size == 4 && kind == ShapeKind.CUBBEZ -> ShapeDraft.toShape(kind, placed, color, width, fill, line)
+            ShapeDraft.toShape(kind, placed, color, width, fill, line, rough)
+        placed.size == 4 && kind == ShapeKind.CUBBEZ -> ShapeDraft.toShape(kind, placed, color, width, fill, line, rough)
         else -> null
     }
     preview?.let(drawShape)
@@ -1393,6 +1412,28 @@ private fun DrawScope.drawDraft(
         }
     }
 }
+
+/**
+ * The lines of a shape built from lines, each a shape of its own; in the rough style each
+ * wobbling its own way, the seed moved on after every one, as Rnote's shaper moves it.
+ */
+private fun roughLines(
+    lines: List<ShapeBuilders.Segment>,
+    color: RnoteNativeColor,
+    width: Float,
+    fill: RnoteNativeColor,
+    line: ShapeLine,
+    rough: RoughStyle?
+): List<NativeShapeElement> {
+    var style = rough
+    return lines.mapNotNull {
+        NativeEditing.createShape(ShapeKind.LINE, it.x1, it.y1, it.x2, it.y2, color, width, fill, line, style)
+            ?.also { style = style?.advanced() }
+    }
+}
+
+/** Past this many lines, a shape built from lines is previewed as plain lines even when rough. */
+private const val ROUGH_PREVIEW_LINES_MAX = 32
 
 /** The rings and guides of a shape being drawn in several strokes: Rnote's indicator blue. */
 private val DRAFT_GUIDE = Color(0xFF3584E4)

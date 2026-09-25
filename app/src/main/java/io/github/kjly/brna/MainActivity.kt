@@ -105,6 +105,8 @@ import io.github.kjly.brna.model.TextFormatting
 import io.github.kjly.brna.model.TextToggle
 import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
+import io.github.kjly.brna.model.PenShortcutState
+import io.github.kjly.brna.model.ShortcutKey
 import io.github.kjly.brna.model.UndoHistory
 import io.github.kjly.brna.model.ViewportState
 import io.github.kjly.brna.model.SnapPositions
@@ -404,6 +406,10 @@ class MainActivity : ComponentActivity() {
 
     /** Installed by the UI: carries out a keyboard shortcut; false when there was nothing to do. */
     private var shortcutHandler: ((Shortcut) -> Boolean)? = null
+
+    /** Installed by the UI: Rnote's Ctrl+Space button shortcut went down (true) or came up. */
+    private var penShortcutKeyHandler: ((ShortcutKey, Boolean) -> Unit)? = null
+    private var ctrlSpaceDown = false
 
     /** Renders the PDF's pages off the main thread and adds them to the open note. */
     private fun importPdf(uri: Uri) {
@@ -1138,6 +1144,10 @@ class MainActivity : ComponentActivity() {
                 toolConfig = toolConfig.copy(snapPositions = !toolConfig.snapPositions)
                 SettingsManager.saveSnapPositions(this@MainActivity, toolConfig.snapPositions)
             }
+            // Rnote's "Button Shortcuts", kept between sessions as Rnote keeps them, and what
+            // pressing one has done to the pen (see PenShortcutState).
+            var penShortcuts by remember { mutableStateOf(SettingsManager.loadPenShortcuts(this)) }
+            val penShortcutState = remember { PenShortcutState() }
             // Rnote's Focus Mode: the pen picker, the colour picker and the pen settings put
             // away, leaving the page and the headerbar. Neither is kept once the app closes,
             // in Rnote as here.
@@ -1698,6 +1708,7 @@ class MainActivity : ComponentActivity() {
                 // Last, so on top of the images already there, as a new stroke is in Rnote.
                 documentNativeElements = documentNativeElements + image
                 // Selected, as desktop Rnote leaves an imported image: ready to move or resize.
+                penShortcutState.picked()
                 toolConfig = toolConfig.copy(activeTool = ToolType.SELECTOR)
                 selectedStrokes.clear()
                 selectedNatives.clear()
@@ -1921,12 +1932,45 @@ class MainActivity : ComponentActivity() {
                     isModified = true
                 }
             }
-            val selectTool: (ToolType) -> Unit = { newTool ->
+            /** The pen switched, by hand or by a button shortcut; the selection goes with the selector. */
+            val switchTool: (ToolType) -> Unit = { newTool ->
                 toolConfig = toolConfig.copy(activeTool = newTool)
                 if (newTool != ToolType.SELECTOR) {
                     selectedStrokes.clear()
                     selectedNatives.clear()
                 }
+            }
+            val selectTool: (ToolType) -> Unit = { newTool ->
+                // A pen picked by hand takes a button's temporary pen off, as in Rnote.
+                penShortcutState.picked()
+                switchTool(newTool)
+            }
+            /**
+             * Whether a temporary pen from a button still has something on the go, as Rnote's
+             * pen reports it has not finished: a selection held, a text box open.
+             */
+            val shortcutPenBusy: () -> Boolean = {
+                when (toolConfig.activeTool) {
+                    ToolType.SELECTOR -> selectedStrokes.isNotEmpty() || selectedNatives.isNotEmpty()
+                    ToolType.TYPEWRITER -> textSession != null
+                    else -> false
+                }
+            }
+            /** A button shortcut went down or came up; the pen in use after it. */
+            val onShortcutKey: (ShortcutKey, Boolean) -> ToolType = { key, down ->
+                val next = if (down) {
+                    penShortcutState.press(key, penShortcuts, toolConfig.activeTool)
+                } else {
+                    penShortcutState.release(key, shortcutPenBusy())
+                }
+                next?.let(switchTool)
+                toolConfig.activeTool
+            }
+            penShortcutKeyHandler = { key, down -> onShortcutKey(key, down) }
+            // The selection let go or the text box left: a temporary pen done with goes.
+            val shortcutBusyNow = shortcutPenBusy()
+            LaunchedEffect(shortcutBusyNow) {
+                penShortcutState.settle(shortcutBusyNow)?.let(switchTool)
             }
             // Which of the colour picker's two pads the palette sets; Rnote's starts on the stroke.
             var fillPadActive by remember { mutableStateOf(false) }
@@ -2049,6 +2093,10 @@ class MainActivity : ComponentActivity() {
                     ) {
                         DrawingCanvas(
                             toolConfig = toolConfig,
+                            onShortcutKey = onShortcutKey,
+                            onPenGestureEnd = {
+                                penShortcutState.gestureEnded(shortcutPenBusy())?.let(switchTool)
+                            },
                             paperStyle = paperStyle,
                             viewportState = viewportState,
                             strokes = strokes,
@@ -2505,6 +2553,11 @@ class MainActivity : ComponentActivity() {
                                     persistSettings(it)
                                     isModified = true
                                 },
+                                penShortcuts = penShortcuts,
+                                onPenShortcutsChanged = {
+                                    penShortcuts = it
+                                    SettingsManager.savePenShortcuts(this@MainActivity, it)
+                                },
                                 onDismiss = { showPageSettings = false },
                                 dockedAsSidePanel = !isCompactWidth,
                                 modifier = Modifier.align(Alignment.CenterEnd)
@@ -2916,6 +2969,14 @@ class MainActivity : ComponentActivity() {
         // The pen's press is acted on as it is let go (onKeyUp); its going down is the
         // pen's too, and must not start the music as a Play key would.
         if (PenRemote.isPenKey(keyCode) && isPenRemote(event)) return true
+        // Rnote's Ctrl+Space button shortcut: held down, it goes down once.
+        if (keyCode == KeyEvent.KEYCODE_SPACE && event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed) {
+            if (event.repeatCount == 0 && !ctrlSpaceDown) {
+                ctrlSpaceDown = true
+                penShortcutKeyHandler?.invoke(ShortcutKey.KEYBOARD_CTRL_SPACE, true)
+            }
+            return true
+        }
         // What the key types with no modifier held, on the keyboard's own layout.
         val char = event.getUnicodeChar(0).takeIf { it > 0 }?.toChar()
         val shortcut = KeyboardShortcuts.of(
@@ -2947,6 +3008,11 @@ class MainActivity : ComponentActivity() {
      * Only for the pen: the same keys from a keyboard or headset do what they do anywhere.
      */
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_SPACE && ctrlSpaceDown) {
+            ctrlSpaceDown = false
+            penShortcutKeyHandler?.invoke(ShortcutKey.KEYBOARD_CTRL_SPACE, false)
+            return true
+        }
         if (!PenRemote.isPenKey(keyCode) || !isPenRemote(event)) return super.onKeyUp(keyCode, event)
         if (keyCode == KeyEvent.KEYCODE_PAGE_UP) performRedoAction?.invoke() else performUndoAction?.invoke()
         return true

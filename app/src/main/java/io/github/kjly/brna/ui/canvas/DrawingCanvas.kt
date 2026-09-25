@@ -3,18 +3,21 @@ package io.github.kjly.brna.ui.canvas
 import android.os.Build
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.ViewConfiguration
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.runtime.snapshots.SnapshotStateList
@@ -55,6 +58,7 @@ import io.github.kjly.brna.model.PenPathBuilder
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RoughStyle
 import io.github.kjly.brna.model.SelectorMode
+import io.github.kjly.brna.model.ShortcutKey
 import io.github.kjly.brna.model.ShapeKind
 import io.github.kjly.brna.model.ShapeLine
 import io.github.kjly.brna.model.ShapeLineCap
@@ -77,7 +81,9 @@ import androidx.input.motionprediction.MotionEventPredictor
 import io.github.kjly.brna.render.composeStrokePath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.IdentityHashMap
 import kotlin.math.abs
@@ -138,7 +144,14 @@ fun DrawingCanvas(
      * The Tools pen's vertical space: move these strokes (by id) and desktop elements (by
      * identity) down by this much, or up for a negative amount. Once per drag, at the end.
      */
-    onVerticalSpace: (Float, Set<String>, Set<NativeCanvasElement>) -> Unit = { _, _, _ -> }
+    onVerticalSpace: (Float, Set<String>, Set<NativeCanvasElement>) -> Unit = { _, _, _ -> },
+    /**
+     * Rnote's button shortcuts: a pen or mouse button, or the two-finger long-press, went
+     * down (true) or came up (false). Answers with the pen in use after it.
+     */
+    onShortcutKey: (ShortcutKey, Boolean) -> ToolType = { _, _ -> toolConfig.activeTool },
+    /** Something drawn — by the pen, a mouse or a finger that draws — has ended. */
+    onPenGestureEnd: () -> Unit = {}
 ) {
     val underlays = remember(nativeElements) { nativeElements.filter(NativeElementRenderer::isUnderlay) }
     val overlays = remember(nativeElements) { nativeElements.filter(NativeElementRenderer::isOverlay) }
@@ -283,10 +296,24 @@ fun DrawingCanvas(
     var selectionMoveSnapshotTaken by remember { mutableStateOf(false) }
     // A scale or rotate by one of the selection's handles; null when there is none.
     var transformDrag by remember { mutableStateOf<TransformDrag?>(null) }
-    // Latched at ACTION_DOWN: a gesture that began with the S-Pen side button held (or
-    // with the pen's eraser end) erases for its whole duration, even if the button is
-    // released halfway through. Deciding per-event instead would switch tools mid-stroke.
-    var buttonEraserLatched by remember { mutableStateOf(false) }
+    // Latched at ACTION_DOWN: the pen a gesture began with — a button's, or the eraser for
+    // the pen's eraser end — is the pen for all of it, even if the button is let go
+    // halfway through. Deciding per-event instead would switch tools mid-stroke.
+    var gestureTool by remember { mutableStateOf<ToolType?>(null) }
+    // The buttons held as last seen, and the pen the app answered with for them until the
+    // canvas is recomposed with it: a press and a touch can come within the same frame.
+    val shortcutInput = remember { ShortcutInput() }
+    SideEffect { shortcutInput.pendingTool = null }
+    val scope = rememberCoroutineScope()
+    val touchSlop = remember(view) { ViewConfiguration.get(view.context).scaledTouchSlop.toFloat() }
+    /** Tells the app of each button that went down or came up since last time. */
+    fun syncShortcutKeys(held: Set<ShortcutKey>) {
+        val was = shortcutInput.held
+        if (held == was) return
+        shortcutInput.held = held
+        for (key in was - held) shortcutInput.pendingTool = onShortcutKey(key, false)
+        for (key in held - was) shortcutInput.pendingTool = onShortcutKey(key, true)
+    }
     // One undo snapshot per eraser gesture, not one per frame that happens to hit ink.
     var eraseSnapshotTaken by remember { mutableStateOf(false) }
     // Where to paint the eraser square, in canvas units, and whether the pen is touching.
@@ -328,6 +355,8 @@ fun DrawingCanvas(
             // pointerInteropFilter on the same Canvas and causes neither to work.
             .pointerInteropFilter { motionEvent ->
 
+                if (motionEvent.pointerCount != 2) shortcutInput.cancelLongPress()
+
                 // ── 2-Finger Pan & Pinch-to-Zoom ─────────────────────────────────────
                 if (motionEvent.pointerCount == 2) {
                     tapDownScreen = null
@@ -347,6 +376,32 @@ fun DrawingCanvas(
                     val y1 = motionEvent.getY(1)
                     val midpoint = Offset((x0 + x1) / 2f, (y0 + y1) / 2f)
                     val distance = hypot((x1 - x0).toDouble(), (y1 - y0).toDouble()).toFloat()
+
+                    // Rnote's two-finger long-press shortcut: two fingers put down and held
+                    // still for GTK's long-press time — 500 ms, times the 0.8 Rnote asks for.
+                    val fingers = listOf(Offset(x0, y0), Offset(x1, y1))
+                    when (motionEvent.actionMasked) {
+                        MotionEvent.ACTION_POINTER_DOWN -> {
+                            shortcutInput.cancelLongPress()
+                            val bothFingers = motionEvent.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER &&
+                                motionEvent.getToolType(1) == MotionEvent.TOOL_TYPE_FINGER
+                            if (bothFingers) {
+                                shortcutInput.longPressStart = fingers
+                                shortcutInput.longPress = scope.launch {
+                                    delay(TWO_FINGER_LONG_PRESS_MS)
+                                    shortcutInput.longPress = null
+                                    shortcutInput.pendingTool = onShortcutKey(ShortcutKey.TOUCH_TWO_FINGER_LONG_PRESS, true)
+                                }
+                            }
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            val start = shortcutInput.longPressStart
+                            if (start != null && fingers.indices.any { (fingers[it] - start[it]).getDistance() > touchSlop }) {
+                                shortcutInput.cancelLongPress()
+                            }
+                        }
+                        else -> shortcutInput.cancelLongPress()
+                    }
 
                     when (motionEvent.actionMasked) {
                         MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_MOVE -> {
@@ -415,9 +470,6 @@ fun DrawingCanvas(
                     StrokePoint.PRESSURE_DEFAULT
                 }
 
-                val hasStylusPrimaryButton = (buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
-                val hasStylusSecondaryButton = (buttonState and MotionEvent.BUTTON_STYLUS_SECONDARY) != 0
-                val hasSecondaryButton = (buttonState and MotionEvent.BUTTON_SECONDARY) != 0
                 // Held on a keyboard, Ctrl turns the Shaper's constraints on — or off — for
                 // as long as it is held, as in Rnote.
                 val ctrlHeld = (motionEvent.metaState and KeyEvent.META_CTRL_ON) != 0
@@ -452,21 +504,20 @@ fun DrawingCanvas(
                     return@pointerInteropFilter true
                 }
 
-                // Hold the S-Pen side button to erase. Devices disagree on which bit the
-                // barrel button sets, so all three are accepted; TOOL_TYPE_ERASER covers
-                // styluses that report a flipped-to-eraser end instead of a button.
-                val sPenSideButtonPressed =
-                    hasStylusPrimaryButton || hasStylusSecondaryButton || hasSecondaryButton
+                // Rnote's button shortcuts (see StylusButtons): each button going down or up is
+                // handed to the app, which switches pens as that button is set to — by default
+                // the S Pen's button erases while held. Only between gestures: a button pressed
+                // while writing counts once the pen lifts, so no stroke is cut in two.
+                if (!isDrawing) syncShortcutKeys(StylusButtons.keysOf(toolType, buttonState))
+                // The pen's eraser end erases, whatever the buttons say, as Rnote's eraser mode does.
                 val eraserTipInUse = toolType == MotionEvent.TOOL_TYPE_ERASER
-                val eraserRequestedNow = sPenSideButtonPressed || eraserTipInUse
 
-                // Mid-gesture the latch decides; while hovering, the live state does, so
-                // the cursor switches to the eraser square as soon as the button goes down.
+                // Mid-gesture the latch decides; while hovering, the pen as it is now, so the
+                // cursor switches to the eraser square as soon as the button goes down.
                 val activeTool = when {
-                    isDrawing && buttonEraserLatched -> ToolType.ERASER
-                    isDrawing -> toolConfig.activeTool
-                    eraserRequestedNow -> ToolType.ERASER
-                    else -> toolConfig.activeTool
+                    isDrawing -> gestureTool ?: toolConfig.activeTool
+                    eraserTipInUse -> ToolType.ERASER
+                    else -> shortcutInput.pendingTool ?: toolConfig.activeTool
                 }
 
                 // Samsung's One UI does not report a barrel-button-held stylus gesture with
@@ -513,7 +564,7 @@ fun DrawingCanvas(
                         hoverOffset = null
                         isDrawing = true
                         predictedPoints.clear()
-                        buttonEraserLatched = eraserRequestedNow
+                        gestureTool = activeTool
                         eraseSnapshotTaken = false
 
                         val boundingBox = selectionBounds(selectedStrokes, selectedNatives)
@@ -808,6 +859,7 @@ fun DrawingCanvas(
                     }
 
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        val wasDrawing = isDrawing
                         spaceDrag?.let { space ->
                             spaceDrag = null
                             if (action == MotionEvent.ACTION_UP && abs(space.offset) > VerticalSpace.MIN_OFFSET) {
@@ -961,12 +1013,16 @@ fun DrawingCanvas(
                         selectionSnapCorner = null
                         predictedPoints.clear()
                         pathBuilder = null
-                        buttonEraserLatched = false
+                        gestureTool = null
                         eraseSnapshotTaken = false
                         eraserCursorDown = false
                         // The pen may still be hovering; the square is repainted by the
                         // next hover event, and hidden if the pen has left entirely.
                         eraserCursor = null
+                        // A temporary pen goes once what was drawn with it is done, and a
+                        // button let go while writing counts now.
+                        if (wasDrawing) onPenGestureEnd()
+                        syncShortcutKeys(StylusButtons.keysOf(toolType, buttonState))
                         true
                     }
 
@@ -1109,7 +1165,7 @@ fun DrawingCanvas(
                 // Must agree with the input handler's latch, or a gesture that started with
                 // the side button held would paint an ink preview while it erased.
                 val activeTool =
-                    if (buttonEraserLatched) ToolType.ERASER else toolConfig.activeTool
+                    gestureTool ?: toolConfig.activeTool
                 if (isDrawing && currentPoints.isNotEmpty() && activeTool == ToolType.BRUSH) {
                     // Built the same way as a committed stroke, so what's under the nib is
                     // what gets saved — the old preview used only the latest pressure and so
@@ -1372,6 +1428,26 @@ fun DrawingCanvas(
                 }
             }
         }
+    }
+}
+
+/** Rnote's two-finger long-press: GTK's long-press time, 500 ms, times the 0.8 Rnote asks for. */
+private const val TWO_FINGER_LONG_PRESS_MS = 400L
+
+/** The canvas's side of Rnote's button shortcuts; see [DrawingCanvas]'s `onShortcutKey`. */
+private class ShortcutInput {
+    /** The buttons held as of the last pen or mouse event looked at. */
+    var held: Set<ShortcutKey> = emptySet()
+    /** The pen the app answered with, until the canvas is recomposed with it. */
+    var pendingTool: ToolType? = null
+    /** A two-finger long-press being waited out, and where its fingers went down. */
+    var longPress: Job? = null
+    var longPressStart: List<Offset>? = null
+
+    fun cancelLongPress() {
+        longPress?.cancel()
+        longPress = null
+        longPressStart = null
     }
 }
 

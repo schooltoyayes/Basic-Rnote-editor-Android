@@ -66,13 +66,20 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
 - **Tools**: Rnote's Vertical Space — drag down to open up room, up to close it —
   and its Laser, a red trail to point with that fades away and is never saved.
 - **Stylus-aware input**: stylus-only mode by default (finger pans and zooms),
-  optional finger drawing, S-Pen barrel button as a momentary eraser, S-Pen Air
+  optional finger drawing, S-Pen Air
   Actions mapped to undo/redo, two-finger pinch-zoom and pan — the zoom blockable, as
   with Rnote's "Block Pinch to Zoom", so a resting hand can't. Every sample the pen
   reports is used, the ones Android batches between frames included, as Rnote uses
   them; the pen's events arrive unbuffered, and motion prediction draws the ink a
   little ahead of the pen, never saved. The finished note is drawn on a layer of its
   own and only as far as it is in view, so a long note writes like a short one.
+- **Button shortcuts**, Rnote's, in Settings: the pen's two buttons, a mouse's right
+  button, a two-finger long-press and Ctrl+Space each bring out a pen — Temporary,
+  Permanent or Toggle, or Disabled — with Rnote's defaults: the S Pen's button erases
+  while held, a second pen button selects, the right mouse button draws shapes, a
+  two-finger long-press toggles the eraser and Ctrl+Space the Tools. A temporary pen
+  lasts while its button is held, and a temporary selector or typewriter until its
+  selection is let go or its text box left, as Rnote's does.
 - **Pen sounds**, Rnote's own, switched on in the canvas menu as in Rnote: a pencil
   scratching while the brush draws, a squeak at each marker stroke, and a
   typewriter — with its bell for a new line — for the Typewriter.

@@ -29,6 +29,7 @@ import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RnoteNativeDocument
 import io.github.kjly.brna.model.RoughFillStyle
 import io.github.kjly.brna.model.RoughStyle
+import io.github.kjly.brna.model.SegmentCurve
 import io.github.kjly.brna.model.TextAttr
 import io.github.kjly.brna.model.TexturedDistribution
 import io.github.kjly.brna.model.TexturedStyle
@@ -266,7 +267,9 @@ object RnoteNativeParser {
         reader.beginObject()
         while (reader.hasNext()) {
             element = when (reader.nextName()) {
-                "brushstroke" -> parseBrushStroke(reader)
+                // A brush stroke keeps the text it was read from too, written back while
+                // it is unchanged; see RnoteStrokeSource.
+                "brushstroke" -> fromTree(reader) { r, tree -> parseBrushStroke(r)?.copy(raw = tree.toString()) }
                 // Text, images and shapes keep the element exactly as read, and a save
                 // writes that back; editing changes it along with the fields (NativeEditing).
                 "textstroke"  -> fromTree(reader) { r, tree -> parseTextStroke(r)?.copy(raw = tree) }
@@ -382,24 +385,33 @@ object RnoteNativeParser {
                         reader.beginObject()
                         while (reader.hasNext()) {
                             // Every `PenPathSegment` variant — `lineto`, `quadbezto`,
-                            // `cubbezto` — is an object carrying the `end` element it
-                            // draws to, so the variant name is not worth matching on:
-                            // naming them one by one is how `cubbezto` came to be
-                            // skipped, which reduced every curve a desktop pen drew to
-                            // the straight line between its two endpoints.
+                            // `cubbezto`, and their older names `line`, `quadbez`, `cubbez` —
+                            // is an object carrying the `end` element it draws to; the
+                            // curves carry their control points too, which a stroke from
+                            // Rnote's "Curved" pen path is drawn through.
                             reader.nextName()
                             if (reader.peek() == JsonToken.BEGIN_OBJECT) {
+                                var end: NativeStrokePoint? = null
+                                var cp: FloatArray? = null
+                                var cp1: FloatArray? = null
+                                var cp2: FloatArray? = null
                                 reader.beginObject()
                                 while (reader.hasNext()) {
                                     when (reader.nextName()) {
-                                        // The control points are Rnote's own smoothing of
-                                        // the input; `end` is the element the pen actually
-                                        // reported, which is what this app draws through.
-                                        "end" -> pts.add(parsePathPoint(reader))
+                                        "end" -> end = parsePathPoint(reader)
+                                        "cp"  -> cp = parseVector(reader)
+                                        "cp1" -> cp1 = parseVector(reader)
+                                        "cp2" -> cp2 = parseVector(reader)
                                         else  -> reader.skipValue()
                                     }
                                 }
                                 reader.endObject()
+                                val curve = when {
+                                    cp1 != null && cp2 != null -> SegmentCurve.Cubic(cp1[0], cp1[1], cp2[0], cp2[1])
+                                    cp != null -> SegmentCurve.Quad(cp[0], cp[1])
+                                    else -> null
+                                }
+                                end?.let { pts.add(it.copy(curve = curve)) }
                             } else {
                                 reader.skipValue()
                             }
@@ -421,6 +433,16 @@ object RnoteNativeParser {
         }
         reader.endObject()
         return pts
+    }
+
+    /** A control point: `[x, y]`. */
+    private fun parseVector(reader: JsonReader): FloatArray {
+        reader.beginArray()
+        val x = reader.nextDouble().toFloat()
+        val y = reader.nextDouble().toFloat()
+        while (reader.hasNext()) reader.skipValue()
+        reader.endArray()
+        return floatArrayOf(x, y)
     }
 
     /** Parses a single path point object: {"pos": [x, y], "pressure": p} */

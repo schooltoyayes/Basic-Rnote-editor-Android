@@ -113,12 +113,12 @@ object SelectionManager {
 
     /** [strokes] in [color]; a Marker's stroke keeps its translucency, which is what makes it a marker. */
     fun recolored(strokes: List<Stroke>, color: androidx.compose.ui.graphics.Color): List<Stroke> =
-        strokes.map { s -> s.copy(color = if (s.isHighlighter) color.copy(alpha = s.color.alpha) else color) }
+        strokes.map { s -> s.copy(color = if (s.isHighlighter) color.copy(alpha = s.color.alpha) else color, source = null) }
 
     /** [strokes] in the colours Rnote's "Invert Color Brightness" gives them; see [InvertedBrightness]. */
     fun inverted(strokes: List<Stroke>): List<Stroke> = strokes.map { s ->
         val rgb = InvertedBrightness.of(s.color.red, s.color.green, s.color.blue)
-        s.copy(color = androidx.compose.ui.graphics.Color(rgb[0], rgb[1], rgb[2], s.color.alpha))
+        s.copy(color = androidx.compose.ui.graphics.Color(rgb[0], rgb[1], rgb[2], s.color.alpha), source = null)
     }
 
     private fun distanceToSegment(p: Offset, x1: Float, y1: Float, x2: Float, y2: Float): Float {
@@ -158,9 +158,13 @@ object SelectionManager {
     fun translateStrokes(strokes: List<Stroke>, delta: Offset): List<Stroke> {
         return strokes.map { stroke ->
             val newPoints = stroke.points.map { pt ->
-                pt.copy(x = pt.x + delta.x, y = pt.y + delta.y)
+                pt.copy(
+                    x = pt.x + delta.x, y = pt.y + delta.y,
+                    curve = pt.curve?.mapped({ x, _ -> x + delta.x }, { _, y -> y + delta.y })
+                )
             }
-            stroke.copy(points = newPoints)
+            // Moved, it is no longer what the file had; see RnoteStrokeSource.
+            stroke.copy(points = newPoints, source = null)
         }
     }
 
@@ -169,12 +173,15 @@ object SelectionManager {
      */
     fun scaleStrokes(strokes: List<Stroke>, center: Offset, scaleFactor: Float): List<Stroke> {
         return strokes.map { stroke ->
+            fun scaledX(x: Float) = center.x + (x - center.x) * scaleFactor
+            fun scaledY(y: Float) = center.y + (y - center.y) * scaleFactor
             val newPoints = stroke.points.map { pt ->
-                val newX = center.x + (pt.x - center.x) * scaleFactor
-                val newY = center.y + (pt.y - center.y) * scaleFactor
-                pt.copy(x = newX, y = newY)
+                pt.copy(
+                    x = scaledX(pt.x), y = scaledY(pt.y),
+                    curve = pt.curve?.mapped({ x, _ -> scaledX(x) }, { _, y -> scaledY(y) })
+                )
             }
-            stroke.copy(points = newPoints, strokeWidth = stroke.strokeWidth * scaleFactor)
+            stroke.copy(points = newPoints, strokeWidth = stroke.strokeWidth * scaleFactor, source = null)
         }
     }
 
@@ -188,9 +195,15 @@ object SelectionManager {
         return strokes.map { stroke ->
             stroke.copy(
                 points = stroke.points.map { pt ->
-                    pt.copy(x = Affine.mapX(m, pt.x, pt.y), y = Affine.mapY(m, pt.x, pt.y))
+                    pt.copy(
+                        x = Affine.mapX(m, pt.x, pt.y), y = Affine.mapY(m, pt.x, pt.y),
+                        // A curve's control points go where the transform takes them, as
+                        // Rnote's `Segment::transform` sends them.
+                        curve = pt.curve?.mapped({ x, y -> Affine.mapX(m, x, y) }, { x, y -> Affine.mapY(m, x, y) })
+                    )
                 },
-                strokeWidth = stroke.strokeWidth * widthFactor
+                strokeWidth = stroke.strokeWidth * widthFactor,
+                source = null
             )
         }
     }

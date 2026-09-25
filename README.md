@@ -89,7 +89,11 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   simpler app-native `.json`, including "Open with" from file managers and cloud
   drives. Desktop text, shapes, images and PDF pages are shown and editable, and
   keep the JSON they were read with, so attributes the app doesn't model survive
-  a round trip. Autosave, crash recovery, a warning before overwriting a file
+  a round trip. Desktop brush strokes do too: one that isn't changed here is
+  written back byte for byte, and one that is — moved, scaled, recolored, cut
+  with the eraser — keeps its curves, since the curve segments of Rnote's
+  "Curved" pen path are read, drawn as Rnote draws them and written back as
+  curves. Autosave, crash recovery, a warning before overwriting a file
   that changed elsewhere (save a copy, overwrite, or load the other version) —
   judged by the file's content, so a sync that only touches its time is no
   alarm — a list of recent notes, and a page overview with thumbnails. Undo

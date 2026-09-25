@@ -2425,6 +2425,10 @@ class MainActivity : ComponentActivity() {
                             onPressureCurveSelected = { curve -> toolConfig = toolConfig.copy(pressureCurve = curve) },
                             onShapeLineChanged = { line -> toolConfig = toolConfig.copy(shapeLine = line) },
                             onInvertSelectionColors = invertSelectionColors,
+                            onTexturedDensityChanged = { density -> toolConfig = toolConfig.copy(texturedDensity = density) },
+                            onTexturedDistributionSelected = { distribution ->
+                                toolConfig = toolConfig.copy(texturedDistribution = distribution)
+                            },
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 18.dp)

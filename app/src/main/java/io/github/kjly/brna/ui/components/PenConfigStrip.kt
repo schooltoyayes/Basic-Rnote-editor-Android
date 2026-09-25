@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.FormatBold
 import androidx.compose.material.icons.filled.FormatItalic
 import androidx.compose.material.icons.filled.FormatStrikethrough
 import androidx.compose.material.icons.filled.FormatUnderlined
+import androidx.compose.material.icons.filled.Grain
 import androidx.compose.material.icons.filled.Height
 import androidx.compose.material.icons.filled.Highlight
 import androidx.compose.material.icons.filled.HorizontalRule
@@ -77,6 +78,8 @@ import androidx.compose.ui.window.Dialog
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.ConstraintRatio
 import io.github.kjly.brna.model.PressureCurve
+import io.github.kjly.brna.model.TexturedDistribution
+import io.github.kjly.brna.model.TexturedStyle
 import io.github.kjly.brna.model.ShapeLine
 import io.github.kjly.brna.model.ShapeLineCap
 import io.github.kjly.brna.model.ShapeLineStyle
@@ -142,7 +145,10 @@ fun PenConfigStrip(
     /** The Shaper's line style or line cap picked, as in Rnote's shaper settings. */
     onShapeLineChanged: (ShapeLine) -> Unit = {},
     /** Rnote's "Invert Color Brightness of All Selected Strokes". */
-    onInvertSelectionColors: () -> Unit = {}
+    onInvertSelectionColors: () -> Unit = {},
+    /** The Textured brush's dots: how many, and how they spread. */
+    onTexturedDensityChanged: (Double) -> Unit = {},
+    onTexturedDistributionSelected: (TexturedDistribution) -> Unit = {}
 ) {
     Surface(
         modifier = modifier.width(60.dp),
@@ -157,7 +163,8 @@ fun PenConfigStrip(
         ) {
             when (toolConfig.activeTool) {
                 ToolType.BRUSH -> BrushConfigPage(
-                    toolConfig, onBrushStyleSelected, onPressureCurveSelected, onSizeChanged,
+                    toolConfig, onBrushStyleSelected, onPressureCurveSelected,
+                    onTexturedDensityChanged, onTexturedDistributionSelected, onSizeChanged,
                     favorites, onApplyFavorite, onStoreFavorite, onClearFavorite
                 )
                 ToolType.ERASER -> EraserConfigPage(toolConfig, onEraserModeSelected, onSizeChanged)
@@ -188,6 +195,8 @@ private fun BrushConfigPage(
     toolConfig: ToolConfig,
     onBrushStyleSelected: (BrushStyle) -> Unit,
     onPressureCurveSelected: (PressureCurve) -> Unit,
+    onTexturedDensityChanged: (Double) -> Unit,
+    onTexturedDistributionSelected: (TexturedDistribution) -> Unit,
     onSizeChanged: (Float) -> Unit,
     favorites: List<PenFavorite?>,
     onApplyFavorite: (PenFavorite) -> Unit,
@@ -200,12 +209,18 @@ private fun BrushConfigPage(
     StripIconToggle(Icons.Default.Highlight, "Marker", toolConfig.brushStyle == BrushStyle.MARKER, true) {
         onBrushStyleSelected(BrushStyle.MARKER)
     }
-    StripIconToggle(GeneratedIcons.BrushStyleTextured, "Textured (coming soon)", toolConfig.brushStyle == BrushStyle.TEXTURED, false) {
+    StripIconToggle(GeneratedIcons.BrushStyleTextured, "Textured", toolConfig.brushStyle == BrushStyle.TEXTURED, true) {
         onBrushStyleSelected(BrushStyle.TEXTURED)
     }
     // Rnote offers the curve with the Solid style only; its marker keeps a constant width.
     if (toolConfig.brushStyle == BrushStyle.SOLID) {
         PressureCurveMenu(toolConfig.pressureCurve, onPressureCurveSelected)
+    }
+    if (toolConfig.brushStyle == BrushStyle.TEXTURED) {
+        TexturedMenu(
+            toolConfig.texturedDensity, toolConfig.texturedDistribution,
+            onTexturedDensityChanged, onTexturedDistributionSelected
+        )
     }
     StripDivider()
     val presets = BrushSizePreset.entries.map { it to it.sizeForTool(ToolType.BRUSH, toolConfig.brushStyle) }
@@ -287,6 +302,65 @@ private fun FavoriteSlots(
         }
     }
 }
+
+/** Rnote's dot distributions, in the order and under the names of its brush settings. */
+private val TEXTURED_DISTRIBUTIONS = listOf(
+    TexturedDistribution.UNIFORM to "Uniform",
+    TexturedDistribution.NORMAL to "Normal",
+    TexturedDistribution.EXPONENTIAL to "Exponential",
+    TexturedDistribution.REVERSE_EXPONENTIAL to "Reverse Exponential"
+)
+
+/**
+ * Rnote's Textured Style settings: the density — dots per 10 × 10 — stepped up and down,
+ * and how the dots spread across the stroke. The menu stays open while they change.
+ */
+@Composable
+private fun TexturedMenu(
+    density: Double,
+    distribution: TexturedDistribution,
+    onDensityChanged: (Double) -> Unit,
+    onDistributionSelected: (TexturedDistribution) -> Unit
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        StripIconToggle(Icons.Default.Grain, "Texture", selected = true, implemented = true) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Text(
+                "Density (dots per 10×10)",
+                fontSize = 12.sp,
+                color = Color.Gray,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
+                TextButton(onClick = { onDensityChanged(steppedDensity(density, -DENSITY_STEP)) }) { Text("−") }
+                Text(String.format(java.util.Locale.ROOT, "%.1f", density), modifier = Modifier.padding(horizontal = 8.dp))
+                TextButton(onClick = { onDensityChanged(steppedDensity(density, DENSITY_STEP)) }) { Text("+") }
+            }
+            HorizontalDivider()
+            Text(
+                "Stroke Dots Position Distribution",
+                fontSize = 12.sp,
+                color = Color.Gray,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+            for ((each, label) in TEXTURED_DISTRIBUTIONS) {
+                DropdownMenuItem(
+                    leadingIcon = { CheckMark(each == distribution) },
+                    text = { Text(label) },
+                    onClick = { onDistributionSelected(each) }
+                )
+            }
+        }
+    }
+}
+
+/** How far one press moves the density. */
+private const val DENSITY_STEP = 0.5
+
+/** [density] moved by [step], kept to Rnote's range and to one decimal, as its spin row shows it. */
+private fun steppedDensity(density: Double, step: Double): Double =
+    (Math.round((density + step) * 10.0) / 10.0).coerceIn(TexturedStyle.DENSITY_MIN, TexturedStyle.DENSITY_MAX)
 
 /** Rnote's pressure curves, in the order and under the names of its brush settings. */
 private val PRESSURE_CURVES = listOf(

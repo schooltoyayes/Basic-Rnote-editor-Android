@@ -35,7 +35,9 @@ data class Stroke(
     val toolType: ToolType = ToolType.BRUSH,
     val isHighlighter: Boolean = false,
     /** Rnote's default for a Solid brush; its Marker brush uses [PressureCurve.CONST]. */
-    val pressureCurve: PressureCurve = PressureCurve.DEFAULT
+    val pressureCurve: PressureCurve = PressureCurve.DEFAULT,
+    /** Set for a stroke in Rnote's Textured style, drawn as dots rather than an outline. */
+    val textured: TexturedStyle? = null
 ) {
     // Legacy alias so existing DrawingCanvas references to stroke.width still compile
     val width: Float get() = strokeWidth

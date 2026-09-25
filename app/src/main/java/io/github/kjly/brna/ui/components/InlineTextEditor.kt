@@ -105,7 +105,9 @@ fun InlineTextEditor(
     /** Moves the view up (negative) by this many px, to keep the cursor above the keyboard. */
     onPan: (Float) -> Unit,
     onToggle: (TextToggle) -> Unit,
-    onDone: () -> Unit
+    onDone: () -> Unit,
+    /** A key on a keyboard that only moves the cursor: Rnote's typewriter thumps for it. */
+    onCursorKey: () -> Unit = {}
 ) {
     val density = LocalDensity.current
     val pxPerUnit = viewportState.effectiveScale * style.scale
@@ -183,11 +185,18 @@ fun InlineTextEditor(
                     event.isCtrlPressed && event.key == Key.B -> { onToggle(TextToggle.BOLD); true }
                     event.isCtrlPressed && event.key == Key.I -> { onToggle(TextToggle.ITALIC); true }
                     event.isCtrlPressed && event.key == Key.U -> { onToggle(TextToggle.UNDERLINE); true }
+                    event.key in CURSOR_KEYS -> { onCursorKey(); false }
                     else -> false
                 }
             }
     )
 }
+
+/** The keys that move the cursor without typing, which Rnote's typewriter answers with a thump. */
+private val CURSOR_KEYS = setOf(
+    Key.DirectionLeft, Key.DirectionRight, Key.DirectionUp, Key.DirectionDown,
+    Key.MoveHome, Key.MoveEnd, Key.PageUp, Key.PageDown
+)
 
 /**
  * Compose's own family for a name Rnote uses. The generic ones resolve weight and slant

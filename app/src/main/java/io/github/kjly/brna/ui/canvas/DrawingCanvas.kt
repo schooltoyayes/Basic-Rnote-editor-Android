@@ -1,5 +1,6 @@
 package io.github.kjly.brna.ui.canvas
 
+import android.os.Build
 import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.compose.foundation.Canvas
@@ -39,6 +40,7 @@ import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntSize
+import io.github.kjly.brna.audio.PenSounds
 import io.github.kjly.brna.model.Affine
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.EraserMode
@@ -49,9 +51,12 @@ import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.NativeTextElement
 import io.github.kjly.brna.model.NativeVectorImageElement
 import io.github.kjly.brna.model.PaperStyle
+import io.github.kjly.brna.model.PenPathBuilder
 import io.github.kjly.brna.model.RnoteNativeColor
+import io.github.kjly.brna.model.RoughStyle
 import io.github.kjly.brna.model.SelectorMode
 import io.github.kjly.brna.model.ShapeKind
+import io.github.kjly.brna.model.ShapeLine
 import io.github.kjly.brna.model.ShapeLineCap
 import io.github.kjly.brna.model.SnapPositions
 import io.github.kjly.brna.model.Stroke
@@ -60,6 +65,7 @@ import io.github.kjly.brna.model.ToolConfig
 import io.github.kjly.brna.model.ToolType
 import io.github.kjly.brna.model.ToolsMode
 import io.github.kjly.brna.model.ViewportState
+import io.github.kjly.brna.render.ModeledPathBuilder
 import io.github.kjly.brna.render.NativeElementRenderer
 import io.github.kjly.brna.render.VectorImageRenderer
 import io.github.kjly.brna.storage.NativeEditing
@@ -113,6 +119,8 @@ fun DrawingCanvas(
     selectedNatives: SnapshotStateList<NativeCanvasElement>? = null,
     /** What the Shaper just finished drawing: one shape, or the lines of a grid or axes. */
     onAddShapes: (List<NativeShapeElement>) -> Unit = {},
+    /** Rnote's pen sounds, when they are switched on. */
+    penSounds: PenSounds? = null,
     /** Shapes the eraser went over; part of the same gesture as [onEraseStrokes]. */
     onEraseNatives: (List<NativeCanvasElement>) -> Unit = {},
     /** Desktop elements the selector moved: old instance -> moved copy. */
@@ -247,6 +255,14 @@ fun DrawingCanvas(
     }
 
     val currentPoints = remember { mutableStateListOf<InkPoint>() }
+    // The Textured brush's seed for the stroke being drawn: a new one for every stroke,
+    // as Rnote's `new_style_seeds` gives, so its dots stay put while it is drawn.
+    var texturedSeed by remember { mutableStateOf(0L) }
+    // The rough style's seed for the shape being drawn: new with every shape, however
+    // many strokes of the pen it takes, as Rnote's shaper picks one when it starts one.
+    var roughSeed by remember { mutableStateOf(0L) }
+    // Rnote's stroke modeler for the stroke being drawn, when the brush models its paths.
+    var pathBuilder by remember { mutableStateOf<ModeledPathBuilder?>(null) }
     /** Memoised stroke bounds and outlines, keyed by Stroke identity. See the draw block below. */
     val outlineCache = remember { IdentityHashMap<Stroke, CachedOutline>() }
     val lassoPoints = remember { mutableStateListOf<Offset>() }
@@ -320,6 +336,7 @@ fun DrawingCanvas(
                         isDrawing = false
                         currentPoints.clear()
                         lassoPoints.clear()
+                        pathBuilder = null
                     }
 
                     val x0 = motionEvent.getX(0)
@@ -573,6 +590,7 @@ fun DrawingCanvas(
                             // A draft of another shape (the shape was switched a moment ago) starts over.
                             val pending = draft?.takeIf { it.kind == toolConfig.shapeKind }
                             if (ShapeDraft.isMultiStroke(toolConfig.shapeKind)) {
+                                if (pending == null) roughSeed = kotlin.random.Random.nextLong()
                                 // The next stroke of a shape drawn in several; the first starts it.
                                 draft = pending?.down(
                                     pos,
@@ -585,6 +603,7 @@ fun DrawingCanvas(
                                 // The grid's second drag spans from its first cell's corner,
                                 // wherever the pen comes down, as in Rnote's GridBuilder.
                                 val cell = gridCell.takeIf { toolConfig.shapeKind == ShapeKind.GRID }
+                                if (cell == null) roughSeed = kotlin.random.Random.nextLong()
                                 val start = cell?.start ?: pos
                                 shapeStart = start
                                 shapeEnd = shapeEndFor(toolConfig, start, pos, ctrlHeld)
@@ -597,6 +616,19 @@ fun DrawingCanvas(
                         lassoPoints.clear()
                         currentPoints.add(InkPoint(x, y, rawPressure))
                         lassoPoints.add(Offset(x, y))
+                        texturedSeed = kotlin.random.Random.nextLong()
+                        // The stroke starts at the pen-down sample either way; with the
+                        // modeled builder, what follows is what the modeler makes of the pen.
+                        // Rnote's brush: the marker squeaks once as it touches down, the
+                        // others scratch for as long as they move.
+                        if (activeTool == ToolType.BRUSH) {
+                            if (toolConfig.brushStyle == BrushStyle.MARKER) penSounds?.marker() else penSounds?.brush()
+                        }
+                        pathBuilder = if (activeTool == ToolType.BRUSH && toolConfig.penPathBuilder == PenPathBuilder.MODELED) {
+                            ModeledPathBuilder(InkPoint(x, y, rawPressure), eventSeconds(motionEvent, motionEvent.historySize))
+                        } else {
+                            null
+                        }
 
                         if (activeTool == ToolType.ERASER) {
                             eraserCursor = Offset(x, y)
@@ -709,6 +741,8 @@ fun DrawingCanvas(
                             // between as the event's history. Rnote takes every one (its input
                             // handling walks the event's history too), so a quick curve keeps
                             // the shape it was written with, and a quick eraser misses nothing.
+                            val builder = pathBuilder.takeIf { activeTool == ToolType.BRUSH }
+                            if (activeTool == ToolType.BRUSH && toolConfig.brushStyle != BrushStyle.MARKER) penSounds?.brush()
                             for (h in 0..motionEvent.historySize) {
                                 val point = if (h < motionEvent.historySize) {
                                     val at = viewportState.screenToCanvas(
@@ -723,7 +757,11 @@ fun DrawingCanvas(
                                 } else {
                                     InkPoint(x, y, rawPressure)
                                 }
-                                currentPoints.add(point)
+                                if (builder != null) {
+                                    currentPoints.addAll(builder.move(point, eventSeconds(motionEvent, h)))
+                                } else {
+                                    currentPoints.add(point)
+                                }
                                 lassoPoints.add(Offset(point.x, point.y))
                                 if (activeTool == ToolType.ERASER) {
                                     eraseAt(Offset(point.x, point.y), eraserWidth, splitEraser, strokes, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
@@ -739,6 +777,9 @@ fun DrawingCanvas(
                             // with every event. At the pen's own pressure, so the tip
                             // doesn't swell or thin on a guess.
                             predictedPoints.clear()
+                            // A modeled stroke trails the pen a little; Rnote draws the tip
+                            // catching up with it, and the pen's own prediction goes on from there.
+                            builder?.let { predictedPoints.addAll(it.prediction) }
                             if (isStylus && activeTool == ToolType.BRUSH && motionEvent.actionMasked == MotionEvent.ACTION_MOVE) {
                                 predictor.predict()?.takeIf { it.pointerCount > 0 }?.let { predicted ->
                                     for (h in 0..predicted.historySize) {
@@ -820,7 +861,8 @@ fun DrawingCanvas(
                                         lifted.finished?.let { points ->
                                             ShapeDraft.toShape(
                                                 pending.kind, points, nativeColorOf(toolConfig.penColor),
-                                                toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor), toolConfig.shapeLine
+                                                toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor), toolConfig.shapeLine,
+                                                toolConfig.shapeRough(roughSeed)
                                             )?.let { onAddShapes(listOf(it)) }
                                         }
                                     } else {
@@ -856,12 +898,11 @@ fun DrawingCanvas(
                                         else -> null
                                     }
                                     val line = toolConfig.shapeLine
+                                    val rough = toolConfig.shapeRough(roughSeed)
                                     val shapes = if (lines != null) {
-                                        lines.mapNotNull {
-                                            NativeEditing.createShape(ShapeKind.LINE, it.x1, it.y1, it.x2, it.y2, color, width, fill, line)
-                                        }
+                                        roughLines(lines, color, width, fill, line, rough)
                                     } else {
-                                        listOfNotNull(NativeEditing.createShape(kind, start.x, start.y, end.x, end.y, color, width, fill, line))
+                                        listOfNotNull(NativeEditing.createShape(kind, start.x, start.y, end.x, end.y, color, width, fill, line, rough))
                                     }
                                     if (shapes.isNotEmpty()) onAddShapes(shapes)
                                 }
@@ -871,6 +912,15 @@ fun DrawingCanvas(
                                 laserFading = true
                             } else if (activeTool == ToolType.BRUSH && currentPoints.isNotEmpty()) {
                                 val isMarker = toolConfig.brushStyle == BrushStyle.MARKER
+                                // Rnote hands the lift to its builder as the stroke's last
+                                // sample, where it is and as hard as the pen reports; a
+                                // cancelled stroke keeps what it has.
+                                val builder = pathBuilder
+                                if (builder != null && action == MotionEvent.ACTION_UP) {
+                                    currentPoints.addAll(
+                                        builder.up(InkPoint(x, y, rawPressure), eventSeconds(motionEvent, motionEvent.historySize))
+                                    )
+                                }
 
                                 onAddStroke(
                                     Stroke(
@@ -883,7 +933,8 @@ fun DrawingCanvas(
                                         strokeWidth = toolConfig.currentActiveSize,
                                         toolType = activeTool,
                                         isHighlighter = isMarker,
-                                        pressureCurve = toolConfig.strokePressureCurve
+                                        pressureCurve = toolConfig.strokePressureCurve,
+                                        textured = toolConfig.strokeTextured(texturedSeed)
                                     )
                                 )
                             }
@@ -896,6 +947,7 @@ fun DrawingCanvas(
                         shapeEnd = null
                         selectionSnapCorner = null
                         predictedPoints.clear()
+                        pathBuilder = null
                         buttonEraserLatched = false
                         eraseSnapshotTaken = false
                         eraserCursorDown = false
@@ -991,7 +1043,8 @@ fun DrawingCanvas(
                     val shift = if (space != null && space.offset != 0f && stroke.id in space.strokeIds) space.offset else 0f
                     if (!visible.overlaps(cached.bounds.translate(0f, shift))) return@forEach
                     val path = cached.path
-                        ?: composeStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve).also { cached.path = it }
+                        ?: composeStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve, stroke.textured)
+                            .also { cached.path = it }
                     if (shift != 0f) {
                         translate(0f, shift) { drawPath(path = path, color = stroke.color) }
                     } else {
@@ -1052,7 +1105,8 @@ fun DrawingCanvas(
                     val path = composeStrokePath(
                         if (predictedPoints.isEmpty()) currentPoints else currentPoints + predictedPoints,
                         toolConfig.currentActiveSize,
-                        toolConfig.strokePressureCurve
+                        toolConfig.strokePressureCurve,
+                        toolConfig.strokeTextured(texturedSeed)
                     )
                     drawPath(path = path, color = toolConfig.currentActiveColor)
                 }
@@ -1065,7 +1119,8 @@ fun DrawingCanvas(
                     val kind = toolConfig.shapeKind
                     val cell = gridCell
                     // Shapes made of lines are previewed as plain lines: a grid can be thousands
-                    // of them, far too many to build as shapes on every frame.
+                    // of them, far too many to build as shapes on every frame. A few rough ones
+                    // are built, since plain lines would not show their wobble.
                     val lines: List<ShapeBuilders.Segment>? = when {
                         kind == ShapeKind.GRID && cell != null ->
                             if (dragging) {
@@ -1083,7 +1138,17 @@ fun DrawingCanvas(
                             else emptyList()
                         else -> null
                     }
-                    if (lines != null) {
+                    val rough = toolConfig.shapeRough(roughSeed)
+                    if (lines != null && rough != null && lines.size <= ROUGH_PREVIEW_LINES_MAX) {
+                        // Rough lines wobble as the placed ones will, which a few of can afford.
+                        val shapes = roughLines(
+                            lines, nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth,
+                            nativeColorOf(toolConfig.fillColor), toolConfig.shapeLine, rough
+                        )
+                        drawIntoCanvas { canvas ->
+                            for (shape in shapes) nativeRenderer.drawShape(canvas.nativeCanvas, shape, cache = false)
+                        }
+                    } else if (lines != null) {
                         // Dashed and capped as the lines will be, which costs nothing per line.
                         val rounded = toolConfig.shapeLine.cap == ShapeLineCap.ROUNDED
                         val dashes = NativeElementRenderer.dashPattern(
@@ -1103,7 +1168,7 @@ fun DrawingCanvas(
                         NativeEditing.createShape(
                             kind, previewStart!!.x, previewStart.y, previewEnd!!.x, previewEnd.y,
                             nativeColorOf(toolConfig.penColor), toolConfig.shaperWidth, nativeColorOf(toolConfig.fillColor),
-                            toolConfig.shapeLine
+                            toolConfig.shapeLine, rough
                         )?.let { preview ->
                             drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, preview, cache = false) }
                         }
@@ -1113,7 +1178,7 @@ fun DrawingCanvas(
                     draft?.let { pending ->
                         val hover = hoverOffset?.let { viewportState.screenToCanvas(it) }
                         drawDraft(
-                            pending, hover, toolConfig, viewportState.effectiveScale,
+                            pending, hover, toolConfig, rough, viewportState.effectiveScale,
                             maxOf(ShapeDraft.FINISH_DISTANCE, FINISH_TOLERANCE_PX / viewportState.effectiveScale)
                         ) { shape ->
                             drawIntoCanvas { canvas -> nativeRenderer.drawShape(canvas.nativeCanvas, shape, cache = false) }
@@ -1342,6 +1407,7 @@ private fun DrawScope.drawDraft(
     draft: ShapeDraft,
     hover: Offset?,
     toolConfig: ToolConfig,
+    rough: RoughStyle?,
     scale: Float,
     finishDistance: Float,
     drawShape: (NativeShapeElement) -> Unit
@@ -1356,11 +1422,11 @@ private fun DrawScope.drawDraft(
     val placed = if (current != null && !draft.finishing) draft.points + current else draft.points
     val preview = when {
         // Two corners of a polygon are only a line so far.
-        kind == ShapeKind.POLYGON && placed.size == 2 -> ShapeDraft.toShape(ShapeKind.POLYLINE, placed, color, width, fill, line)
-        isPoly -> ShapeDraft.toShape(kind, placed, color, width, fill, line)
+        kind == ShapeKind.POLYGON && placed.size == 2 -> ShapeDraft.toShape(ShapeKind.POLYLINE, placed, color, width, fill, line, rough)
+        isPoly -> ShapeDraft.toShape(kind, placed, color, width, fill, line, rough)
         placed.size == 3 && (kind == ShapeKind.QUADBEZ || kind == ShapeKind.FOCI_ELLIPSE) ->
-            ShapeDraft.toShape(kind, placed, color, width, fill, line)
-        placed.size == 4 && kind == ShapeKind.CUBBEZ -> ShapeDraft.toShape(kind, placed, color, width, fill, line)
+            ShapeDraft.toShape(kind, placed, color, width, fill, line, rough)
+        placed.size == 4 && kind == ShapeKind.CUBBEZ -> ShapeDraft.toShape(kind, placed, color, width, fill, line, rough)
         else -> null
     }
     preview?.let(drawShape)
@@ -1386,6 +1452,39 @@ private fun DrawScope.drawDraft(
         }
     }
 }
+
+/**
+ * The lines of a shape built from lines, each a shape of its own; in the rough style each
+ * wobbling its own way, the seed moved on after every one, as Rnote's shaper moves it.
+ */
+private fun roughLines(
+    lines: List<ShapeBuilders.Segment>,
+    color: RnoteNativeColor,
+    width: Float,
+    fill: RnoteNativeColor,
+    line: ShapeLine,
+    rough: RoughStyle?
+): List<NativeShapeElement> {
+    var style = rough
+    return lines.mapNotNull {
+        NativeEditing.createShape(ShapeKind.LINE, it.x1, it.y1, it.x2, it.y2, color, width, fill, line, style)
+            ?.also { style = style?.advanced() }
+    }
+}
+
+/**
+ * When sample [h] of [event] was taken — its history first, then the event itself — in
+ * seconds on the event clock; to the nanosecond where Android reports it so.
+ */
+private fun eventSeconds(event: MotionEvent, h: Int): Double =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        (if (h < event.historySize) event.getHistoricalEventTimeNanos(h) else event.eventTimeNanos) / 1e9
+    } else {
+        (if (h < event.historySize) event.getHistoricalEventTime(h) else event.eventTime) / 1e3
+    }
+
+/** Past this many lines, a shape built from lines is previewed as plain lines even when rough. */
+private const val ROUGH_PREVIEW_LINES_MAX = 32
 
 /** The rings and guides of a shape being drawn in several strokes: Rnote's indicator blue. */
 private val DRAFT_GUIDE = Color(0xFF3584E4)

@@ -10,7 +10,7 @@ import kotlin.math.abs
  * lives only in this app's settings and never in a file.
  */
 data class PenFavorite(
-    /** [BrushStyle.SOLID] or [BrushStyle.MARKER]. */
+    /** Solid, Marker or Textured. */
     val style: BrushStyle,
     /** ARGB, alpha included, as the brush draws it: a marker's translucency is part of it. */
     val argb: Int,
@@ -25,13 +25,10 @@ data class PenFavorite(
 }
 
 /** The brush as it is set now, to keep as a favorite. */
-fun ToolConfig.brushFavorite(): PenFavorite {
-    val marker = brushStyle == BrushStyle.MARKER
-    return PenFavorite(
-        style = if (marker) BrushStyle.MARKER else BrushStyle.SOLID,
-        argb = (if (marker) highlighterColor else penColor).toArgb(),
-        width = if (marker) highlighterWidth else strokeWidth
-    )
+fun ToolConfig.brushFavorite(): PenFavorite = when (brushStyle) {
+    BrushStyle.MARKER -> PenFavorite(BrushStyle.MARKER, highlighterColor.toArgb(), highlighterWidth)
+    BrushStyle.TEXTURED -> PenFavorite(BrushStyle.TEXTURED, penColor.toArgb(), texturedWidth)
+    BrushStyle.SOLID -> PenFavorite(BrushStyle.SOLID, penColor.toArgb(), strokeWidth)
 }
 
 /** The brush switched to [favorite]: its style, and its colour and width for that style. */
@@ -42,7 +39,13 @@ fun ToolConfig.withFavorite(favorite: PenFavorite): ToolConfig = when (favorite.
         highlighterColor = Color(favorite.argb),
         highlighterWidth = favorite.width
     )
-    else -> copy(
+    BrushStyle.TEXTURED -> copy(
+        activeTool = ToolType.BRUSH,
+        brushStyle = BrushStyle.TEXTURED,
+        penColor = Color(favorite.argb),
+        texturedWidth = favorite.width
+    )
+    BrushStyle.SOLID -> copy(
         activeTool = ToolType.BRUSH,
         brushStyle = BrushStyle.SOLID,
         penColor = Color(favorite.argb),

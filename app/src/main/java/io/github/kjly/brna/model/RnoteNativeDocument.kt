@@ -45,7 +45,9 @@ data class NativeBrushStroke(
     override val minX: Float, override val minY: Float,
     override val maxX: Float, override val maxY: Float,
     /** The style's `pressure_curve`; see [PressureCurve] for why it can't be dropped. */
-    val pressureCurve: PressureCurve = PressureCurve.DEFAULT
+    val pressureCurve: PressureCurve = PressureCurve.DEFAULT,
+    /** The seed and dots of a stroke in Rnote's `textured` style; null for `smooth`. */
+    val textured: TexturedStyle? = null
 ) : NativeCanvasElement()
 
 /** Keyboard-typed text element with an affine transform. */
@@ -180,6 +182,8 @@ data class NativeShapeElement(
     val lineStyle: String = "solid",
     /** Rnote's `line_cap`: true for "rounded". */
     val roundCap: Boolean = false,
+    /** Rnote's rough style, when the shape has it rather than the smooth one. */
+    val rough: RoughStyle? = null,
     /** The element exactly as the file had it, written back untouched on save. */
     val raw: com.google.gson.JsonElement? = null
 ) : NativeCanvasElement()

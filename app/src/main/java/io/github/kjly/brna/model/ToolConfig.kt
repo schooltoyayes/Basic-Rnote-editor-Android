@@ -62,14 +62,22 @@ enum class ToolsMode { VERTICAL_SPACE, LASER }
  * "Highlighter" tool — translucent, wide, layered under other strokes — but
  * as a Brush style rather than a separate top-level tool, matching how
  * desktop Rnote (and BRNA's own .rnote writer, via the stroke's chrono
- * "layer") actually represent it. SOLID is the old plain "Pen". TEXTURED has
- * a UI slot but no rendering implementation yet.
+ * "layer") actually represent it. SOLID is the old plain "Pen". TEXTURED draws
+ * Rnote's dots, the same dots Rnote draws from the stroke's seed (see TexturedDots).
  */
 enum class BrushStyle {
     MARKER,
     SOLID,
     TEXTURED
 }
+
+/**
+ * Rnote's `PenPathBuilderType` for the brush ("Path Modelling" in its settings): SIMPLE
+ * draws through the pen's samples as they come; MODELED — Rnote's default — through what
+ * its stroke modeler makes of them (see render.ModeledPathBuilder). Rnote's third, Curved,
+ * writes curve segments, which this app's strokes cannot hold.
+ */
+enum class PenPathBuilder { SIMPLE, MODELED }
 
 /**
  * Matches desktop Rnote's RnStrokeWidthPicker gschema defaults exactly:
@@ -101,9 +109,15 @@ data class ToolConfig(
     val highlighterColor: Color = Color(0xFFF6D32D).copy(alpha = 0.35f), // Semi-transparent yellow, used by Brush/Marker
     val strokeWidth: Float = 2f,           // Brush (Solid) stroke width in canvas px — matches Rnote's default (SmoothOptions stroke_width: 2.0)
     val highlighterWidth: Float = 12f,     // Brush (Marker) width in canvas px — matches Rnote's MarkerOptions fixed default
+    /** The Textured brush's own width, density and distribution: Rnote's `TexturedOptions`. */
+    val texturedWidth: Float = TexturedStyle.WIDTH_DEFAULT,
+    val texturedDensity: Double = TexturedStyle.DENSITY_DEFAULT,
+    val texturedDistribution: TexturedDistribution = TexturedDistribution.DEFAULT,
     // Rnote's EraserConfig::WIDTH_DEFAULT is 12.0, which is deliberately not one of the
     // 4/9/24 palette presets — a fresh eraser starts between Small and Medium.
     val eraserWidth: Float = 12f,          // Eraser square side in canvas units
+    /** How the brush makes a stroke of the pen's samples; Rnote's default is modeled. */
+    val penPathBuilder: PenPathBuilder = PenPathBuilder.MODELED,
     /**
      * The Solid brush's pressure curve: Rnote's `SolidOptions::pressure_curve`, which its
      * brush settings let you pick and which starts linear.
@@ -132,6 +146,11 @@ data class ToolConfig(
     val shapeConstraints: ShapeConstraints = ShapeConstraints(),
     /** The Shaper's line style and line cap, as Rnote's shaper settings pick them. */
     val shapeLine: ShapeLine = ShapeLine(),
+    /** The Shaper's style: Rnote's smooth outlines, or its rough, sketched look. */
+    val shaperStyle: ShaperStyle = ShaperStyle.SMOOTH,
+    /** The rough style's fill, and the angle of its hatching in whole degrees, as Rnote's settings take it. */
+    val roughFill: RoughFillStyle = RoughFillStyle.DEFAULT,
+    val roughHachureDegrees: Int = RoughStyle.HACHURE_DEGREES_DEFAULT,
     /**
      * Rnote's "Snap Positions": shapes, moved selections, new text and vertical space go
      * to the page's pattern. Off by default, as in Rnote; kept in the settings.
@@ -141,6 +160,7 @@ data class ToolConfig(
     val allowFingerDrawing: Boolean = false
 ) {
     private val isMarker: Boolean get() = activeTool == ToolType.BRUSH && brushStyle == BrushStyle.MARKER
+    private val isTextured: Boolean get() = activeTool == ToolType.BRUSH && brushStyle == BrushStyle.TEXTURED
 
     /** Gets active tool's stroke size in px. */
     val currentActiveSize: Float
@@ -149,16 +169,35 @@ data class ToolConfig(
             activeTool == ToolType.SHAPER -> shaperWidth
             activeTool == ToolType.TYPEWRITER -> textSize
             isMarker -> highlighterWidth
+            isTextured -> texturedWidth
             else -> strokeWidth
         }
 
     /**
      * The curve a new brush stroke carries, as Rnote's `pensconfig/brushconfig.rs` sets
-     * it: the marker's is pinned to Const — a constant-width nib — the solid brush's is
-     * [pressureCurve].
+     * it: the marker's is pinned to Const — a constant-width nib — the textured brush
+     * keeps its options' default, linear, and the solid brush's is [pressureCurve].
      */
     val strokePressureCurve: PressureCurve
-        get() = if (brushStyle == BrushStyle.MARKER) PressureCurve.CONST else pressureCurve
+        get() = when (brushStyle) {
+            BrushStyle.MARKER -> PressureCurve.CONST
+            BrushStyle.TEXTURED -> PressureCurve.LINEAR
+            BrushStyle.SOLID -> pressureCurve
+        }
+
+    /**
+     * The textured style a new brush stroke takes with [seed] — Rnote gives every stroke a
+     * seed of its own — or null when the brush is not textured.
+     */
+    fun strokeTextured(seed: Long): TexturedStyle? =
+        if (brushStyle == BrushStyle.TEXTURED) TexturedStyle(seed, texturedDensity, texturedDistribution) else null
+
+    /**
+     * The rough style a new shape takes with [seed] — Rnote picks one each time the pen
+     * goes down — or null when the Shaper draws smooth shapes.
+     */
+    fun shapeRough(seed: Long): RoughStyle? =
+        if (shaperStyle == ShaperStyle.ROUGH) RoughStyle(roughFill, RoughStyle.hachureAngleOf(roughHachureDegrees), seed) else null
 
     /** The ink color for the active tool/style. */
     val currentActiveColor: Color
@@ -180,6 +219,7 @@ data class ToolConfig(
             activeTool == ToolType.ERASER -> copy(eraserWidth = clamped)
             activeTool == ToolType.SHAPER -> copy(shaperWidth = clamped)
             isMarker -> copy(highlighterWidth = clamped)
+            isTextured -> copy(texturedWidth = clamped)
             else -> copy(strokeWidth = clamped)
         }
     }

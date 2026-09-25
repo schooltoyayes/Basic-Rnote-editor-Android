@@ -40,6 +40,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -74,6 +75,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import io.github.kjly.brna.audio.PenSounds
 import io.github.kjly.brna.export.DocumentExporter
 import io.github.kjly.brna.export.ExportFormat
 import io.github.kjly.brna.export.ExportLayout
@@ -1110,6 +1112,17 @@ class MainActivity : ComponentActivity() {
                     )
                 )
             }
+            // Rnote's "Pen Sounds": off by default, kept between sessions; the sounds are only
+            // loaded while they are on.
+            var penSoundsOn by remember { mutableStateOf(SettingsManager.loadPenSounds(this)) }
+            val penSounds = remember(penSoundsOn) { if (penSoundsOn) PenSounds(applicationContext) else null }
+            DisposableEffect(penSounds) {
+                onDispose { penSounds?.release() }
+            }
+            val togglePenSounds: () -> Unit = {
+                penSoundsOn = !penSoundsOn
+                SettingsManager.savePenSounds(this@MainActivity, penSoundsOn)
+            }
             /** Rnote's canvas menu toggle, and Ctrl+Shift+P. */
             val toggleSnapPositions: () -> Unit = {
                 toolConfig = toolConfig.copy(snapPositions = !toolConfig.snapPositions)
@@ -1695,6 +1708,11 @@ class MainActivity : ComponentActivity() {
             val onTextChange: (TextFieldValue) -> Unit = change@{ value ->
                 val session = textSession ?: return@change
                 val old = session.value
+                if (value.text != old.text) {
+                    // Rnote's typewriter: a key for every character typed or deleted, the
+                    // bell and the line feed for a new line.
+                    penSounds?.typed(newLine = value.text.count { it == '\n' } > old.text.count { it == '\n' })
+                }
                 if (value.text == old.text) {
                     // The cursor moved: the switches go back to showing what is there.
                     val moved = value.selection != old.selection
@@ -1969,6 +1987,8 @@ class MainActivity : ComponentActivity() {
                                 onToggleFiles = { showFiles = !showFiles },
                                 snapPositions = toolConfig.snapPositions,
                                 onToggleSnapPositions = toggleSnapPositions,
+                                penSounds = penSoundsOn,
+                                onTogglePenSounds = togglePenSounds,
                                 onZoomOut = { zoomBy(1f / (1f + ViewportState.ZOOM_STEP)) },
                                 onZoomIn = { zoomBy(1f + ViewportState.ZOOM_STEP) },
                                 onZoomFitWidth = zoomFitWidth,
@@ -2051,6 +2071,7 @@ class MainActivity : ComponentActivity() {
                                 ?.let { editing -> documentNativeElements.filter { it !== editing } }
                                 ?: documentNativeElements,
                             selectedNatives = selectedNatives,
+                            penSounds = penSounds,
                             onAddShapes = { shapes ->
                                 // One undo step for all the lines of a grid or a coordinate system.
                                 pushUndo()
@@ -2144,7 +2165,8 @@ class MainActivity : ComponentActivity() {
                                         viewportState = viewportState.copy(panOffset = viewportState.panOffset + Offset(0f, dy))
                                     },
                                     onToggle = onToggleTextFormat,
-                                    onDone = { textSession = null }
+                                    onDone = { textSession = null },
+                                    onCursorKey = { penSounds?.cursorKey() }
                                 )
                             }
                         }
@@ -2424,7 +2446,15 @@ class MainActivity : ComponentActivity() {
                             onTextAlignmentSelected = onTextAlignmentSelected,
                             onPressureCurveSelected = { curve -> toolConfig = toolConfig.copy(pressureCurve = curve) },
                             onShapeLineChanged = { line -> toolConfig = toolConfig.copy(shapeLine = line) },
+                            onShaperStyleSelected = { style -> toolConfig = toolConfig.copy(shaperStyle = style) },
+                            onRoughFillSelected = { fill -> toolConfig = toolConfig.copy(roughFill = fill) },
+                            onRoughHachureDegreesChanged = { degrees -> toolConfig = toolConfig.copy(roughHachureDegrees = degrees) },
                             onInvertSelectionColors = invertSelectionColors,
+                            onTexturedDensityChanged = { density -> toolConfig = toolConfig.copy(texturedDensity = density) },
+                            onTexturedDistributionSelected = { distribution ->
+                                toolConfig = toolConfig.copy(texturedDistribution = distribution)
+                            },
+                            onPenPathBuilderSelected = { builder -> toolConfig = toolConfig.copy(penPathBuilder = builder) },
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
                                 .padding(start = 18.dp)

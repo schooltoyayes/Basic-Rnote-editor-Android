@@ -21,6 +21,9 @@ import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.render.NativeElementRenderer
+import io.github.kjly.brna.render.RoughOp
+import io.github.kjly.brna.render.RoughSetType
+import io.github.kjly.brna.render.RoughShapes
 import io.github.kjly.brna.render.VectorImageRenderer
 import io.github.kjly.brna.render.androidStrokePath
 import io.github.kjly.brna.render.svgStrokePathData
@@ -79,7 +82,7 @@ class AndroidExportCanvas(private val canvas: android.graphics.Canvas) : ExportC
         // toArgb() carries the alpha; a marker's transparency lives in its colour.
         fillPaint.color = stroke.color.toArgb()
         canvas.drawPath(
-            androidStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve),
+            androidStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve, stroke.textured),
             fillPaint
         )
     }
@@ -157,7 +160,7 @@ class SvgExportCanvas(private val sb: StringBuilder) : ExportCanvas {
         // A filled outline rather than a stroked centreline: stroke.strokeWidth is a
         // nominal maximum that the pressure curve scales at every point, so no single
         // stroke-width attribute could be correct. See StrokeOutline.
-        val pathData = svgStrokePathData(stroke.points, stroke.strokeWidth, stroke.pressureCurve)
+        val pathData = svgStrokePathData(stroke.points, stroke.strokeWidth, stroke.pressureCurve, stroke.textured)
         if (pathData.isEmpty()) return
         sb.append("  <path d=\"$pathData\" fill=\"${hex(stroke.color)}\" fill-rule=\"nonzero\"")
             .append(opacityAttr(stroke.color, "fill-opacity"))
@@ -265,6 +268,7 @@ class SvgExportCanvas(private val sb: StringBuilder) : ExportCanvas {
     }
 
     private fun svgShape(el: NativeShapeElement) {
+        if (el.rough != null && svgRoughShape(el)) return
         val shape = el.shape
         val geometry = when (shape) {
             is LineShape ->
@@ -306,6 +310,43 @@ class SvgExportCanvas(private val sb: StringBuilder) : ExportCanvas {
             }
         }
         sb.append(" />\n")
+    }
+
+    /** A rough shape as [NativeElementRenderer] draws it, set by set; false when it has no rough drawing. */
+    private fun svgRoughShape(el: NativeShapeElement): Boolean {
+        val composed = RoughShapes.compose(el) ?: return false
+        val indent = if (composed.transform != null) "    " else "  "
+        composed.transform?.let { sb.append("  <g transform=\"${matrixAttr(it)}\">\n") }
+        for (drawable in composed.drawables) {
+            for (set in drawable.sets) {
+                val d = set.ops.joinToString(" ") { op ->
+                    when (op) {
+                        is RoughOp.Move -> "M ${n(op.x.toFloat())} ${n(op.y.toFloat())}"
+                        is RoughOp.Line -> "L ${n(op.x.toFloat())} ${n(op.y.toFloat())}"
+                        is RoughOp.Curve -> "C ${n(op.x1.toFloat())} ${n(op.y1.toFloat())} " +
+                            "${n(op.x2.toFloat())} ${n(op.y2.toFloat())} ${n(op.x.toFloat())} ${n(op.y.toFloat())}"
+                    }
+                }
+                sb.append(indent).append("<path d=\"").append(d).append('"')
+                when (set.type) {
+                    RoughSetType.FILL_PATH -> {
+                        sb.append(" fill=\"${hexOf(el.fillColor)}\"")
+                        if (el.fillColor.a < 1f) sb.append(" fill-opacity=\"${n(el.fillColor.a)}\"")
+                        if (drawable.evenOdd) sb.append(" fill-rule=\"evenodd\"")
+                    }
+                    RoughSetType.PATH, RoughSetType.FILL_SKETCH -> {
+                        val color = if (set.type == RoughSetType.PATH) el.color else el.fillColor
+                        val width = if (set.type == RoughSetType.PATH) drawable.options.strokeWidth else drawable.fillWeight
+                        sb.append(" fill=\"none\" stroke=\"${hexOf(color)}\" stroke-width=\"${n(width)}\"")
+                        if (color.a < 1f) sb.append(" stroke-opacity=\"${n(color.a)}\"")
+                        sb.append(" stroke-linecap=\"butt\" stroke-linejoin=\"miter\" stroke-miterlimit=\"10\"")
+                    }
+                }
+                sb.append(" />\n")
+            }
+        }
+        if (composed.transform != null) sb.append("  </g>\n")
+        return true
     }
 
     override fun clipped(rect: Rect, block: () -> Unit) {

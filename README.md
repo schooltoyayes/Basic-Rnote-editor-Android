@@ -25,19 +25,30 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
 
 **Working**
 
-- **Brush** with stylus pressure sensitivity, in Solid and Marker (translucent)
-  styles, and Rnote's six pressure curves for Solid — constant, linear, square and
-  cubic root, quadratic and cubic. Three size presets per tool plus a numeric
-  adjuster, and four favorite slots that keep a style, color and width together.
+- **Brush** with stylus pressure sensitivity, in Rnote's three styles: Solid,
+  Marker (translucent) and Textured — dots strewn along the stroke, with Rnote's
+  density and its four distributions. The dots come from the stroke's seed through
+  a port of the random number generator and samplers Rnote uses (Pcg64, rand,
+  rand_distr), so a textured stroke looks the same on both sides, dot for dot.
+  Rnote's six pressure curves for Solid — constant, linear, square and cubic root,
+  quadratic and cubic. Rnote's path modelling: by default the pen's samples go through
+  a port of the stroke modeler Rnote uses (ink-stroke-modeler-rs, with Rnote's
+  settings), which smooths out jitter and gives handwriting its curves; "Simple" draws
+  through the raw samples instead. Three size presets per tool plus a numeric adjuster, and
+  four favorite slots that keep a style, color and width together.
 - **Shaper**: line, arrow, rectangle, ellipse, and — built from lines, as Rnote
   builds them — 2D, 3D and single-quadrant coordinate systems and a grid. Rnote's
   shapes of several strokes too: polyline and polygon (a corner per stroke; put the
   pen down on the last corner again to finish), quadratic and cubic curves, and the
   ellipse through a point from its two foci. Rnote's constraints — 1:1, 3:2, the
   golden ratio, level and upright — with Ctrl to switch them while drawing. Lines
-  and arrows can also snap to 15° steps. Rnote's line styles — solid, dotted and
-  three kinds of dashed — and straight or round line caps. The color picker's fill
-  pad fills shapes.
+  and arrows can also snap to 15° steps. Rnote's two styles: Smooth, with its line
+  styles — solid, dotted and three kinds of dashed — and straight or round line
+  caps; and Rough, sketched as if by hand, with its seven fill styles (solid,
+  hachure, zig-zag, zig-zag line, crosshatch, dots, dashed) and hachure angle. The
+  wobble comes from the shape's seed through a port of roughr and the random number
+  generator it uses (rand's ChaCha12), so a rough shape looks the same on both
+  sides. The color picker's fill pad fills shapes.
 - **Typewriter**: tap and type straight onto the page, into a new text box or
   an existing one. Bold, italic, underline and strikethrough — from the strip,
   or Ctrl+B / Ctrl+I / Ctrl+U on a keyboard — stored as Rnote stores them, so
@@ -60,6 +71,9 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   them; the pen's events arrive unbuffered, and motion prediction draws the ink a
   little ahead of the pen, never saved. The finished note is drawn on a layer of its
   own and only as far as it is in view, so a long note writes like a short one.
+- **Pen sounds**, Rnote's own, switched on in the canvas menu as in Rnote: a pencil
+  scratching while the brush draws, a squeak at each marker stroke, and a
+  typewriter — with its bell for a new line — for the Typewriter.
 - **Paper**: six patterns (dots, grid, lines, isometric grid, isometric dots,
   blank), A2–A6 / Letter / Legal / custom / infinite page sizes, four layout
   modes (fixed size, continuous vertical, semi-infinite, infinite), custom
@@ -109,9 +123,6 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   Ctrl+0 to zoom, Ctrl+1 to Ctrl+6 for the pens.
   They follow the keyboard's layout, so Ctrl+Z is the Z key on a German
   keyboard too.
-
-**UI slots with no implementation behind them** — visible but disabled: the
-Textured brush style.
 
 **Not built**: layers (the stroke list is flat), the Tools pen's other styles
 (Offset Camera, Zoom — pan and pinch do that here).
@@ -179,9 +190,7 @@ Especially useful:
   with an S-Pen. Stylus behaviour varies a lot between vendors, and pressure,
   hover, and barrel-button handling are all places where "works here" proves
   very little. Reports from other devices are useful even when everything works.
-- **The disabled tools.** The Textured brush style, the non-polygon selector
-  modes and a separate fill color have UI slots wired up and waiting for an
-  implementation. Layers are a bigger lift — the document model is flat today.
+- **Layers.** The document model is flat today, which makes them a bigger lift.
 - **Cross-compiling Rnote's engine for Android.** The most ambitious item on the
   list, described under [Where this is heading](#where-this-is-heading). If you
   know your way around `cargo-ndk` and JNI, I'd love the help — or just the
@@ -207,6 +216,10 @@ always welcome.
   Working out how to stream the format is the hard part of reading it, and that
   groundwork was theirs — done and shared freely with an invitation to adapt it.
   (See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the details.)
+- **Pen sounds**, as Rnote ships them, from [freesound.org](https://freesound.org/):
+  "Pencil, Writing, Close, A" by InspectorJ (CC BY 3.0); the marker sounds, and the
+  typewriter's by KVProds and knufds, CC0. (Details in
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).)
 
 ## License
 

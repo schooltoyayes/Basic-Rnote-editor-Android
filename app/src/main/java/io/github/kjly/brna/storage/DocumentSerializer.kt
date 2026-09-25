@@ -9,6 +9,8 @@ import io.github.kjly.brna.model.PaperPattern
 import io.github.kjly.brna.model.PaperStyle
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.Stroke
+import io.github.kjly.brna.model.TexturedDistribution
+import io.github.kjly.brna.model.TexturedStyle
 import io.github.kjly.brna.model.ToolType
 import org.json.JSONArray
 import org.json.JSONObject
@@ -45,6 +47,14 @@ object DocumentSerializer {
             strokeObj.put("color", stroke.color.toArgb())
             strokeObj.put("width", stroke.strokeWidth.toDouble())
             strokeObj.put("toolType", stroke.toolType.name)
+            stroke.textured?.let { textured ->
+                strokeObj.put("textured", JSONObject().apply {
+                    // As text: a u64 seed does not fit JSONObject's numbers.
+                    put("seed", TexturedStyle.seedJson(textured.seed))
+                    put("density", textured.density)
+                    put("distribution", textured.distribution.apiName)
+                })
+            }
 
             val pointsArray = JSONArray()
             for (pt in stroke.points) {
@@ -140,13 +150,21 @@ object DocumentSerializer {
                     }
                 }
 
+                val textured = strokeObj.optJSONObject("textured")?.let { t ->
+                    TexturedStyle(
+                        seed = TexturedStyle.seedFromJson(t.optString("seed")),
+                        density = t.optDouble("density", TexturedStyle.DENSITY_DEFAULT),
+                        distribution = TexturedDistribution.fromApiName(t.optString("distribution"))
+                    )
+                }
                 strokesList.add(
                     Stroke(
                         id = strokeId,
                         points = pointsList,
                         color = Color(colorInt),
                         strokeWidth = width,
-                        toolType = toolType
+                        toolType = toolType,
+                        textured = textured
                     )
                 )
             }

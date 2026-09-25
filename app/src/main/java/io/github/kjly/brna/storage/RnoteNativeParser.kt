@@ -27,7 +27,11 @@ import io.github.kjly.brna.model.RangedTextAttr
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RnoteNativeDocument
+import io.github.kjly.brna.model.RoughFillStyle
+import io.github.kjly.brna.model.RoughStyle
 import io.github.kjly.brna.model.TextAttr
+import io.github.kjly.brna.model.TexturedDistribution
+import io.github.kjly.brna.model.TexturedStyle
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.util.zip.GZIPInputStream
@@ -291,6 +295,7 @@ object RnoteNativeParser {
         var width = 2f
         var isHighlighter = false
         var pressureCurve = PressureCurve.DEFAULT
+        var textured: TexturedStyle? = null
 
         reader.beginObject()
         while (reader.hasNext()) {
@@ -299,8 +304,13 @@ object RnoteNativeParser {
                 "style"  -> {
                     reader.beginObject()
                     while (reader.hasNext()) {
-                        when (reader.nextName().lowercase()) {
+                        when (val styleName = reader.nextName().lowercase()) {
                             "smooth", "textured" -> {
+                                // Rnote's TexturedOptions: its dots come from the seed, so
+                                // the seed has to come through, and go back out, as it was.
+                                var seed: Long? = null
+                                var density = TexturedStyle.DENSITY_DEFAULT
+                                var distribution = TexturedDistribution.DEFAULT
                                 reader.beginObject()
                                 while (reader.hasNext()) {
                                     when (reader.nextName()) {
@@ -310,10 +320,21 @@ object RnoteNativeParser {
                                         // unknowable — see [PressureCurve].
                                         "pressure_curve" ->
                                             pressureCurve = PressureCurve.fromApiName(reader.nextString())
+                                        "seed" -> seed = if (reader.peek() == JsonToken.NULL) {
+                                            reader.nextNull()
+                                            null
+                                        } else {
+                                            // A u64: past Long's range, so read as the text it is.
+                                            TexturedStyle.seedFromJson(reader.nextString())
+                                        }
+                                        "density" -> density = reader.nextDouble()
+                                        "distribution" ->
+                                            distribution = TexturedDistribution.fromApiName(reader.nextString())
                                         else           -> reader.skipValue()
                                     }
                                 }
                                 reader.endObject()
+                                if (styleName == "textured") textured = TexturedStyle(seed, density, distribution)
                             }
                             else -> reader.skipValue()
                         }
@@ -342,7 +363,7 @@ object RnoteNativeParser {
         if (pts.isEmpty()) return null
         val minX = pts.minOf { it.x }; val minY = pts.minOf { it.y }
         val maxX = pts.maxOf { it.x }; val maxY = pts.maxOf { it.y }
-        return NativeBrushStroke(pts, width, color, isHighlighter, minX, minY, maxX, maxY, pressureCurve)
+        return NativeBrushStroke(pts, width, color, isHighlighter, minX, minY, maxX, maxY, pressureCurve, textured)
     }
 
     private fun parsePath(reader: JsonReader): List<NativeStrokePoint> {
@@ -698,6 +719,7 @@ object RnoteNativeParser {
         var width = 2f
         var lineStyle = "solid"
         var roundCap = false
+        var rough: RoughStyle? = null
         // An arrow's head grows with the stroke width, which is only known once "style"
         // has been read, so its outline is built after the loop.
         var arrow: FloatArray? = null
@@ -739,20 +761,44 @@ object RnoteNativeParser {
                 "style" -> {
                     reader.beginObject()
                     while (reader.hasNext()) {
-                        when (reader.nextName()) {
+                        when (val styleName = reader.nextName()) {
                             "smooth", "rough", "Smooth", "Rough" -> {
+                                val isRough = styleName.equals("rough", ignoreCase = true)
+                                var fillStyle = RoughFillStyle.DEFAULT
+                                var hachureAngle = RoughStyle.HACHURE_ANGLE_DEFAULT
+                                var seed: Long? = null
+                                // Rnote's defaults for a field the file leaves out: the
+                                // rough style's line is 2.4 wide.
+                                if (isRough) width = RoughStyle.STROKE_WIDTH_DEFAULT
                                 reader.beginObject()
                                 while (reader.hasNext()) {
                                     when (reader.nextName()) {
-                                        "stroke_color" -> color = parseColor(reader)
+                                        // A rough shape without a line colour leaves it to
+                                        // roughr, whose own is black.
+                                        "stroke_color" -> color = if (isRough && reader.peek() == JsonToken.NULL) {
+                                            reader.nextNull()
+                                            RnoteNativeColor.BLACK
+                                        } else {
+                                            parseColor(reader)
+                                        }
                                         "fill_color"   -> fill  = parseColor(reader)
                                         "stroke_width" -> width = reader.nextDouble().toFloat()
                                         "line_style"   -> lineStyle = reader.nextString().lowercase()
                                         "line_cap"     -> roundCap = reader.nextString().equals("rounded", ignoreCase = true)
+                                        "fill_style"   -> fillStyle = RoughFillStyle.fromApiName(reader.nextString())
+                                        "hachure_angle" -> hachureAngle = reader.nextDouble()
+                                        "seed" -> seed = if (reader.peek() == JsonToken.NULL) {
+                                            reader.nextNull()
+                                            null
+                                        } else {
+                                            // A u64: past Long's range, so read as the text it is.
+                                            TexturedStyle.seedFromJson(reader.nextString())
+                                        }
                                         else           -> reader.skipValue()
                                     }
                                 }
                                 reader.endObject()
+                                rough = if (isRough) RoughStyle(fillStyle, hachureAngle, seed) else null
                             }
                             else -> reader.skipValue()
                         }
@@ -776,7 +822,7 @@ object RnoteNativeParser {
         val (mnX, mnY, mxX, mxY) = boundsForShape(s)
         return NativeShapeElement(
             s, color, width, mnX, mnY, mxX, mxY, fill,
-            lineStyle = lineStyle, roundCap = roundCap
+            lineStyle = lineStyle, roundCap = roundCap, rough = rough
         )
     }
 

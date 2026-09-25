@@ -411,7 +411,7 @@ object GeneratedIcons {
 
     // Rnote's canvas menu and headerbar: canvasmenu-, zoom-fit-width-, add-page-, remove-page-,
     // resize-to-fit-content- and focus-mode-symbolic.svg; its app menu's
-    // appwindow-fullscreen-symbolic.svg; its selector's selection-invert-color-symbolic.svg.
+    // appwindow-fullscreen-symbolic.svg.
     // resize-to-fit-content's groups are drawn here with their transforms worked in.
 
     val CanvasMenu: ImageVector by lazy {
@@ -475,13 +475,6 @@ object GeneratedIcons {
             "Fullscreen",
             "m 1 9 c -0.550781 0 -1 0.449219 -1 1 v 6 h 6 c 0.550781 0 1 -0.449219 1 -1 s -0.449219 -1 -1 -1 h -2.585938 l 3.292969 -3.292969 c 0.390625 -0.390625 0.390625 -1.023437 0 -1.414062 c -0.1875 -0.1875 -0.441406 -0.292969 -0.707031 -0.292969 s -0.519531 0.105469 -0.707031 0.292969 l -3.292969 3.292969 v -2.585938 c 0 -0.550781 -0.449219 -1 -1 -1 z m 0 0",
             "m 15 7 c 0.550781 0 1 -0.449219 1 -1 v -6 h -6 c -0.550781 0 -1 0.449219 -1 1 s 0.449219 1 1 1 h 2.585938 l -3.292969 3.292969 c -0.390625 0.390625 -0.390625 1.023437 0 1.414062 c 0.1875 0.1875 0.441406 0.292969 0.707031 0.292969 s 0.519531 -0.105469 0.707031 -0.292969 l 3.292969 -3.292969 v 2.585938 c 0 0.550781 0.449219 1 1 1 z m 0 0"
-        )
-    }
-
-    val SelectionInvertColor: ImageVector by lazy {
-        icon(
-            "SelectionInvertColor",
-            "m 8 1 l -4.5 4.5 h 0.027344 c -0.984375 1.101562 -1.527344 2.523438 -1.527344 4 c 0 3.3125 2.6875 6 6 6 s 6 -2.6875 6 -6 c 0 -1.476562 -0.546875 -2.898438 -1.53125 -4 h 0.03125 z m -0.019531 2.691406 s 0.019531 0.019532 0.019531 0.019532 v 9.921874 c -0.007812 0 -0.011719 0 -0.019531 0 c -2.21875 0 -4.015625 -1.796874 -4.015625 -4.019531 c 0 -1.019531 0.382812 -1.953125 1.007812 -2.664062 c 0.738282 -0.828125 3.007813 -3.257813 3.007813 -3.257813 z m 0 0"
         )
     }
 

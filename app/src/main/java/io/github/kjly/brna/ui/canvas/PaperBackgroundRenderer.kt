@@ -96,7 +96,7 @@ object PaperBackgroundRenderer {
         if (paperStyle.pageSize.isInfinite || !paperStyle.showPageBoundaries) {
             drawInfinitePattern(drawScope, paperStyle, zoomLevel, panOffset)
         } else {
-            // ── Paged mode: 2D grid, vertical column, or fixed single page ──────
+            // ── Paged mode: 2D grid, vertical column, or the fixed pages ──────
             val pageCanvasW = paperStyle.effectivePageWidthPx
             val pageCanvasH = paperStyle.effectivePageHeightPx
             val colSpacing  = pageCanvasW + PAGE_GAP_PX   // canvas px per column
@@ -119,7 +119,10 @@ object PaperBackgroundRenderer {
 
             val (colRange, rowRange) = when (paperStyle.layoutMode) {
                 io.github.kjly.brna.model.LayoutMode.FIXED_SIZE -> {
-                    0..0 to 0..0
+                    // Its pages from the origin down, as many as the document has.
+                    val rStart = firstRow.coerceIn(0, paperStyle.fixedPages - 1)
+                    val rEnd = lastRow.coerceIn(0, paperStyle.fixedPages - 1)
+                    0..0 to (rStart..rEnd)
                 }
                 io.github.kjly.brna.model.LayoutMode.CONTINUOUS_VERTICAL -> {
                     val rStart = firstRow.coerceAtLeast(0)
@@ -193,8 +196,8 @@ object PaperBackgroundRenderer {
     private const val SCRIM_ALPHA_DARK = 0.45f
 
     /**
-     * Dims everything outside the area the layout actually covers — the single page at the
-     * origin in Fixed Size, the column of pages from y=0 down in Continuous Vertical.
+     * Dims everything outside the area the layout actually covers — the pages from the
+     * origin down in Fixed Size, the column of pages from y=0 down in Continuous Vertical.
      * Nothing clamps drawing to those bounds (Rnote keeps such strokes in the file too),
      * so without this the canvas gives no sign that a long vertical note is being written
      * off the edge of a one-page document.
@@ -224,7 +227,7 @@ object PaperBackgroundRenderer {
         // Continuous Vertical grows downwards without end, so it has no bottom edge to
         // dim past — clamping to the screen leaves that strip empty.
         val docBottom = if (paperStyle.layoutMode == io.github.kjly.brna.model.LayoutMode.FIXED_SIZE) {
-            paperStyle.effectivePageHeightPx * zoomLevel + panOffset.y
+            paperStyle.effectivePageHeightPx * paperStyle.fixedPages * zoomLevel + panOffset.y
         } else {
             screenH
         }

@@ -181,4 +181,13 @@ class ExportLayoutTest {
         assertNull(ExportLayout.pageInView(pages, androidx.compose.ui.geometry.Rect(0f, 500f, 100f, 600f)))
         assertNull(ExportLayout.pageInView(emptyList(), androidx.compose.ui.geometry.Rect(0f, 0f, 100f, 100f)))
     }
+
+    @Test
+    fun `a fixed-size document exports each of its pages, one below the other`() {
+        val pages = ExportLayout.pageRects(paper(LayoutMode.FIXED_SIZE).copy(fixedPageCount = 3), emptyList())
+        assertEquals(3, pages.size)
+        assertEquals(0f, pages[0].top, 0f)
+        assertEquals(400f, pages[2].top, 0f)
+        assertEquals(600f, pages[2].bottom, 0f)
+    }
 }

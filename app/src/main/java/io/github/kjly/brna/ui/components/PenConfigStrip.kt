@@ -62,7 +62,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -72,6 +76,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import io.github.kjly.brna.model.BrushStyle
 import io.github.kjly.brna.model.ConstraintRatio
+import io.github.kjly.brna.model.PressureCurve
+import io.github.kjly.brna.model.ShapeLine
+import io.github.kjly.brna.model.ShapeLineCap
+import io.github.kjly.brna.model.ShapeLineStyle
 import io.github.kjly.brna.model.ShapeConstraints
 import io.github.kjly.brna.model.TextAlignment
 import io.github.kjly.brna.model.BrushSizePreset
@@ -128,7 +136,13 @@ fun PenConfigStrip(
     onToggleTextFormat: (TextToggle) -> Unit = {},
     /** The alignment of the text box being typed into, or else of the next one. */
     textAlignment: TextAlignment = TextAlignment.START,
-    onTextAlignmentSelected: (TextAlignment) -> Unit = {}
+    onTextAlignmentSelected: (TextAlignment) -> Unit = {},
+    /** The Solid brush's pressure curve picked, as in Rnote's brush settings. */
+    onPressureCurveSelected: (PressureCurve) -> Unit = {},
+    /** The Shaper's line style or line cap picked, as in Rnote's shaper settings. */
+    onShapeLineChanged: (ShapeLine) -> Unit = {},
+    /** Rnote's "Invert Color Brightness of All Selected Strokes". */
+    onInvertSelectionColors: () -> Unit = {}
 ) {
     Surface(
         modifier = modifier.width(60.dp),
@@ -143,18 +157,19 @@ fun PenConfigStrip(
         ) {
             when (toolConfig.activeTool) {
                 ToolType.BRUSH -> BrushConfigPage(
-                    toolConfig, onBrushStyleSelected, onSizeChanged,
+                    toolConfig, onBrushStyleSelected, onPressureCurveSelected, onSizeChanged,
                     favorites, onApplyFavorite, onStoreFavorite, onClearFavorite
                 )
                 ToolType.ERASER -> EraserConfigPage(toolConfig, onEraserModeSelected, onSizeChanged)
                 ToolType.SELECTOR -> SelectorConfigPage(
                     toolConfig.selectorMode, onSelectorModeSelected,
                     hasActiveSelection, onDeleteSelection, onDuplicateSelection, onSelectAll, onDeselectAll,
-                    canPaste, onCopySelection, onCutSelection, onPaste,
+                    onInvertSelectionColors, canPaste, onCopySelection, onCutSelection, onPaste,
                     toolConfig.lockAspectRatio, onLockAspectRatioToggled
                 )
                 ToolType.SHAPER -> ShaperConfigPage(
-                    toolConfig, onShapeKindSelected, onSnapAnglesToggled, onShapeConstraintsChanged, onSizeChanged
+                    toolConfig, onShapeKindSelected, onSnapAnglesToggled, onShapeConstraintsChanged, onShapeLineChanged,
+                    onSizeChanged
                 )
                 ToolType.TYPEWRITER -> TypewriterConfigPage(
                     toolConfig, onSizeChanged, textFormats, textFormatsEnabled, onToggleTextFormat,
@@ -172,6 +187,7 @@ fun PenConfigStrip(
 private fun BrushConfigPage(
     toolConfig: ToolConfig,
     onBrushStyleSelected: (BrushStyle) -> Unit,
+    onPressureCurveSelected: (PressureCurve) -> Unit,
     onSizeChanged: (Float) -> Unit,
     favorites: List<PenFavorite?>,
     onApplyFavorite: (PenFavorite) -> Unit,
@@ -186,6 +202,10 @@ private fun BrushConfigPage(
     }
     StripIconToggle(GeneratedIcons.BrushStyleTextured, "Textured (coming soon)", toolConfig.brushStyle == BrushStyle.TEXTURED, false) {
         onBrushStyleSelected(BrushStyle.TEXTURED)
+    }
+    // Rnote offers the curve with the Solid style only; its marker keeps a constant width.
+    if (toolConfig.brushStyle == BrushStyle.SOLID) {
+        PressureCurveMenu(toolConfig.pressureCurve, onPressureCurveSelected)
     }
     StripDivider()
     val presets = BrushSizePreset.entries.map { it to it.sizeForTool(ToolType.BRUSH, toolConfig.brushStyle) }
@@ -268,6 +288,81 @@ private fun FavoriteSlots(
     }
 }
 
+/** Rnote's pressure curves, in the order and under the names of its brush settings. */
+private val PRESSURE_CURVES = listOf(
+    PressureCurve.CONST to "Constant",
+    PressureCurve.LINEAR to "Linear",
+    PressureCurve.SQRT to "Square root",
+    PressureCurve.CBRT to "Cubic root",
+    PressureCurve.POW2 to "Quadratic Parabola",
+    PressureCurve.POW3 to "Cubic Parabola"
+)
+
+/**
+ * Each curve drawn as its graph — the width a stroke gets, rising with the pressure of
+ * the pen — so they tell apart at a glance; Rnote lists them by name alone.
+ */
+private val PRESSURE_CURVE_ICONS: Map<PressureCurve, ImageVector> by lazy {
+    PressureCurve.entries.associateWith { curve ->
+        ImageVector.Builder(
+            name = "PressureCurve${curve.name}",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 16f,
+            viewportHeight = 16f
+        ).apply {
+            path(stroke = SolidColor(Color.Black), strokeAlpha = 0.45f, strokeLineWidth = 1f) {
+                moveTo(1.5f, 1.5f)
+                lineTo(1.5f, 14.5f)
+                lineTo(14.5f, 14.5f)
+            }
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.8f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                for (i in 0..24) {
+                    val pressure = i / 24f
+                    val x = 3f + 11f * pressure
+                    val y = 13f - 11f * curve.apply(1f, pressure)
+                    if (i == 0) moveTo(x, y) else lineTo(x, y)
+                }
+            }
+        }.build()
+    }
+}
+
+/** The Solid brush's pressure curve: one button showing its graph, the six in its menu. */
+@Composable
+private fun PressureCurveMenu(curve: PressureCurve, onSelected: (PressureCurve) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val label = PRESSURE_CURVES.first { it.first == curve }.second
+    Box {
+        StripIconToggle(
+            PRESSURE_CURVE_ICONS.getValue(curve), "Pressure Curve: $label",
+            selected = curve != PressureCurve.LINEAR, implemented = true
+        ) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            for ((each, eachLabel) in PRESSURE_CURVES) {
+                DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(
+                            PRESSURE_CURVE_ICONS.getValue(each), null,
+                            tint = if (each == curve) BrnaColors.Accent else LocalContentColor.current
+                        )
+                    },
+                    text = { Text(eachLabel) },
+                    onClick = {
+                        open = false
+                        onSelected(each)
+                    }
+                )
+            }
+        }
+    }
+}
+
 // ── Shaper ───────────────────────────────────────────────────────────────
 
 @Composable
@@ -276,6 +371,7 @@ private fun ShaperConfigPage(
     onShapeKindSelected: (io.github.kjly.brna.model.ShapeKind) -> Unit,
     onSnapAnglesToggled: () -> Unit,
     onConstraintsChanged: (ShapeConstraints) -> Unit,
+    onShapeLineChanged: (ShapeLine) -> Unit,
     onSizeChanged: (Float) -> Unit
 ) {
     val kind = toolConfig.shapeKind
@@ -298,6 +394,7 @@ private fun ShaperConfigPage(
     StripIconToggle(
         Icons.Default.Architecture, "Snap Lines to 15°", toolConfig.snapAngles, true, onClick = onSnapAnglesToggled
     )
+    LineStyleMenu(toolConfig.shapeLine, onShapeLineChanged)
     StripDivider()
     // Rnote's shaper shares the brush's 2 / 6 / 12 width presets.
     val presets = BrushSizePreset.entries.map { it to it.brushSolidPx }
@@ -382,6 +479,69 @@ private fun CurveShapesMenu(
                         open = false
                         onShapeKindSelected(shape)
                     }
+                )
+            }
+        }
+    }
+}
+
+/** Rnote's line styles and line caps, in the order and under the names of its shaper settings. */
+private val LINE_STYLES = listOf(
+    Triple(ShapeLineStyle.SOLID, GeneratedIcons.LineStyleSolid, "Solid"),
+    Triple(ShapeLineStyle.DOTTED, GeneratedIcons.LineStyleDotted, "Dotted"),
+    Triple(ShapeLineStyle.DASHED_NARROW, GeneratedIcons.LineStyleDashedNarrow, "Dashed (narrow)"),
+    Triple(ShapeLineStyle.DASHED_EQUIDISTANT, GeneratedIcons.LineStyleDashedEquidistant, "Dashed (equidistant)"),
+    Triple(ShapeLineStyle.DASHED_WIDE, GeneratedIcons.LineStyleDashedWide, "Dashed (wide)")
+)
+private val LINE_CAPS = listOf(
+    Triple(ShapeLineCap.STRAIGHT, GeneratedIcons.LineCapStraight, "Straight"),
+    Triple(ShapeLineCap.ROUNDED, GeneratedIcons.LineCapRounded, "Round")
+)
+
+/**
+ * Rnote's smooth-style settings for the Shaper, line style and line cap, as one button
+ * showing the style and a menu with both — picking dotted rounds the cap, and a straight
+ * cap makes a dotted line solid again, as in Rnote (see [ShapeLine]).
+ */
+@Composable
+private fun LineStyleMenu(line: ShapeLine, onChanged: (ShapeLine) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val (_, icon, label) = LINE_STYLES.first { it.first == line.style }
+    Box {
+        StripIconToggle(
+            icon, "Line Style: $label", selected = line != ShapeLine(), implemented = true
+        ) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Text(
+                "Line Style",
+                fontSize = 12.sp,
+                color = Color.Gray,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+            for ((style, styleIcon, styleLabel) in LINE_STYLES) {
+                DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(styleIcon, null, tint = if (style == line.style) BrnaColors.Accent else LocalContentColor.current)
+                    },
+                    text = { Text(styleLabel) },
+                    // Stays open, so the cap it may bring along shows below.
+                    onClick = { onChanged(line.withStyle(style)) }
+                )
+            }
+            HorizontalDivider()
+            Text(
+                "Line Cap",
+                fontSize = 12.sp,
+                color = Color.Gray,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+            for ((cap, capIcon, capLabel) in LINE_CAPS) {
+                DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(capIcon, null, tint = if (cap == line.cap) BrnaColors.Accent else LocalContentColor.current)
+                    },
+                    text = { Text(capLabel) },
+                    onClick = { onChanged(line.withCap(cap)) }
                 )
             }
         }
@@ -550,6 +710,7 @@ private fun SelectorConfigPage(
     onDuplicateSelection: () -> Unit,
     onSelectAll: () -> Unit,
     onDeselectAll: () -> Unit,
+    onInvertColors: () -> Unit,
     canPaste: Boolean,
     onCopySelection: () -> Unit,
     onCutSelection: () -> Unit,
@@ -561,6 +722,10 @@ private fun SelectorConfigPage(
     StripDivider()
     StripActionButton(GeneratedIcons.SelectionSelectAll, "Select All Strokes", enabled = true, onClick = onSelectAll)
     StripActionButton(GeneratedIcons.SelectionDeselectAll, "Deselect All Strokes", enabled = hasActiveSelection, onClick = onDeselectAll)
+    StripActionButton(
+        GeneratedIcons.SelectionInvertColor, "Invert Color Brightness of All Selected Strokes",
+        enabled = hasActiveSelection, onClick = onInvertColors
+    )
     StripActionButton(GeneratedIcons.SelectionDuplicate, "Duplicate Selection", enabled = hasActiveSelection, onClick = onDuplicateSelection)
     StripActionButton(GeneratedIcons.SelectionDelete, "Delete Selection", enabled = hasActiveSelection, tint = BrnaColors.DestructiveTint, onClick = onDeleteSelection)
     StripDivider()

@@ -1,5 +1,7 @@
 package io.github.kjly.brna.storage
 
+import io.github.kjly.brna.model.ShapeLineStyle
+import io.github.kjly.brna.model.ShapeLine
 import io.github.kjly.brna.model.NativeBitmapElement
 import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.NativeTextElement
@@ -344,5 +346,44 @@ class NativeEditingTest {
         val style = filled.raw!!.asJsonObject.getAsJsonObject("text_style")
         assertEquals("fill", style.get("alignment").asString)
         assertEquals(400.0, style.get("max_width").asDouble, 1e-6)
+    }
+
+    @Test
+    fun `a shape is written with the line style and cap it is drawn with`() {
+        val dotted = ShapeLine().withStyle(ShapeLineStyle.DOTTED)
+        val rect = NativeEditing.createShape(ShapeKind.RECTANGLE, 0f, 0f, 10f, 10f, black, 2f, line = dotted)!!
+        val style = rect.raw!!.asJsonObject.getAsJsonObject("style").getAsJsonObject("smooth")
+        assertEquals("dotted", style.get("line_style").asString)
+        assertEquals("rounded", style.get("line_cap").asString)
+        // Read back as the renderer will draw it.
+        assertEquals("dotted", rect.lineStyle)
+        assertTrue(rect.roundCap)
+    }
+
+    @Test
+    fun `a shape drawn without picking a line style is solid and straight, as before`() {
+        val line = NativeEditing.createShape(ShapeKind.LINE, 0f, 0f, 10f, 0f, black, 2f)!!
+        val style = line.raw!!.asJsonObject.getAsJsonObject("style").getAsJsonObject("smooth")
+        assertEquals("solid", style.get("line_style").asString)
+        assertEquals("straight", style.get("line_cap").asString)
+    }
+
+    @Test
+    fun `inverting a shape turns its line and fill, in the JSON written back`() {
+        val white = RnoteNativeColor(1f, 1f, 1f, 1f)
+        val rect = NativeEditing.createShape(ShapeKind.RECTANGLE, 0f, 0f, 10f, 10f, black, 2f, white)!!
+        val inverted = NativeEditing.withInvertedColors(rect) as NativeShapeElement
+        assertEquals(1f, inverted.color.r, 2e-3f)
+        assertEquals(0f, inverted.fillColor.g, 2e-3f)
+        val style = inverted.raw!!.asJsonObject.getAsJsonObject("style").getAsJsonObject("smooth")
+        assertEquals(1.0, style.getAsJsonObject("stroke_color").get("b").asDouble, 2e-3)
+        assertEquals(0.0, style.getAsJsonObject("fill_color").get("r").asDouble, 2e-3)
+    }
+
+    @Test
+    fun `inverting a shape with no fill leaves it without one`() {
+        val rect = NativeEditing.createShape(ShapeKind.RECTANGLE, 0f, 0f, 10f, 10f, black, 2f)!!
+        val inverted = NativeEditing.withInvertedColors(rect) as NativeShapeElement
+        assertEquals(0f, inverted.fillColor.a, 0f)
     }
 }

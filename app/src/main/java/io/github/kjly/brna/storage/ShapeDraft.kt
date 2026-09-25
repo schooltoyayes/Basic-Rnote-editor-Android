@@ -5,6 +5,7 @@ import io.github.kjly.brna.model.NativeShapeElement
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.ShapeConstraints
 import io.github.kjly.brna.model.ShapeKind
+import io.github.kjly.brna.model.ShapeLine
 
 /**
  * Desktop Rnote's shape builders that take more than one stroke of the pen
@@ -106,21 +107,22 @@ data class ShapeDraft(
             points: List<Offset>,
             color: RnoteNativeColor,
             strokeWidth: Float,
-            fill: RnoteNativeColor
+            fill: RnoteNativeColor,
+            line: ShapeLine = ShapeLine()
         ): NativeShapeElement? {
             if (points.isEmpty()) return null
             val spread = maxOf(points.maxOf { it.x } - points.minOf { it.x }, points.maxOf { it.y } - points.minOf { it.y })
             if (spread < 1f) return null
             val pairs = points.map { it.x to it.y }
             return when (kind) {
-                ShapeKind.POLYLINE -> NativeEditing.createPolyShape(false, pairs, color, strokeWidth, fill)
-                ShapeKind.POLYGON -> NativeEditing.createPolyShape(true, pairs, color, strokeWidth, fill)
-                ShapeKind.QUADBEZ, ShapeKind.CUBBEZ -> NativeEditing.createCurve(pairs, color, strokeWidth, fill)
+                ShapeKind.POLYLINE -> NativeEditing.createPolyShape(false, pairs, color, strokeWidth, fill, line)
+                ShapeKind.POLYGON -> NativeEditing.createPolyShape(true, pairs, color, strokeWidth, fill, line)
+                ShapeKind.QUADBEZ, ShapeKind.CUBBEZ -> NativeEditing.createCurve(pairs, color, strokeWidth, fill, line)
                 ShapeKind.FOCI_ELLIPSE -> if (points.size == 3) {
                     // Foci on top of each other make a circle; Rnote allows that, and so does this.
                     NativeEditing.createFociEllipse(
                         points[0].x, points[0].y, points[1].x, points[1].y, points[2].x, points[2].y,
-                        color, strokeWidth, fill
+                        color, strokeWidth, fill, line
                     )
                 } else null
                 else -> null

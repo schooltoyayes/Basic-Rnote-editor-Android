@@ -45,7 +45,9 @@ data class NativeBrushStroke(
     override val minX: Float, override val minY: Float,
     override val maxX: Float, override val maxY: Float,
     /** The style's `pressure_curve`; see [PressureCurve] for why it can't be dropped. */
-    val pressureCurve: PressureCurve = PressureCurve.DEFAULT
+    val pressureCurve: PressureCurve = PressureCurve.DEFAULT,
+    /** The seed and dots of a stroke in Rnote's `textured` style; null for `smooth`. */
+    val textured: TexturedStyle? = null
 ) : NativeCanvasElement()
 
 /** Keyboard-typed text element with an affine transform. */

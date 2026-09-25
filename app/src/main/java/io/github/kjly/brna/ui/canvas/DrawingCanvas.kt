@@ -247,6 +247,9 @@ fun DrawingCanvas(
     }
 
     val currentPoints = remember { mutableStateListOf<InkPoint>() }
+    // The Textured brush's seed for the stroke being drawn: a new one for every stroke,
+    // as Rnote's `new_style_seeds` gives, so its dots stay put while it is drawn.
+    var texturedSeed by remember { mutableStateOf(0L) }
     /** Memoised stroke bounds and outlines, keyed by Stroke identity. See the draw block below. */
     val outlineCache = remember { IdentityHashMap<Stroke, CachedOutline>() }
     val lassoPoints = remember { mutableStateListOf<Offset>() }
@@ -597,6 +600,7 @@ fun DrawingCanvas(
                         lassoPoints.clear()
                         currentPoints.add(InkPoint(x, y, rawPressure))
                         lassoPoints.add(Offset(x, y))
+                        texturedSeed = kotlin.random.Random.nextLong()
 
                         if (activeTool == ToolType.ERASER) {
                             eraserCursor = Offset(x, y)
@@ -883,7 +887,8 @@ fun DrawingCanvas(
                                         strokeWidth = toolConfig.currentActiveSize,
                                         toolType = activeTool,
                                         isHighlighter = isMarker,
-                                        pressureCurve = toolConfig.strokePressureCurve
+                                        pressureCurve = toolConfig.strokePressureCurve,
+                                        textured = toolConfig.strokeTextured(texturedSeed)
                                     )
                                 )
                             }
@@ -991,7 +996,8 @@ fun DrawingCanvas(
                     val shift = if (space != null && space.offset != 0f && stroke.id in space.strokeIds) space.offset else 0f
                     if (!visible.overlaps(cached.bounds.translate(0f, shift))) return@forEach
                     val path = cached.path
-                        ?: composeStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve).also { cached.path = it }
+                        ?: composeStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve, stroke.textured)
+                            .also { cached.path = it }
                     if (shift != 0f) {
                         translate(0f, shift) { drawPath(path = path, color = stroke.color) }
                     } else {
@@ -1052,7 +1058,8 @@ fun DrawingCanvas(
                     val path = composeStrokePath(
                         if (predictedPoints.isEmpty()) currentPoints else currentPoints + predictedPoints,
                         toolConfig.currentActiveSize,
-                        toolConfig.strokePressureCurve
+                        toolConfig.strokePressureCurve,
+                        toolConfig.strokeTextured(texturedSeed)
                     )
                     drawPath(path = path, color = toolConfig.currentActiveColor)
                 }

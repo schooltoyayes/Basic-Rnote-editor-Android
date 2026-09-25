@@ -185,7 +185,8 @@ object FileManager {
                         color  = color,
                         strokeWidth = el.strokeWidth,
                         isHighlighter = el.isHighlighter,
-                        pressureCurve = el.pressureCurve
+                        pressureCurve = el.pressureCurve,
+                        textured = el.textured
                     )
                 }
                 // Non-stroke elements: preserved in nativeElements, not yet editable

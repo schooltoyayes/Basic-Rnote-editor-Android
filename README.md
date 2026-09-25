@@ -25,10 +25,14 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
 
 **Working**
 
-- **Brush** with stylus pressure sensitivity, in Solid and Marker (translucent)
-  styles, and Rnote's six pressure curves for Solid — constant, linear, square and
-  cubic root, quadratic and cubic. Three size presets per tool plus a numeric
-  adjuster, and four favorite slots that keep a style, color and width together.
+- **Brush** with stylus pressure sensitivity, in Rnote's three styles: Solid,
+  Marker (translucent) and Textured — dots strewn along the stroke, with Rnote's
+  density and its four distributions. The dots come from the stroke's seed through
+  a port of the random number generator and samplers Rnote uses (Pcg64, rand,
+  rand_distr), so a textured stroke looks the same on both sides, dot for dot.
+  Rnote's six pressure curves for Solid — constant, linear, square and cubic root,
+  quadratic and cubic. Three size presets per tool plus a numeric adjuster, and
+  four favorite slots that keep a style, color and width together.
 - **Shaper**: line, arrow, rectangle, ellipse, and — built from lines, as Rnote
   builds them — 2D, 3D and single-quadrant coordinate systems and a grid. Rnote's
   shapes of several strokes too: polyline and polygon (a corner per stroke; put the
@@ -110,9 +114,6 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   They follow the keyboard's layout, so Ctrl+Z is the Z key on a German
   keyboard too.
 
-**UI slots with no implementation behind them** — visible but disabled: the
-Textured brush style.
-
 **Not built**: layers (the stroke list is flat), the Tools pen's other styles
 (Offset Camera, Zoom — pan and pinch do that here).
 
@@ -179,9 +180,7 @@ Especially useful:
   with an S-Pen. Stylus behaviour varies a lot between vendors, and pressure,
   hover, and barrel-button handling are all places where "works here" proves
   very little. Reports from other devices are useful even when everything works.
-- **The disabled tools.** The Textured brush style, the non-polygon selector
-  modes and a separate fill color have UI slots wired up and waiting for an
-  implementation. Layers are a bigger lift — the document model is flat today.
+- **Layers.** The document model is flat today, which makes them a bigger lift.
 - **Cross-compiling Rnote's engine for Android.** The most ambitious item on the
   list, described under [Where this is heading](#where-this-is-heading). If you
   know your way around `cargo-ndk` and JNI, I'd love the help — or just the

@@ -79,7 +79,7 @@ class AndroidExportCanvas(private val canvas: android.graphics.Canvas) : ExportC
         // toArgb() carries the alpha; a marker's transparency lives in its colour.
         fillPaint.color = stroke.color.toArgb()
         canvas.drawPath(
-            androidStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve),
+            androidStrokePath(stroke.points, stroke.strokeWidth, stroke.pressureCurve, stroke.textured),
             fillPaint
         )
     }
@@ -157,7 +157,7 @@ class SvgExportCanvas(private val sb: StringBuilder) : ExportCanvas {
         // A filled outline rather than a stroked centreline: stroke.strokeWidth is a
         // nominal maximum that the pressure curve scales at every point, so no single
         // stroke-width attribute could be correct. See StrokeOutline.
-        val pathData = svgStrokePathData(stroke.points, stroke.strokeWidth, stroke.pressureCurve)
+        val pathData = svgStrokePathData(stroke.points, stroke.strokeWidth, stroke.pressureCurve, stroke.textured)
         if (pathData.isEmpty()) return
         sb.append("  <path d=\"$pathData\" fill=\"${hex(stroke.color)}\" fill-rule=\"nonzero\"")
             .append(opacityAttr(stroke.color, "fill-opacity"))

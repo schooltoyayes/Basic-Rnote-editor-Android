@@ -21,6 +21,7 @@ import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.RnoteNativeDocument
 import io.github.kjly.brna.model.NoteDocument
 import io.github.kjly.brna.model.PressureCurve
+import io.github.kjly.brna.model.TexturedStyle
 import io.github.kjly.brna.model.PaperPattern
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
@@ -93,7 +94,7 @@ object RnoteNativeSerializer {
             val maxY = pts.maxOfOrNull { it.y } ?: 0f
             NativeBrushStroke(
                 pts, stroke.strokeWidth, color, stroke.isHighlighter,
-                minX, minY, maxX, maxY, stroke.pressureCurve
+                minX, minY, maxX, maxY, stroke.pressureCurve, stroke.textured
             )
         }
 
@@ -315,8 +316,30 @@ object RnoteNativeSerializer {
         append(""""path":""")
         appendPenPath(el.points)
         append(""","style":""")
-        appendSmoothStyle(el.color, el.strokeWidth, el.pressureCurve)
+        val textured = el.textured
+        if (textured != null) {
+            appendTexturedStyle(el.color, el.strokeWidth, el.pressureCurve, textured)
+        } else {
+            appendSmoothStyle(el.color, el.strokeWidth, el.pressureCurve)
+        }
         append("""}}""")
+    }
+
+    /** Rnote's `TexturedOptions`, with the names and in the order it writes them. */
+    private fun StringBuilder.appendTexturedStyle(
+        color: RnoteNativeColor,
+        strokeWidth: Float,
+        pressureCurve: PressureCurve,
+        textured: TexturedStyle
+    ) {
+        append("""{"textured":{""")
+        append(""""seed":${TexturedStyle.seedJson(textured.seed)},""")
+        append(""""stroke_width":$strokeWidth,""")
+        append(""""stroke_color":${color.toJson()},""")
+        append(""""density":${textured.density},""")
+        append(""""distribution":"${textured.distribution.apiName}",""")
+        append(""""pressure_curve":"${pressureCurve.apiName}"""")
+        append("}}")
     }
 
     /** Rnote's `PenPath`: a required `start` element plus a list of `segments` (no legacy alias). */

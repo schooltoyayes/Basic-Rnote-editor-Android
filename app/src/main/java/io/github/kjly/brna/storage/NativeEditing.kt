@@ -7,6 +7,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
 import io.github.kjly.brna.model.Affine
 import io.github.kjly.brna.model.EllipseShape
+import io.github.kjly.brna.model.InvertedBrightness
 import io.github.kjly.brna.model.LineShape
 import io.github.kjly.brna.model.NativeBitmapElement
 import io.github.kjly.brna.model.NativeBrushStroke
@@ -19,6 +20,7 @@ import io.github.kjly.brna.model.PathShape
 import io.github.kjly.brna.model.RectShape
 import io.github.kjly.brna.model.RnoteNativeColor
 import io.github.kjly.brna.model.ShapeKind
+import io.github.kjly.brna.model.ShapeLine
 import io.github.kjly.brna.model.TextFormatting
 import io.github.kjly.brna.model.TextToggle
 import java.util.Locale
@@ -468,7 +470,8 @@ object NativeEditing {
         x1: Float, y1: Float, x2: Float, y2: Float,
         color: RnoteNativeColor,
         strokeWidth: Float,
-        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT
+        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT,
+        line: ShapeLine = ShapeLine()
     ): NativeShapeElement? {
         if (abs(x2 - x1) < 1f && abs(y2 - y1) < 1f) return null
         val cx = (x1 + x2) / 2f; val cy = (y1 + y2) / 2f
@@ -485,7 +488,7 @@ object NativeEditing {
             // Several strokes of the pen each; see ShapeDraft, which ends in the ones below.
             ShapeKind.POLYLINE, ShapeKind.POLYGON, ShapeKind.QUADBEZ, ShapeKind.CUBBEZ, ShapeKind.FOCI_ELLIPSE -> return null
         }
-        return shapeElement(shape, color, strokeWidth, fillColor)
+        return shapeElement(shape, color, strokeWidth, fillColor, line)
     }
 
     /**
@@ -498,13 +501,14 @@ object NativeEditing {
         points: List<Pair<Float, Float>>,
         color: RnoteNativeColor,
         strokeWidth: Float,
-        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT
+        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT,
+        line: ShapeLine = ShapeLine()
     ): NativeShapeElement? {
         if (points.size < (if (closed) 3 else 2)) return null
         val (sx, sy) = points.first()
         val path = points.drop(1).joinToString(",") { (x, y) -> pointJson(x, y) }
         val name = if (closed) "polygon" else "polyline"
-        return shapeElement("""{"$name":{"start":${pointJson(sx, sy)},"path":[$path]}}""", color, strokeWidth, fillColor)
+        return shapeElement("""{"$name":{"start":${pointJson(sx, sy)},"path":[$path]}}""", color, strokeWidth, fillColor, line)
     }
 
     /**
@@ -515,7 +519,8 @@ object NativeEditing {
         points: List<Pair<Float, Float>>,
         color: RnoteNativeColor,
         strokeWidth: Float,
-        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT
+        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT,
+        line: ShapeLine = ShapeLine()
     ): NativeShapeElement? {
         val p = points.map { (x, y) -> pointJson(x, y) }
         val shape = when (p.size) {
@@ -523,7 +528,7 @@ object NativeEditing {
             4 -> """{"cubbez":{"start":${p[0]},"cp1":${p[1]},"cp2":${p[2]},"end":${p[3]}}}"""
             else -> return null
         }
-        return shapeElement(shape, color, strokeWidth, fillColor)
+        return shapeElement(shape, color, strokeWidth, fillColor, line)
     }
 
     /**
@@ -535,7 +540,8 @@ object NativeEditing {
         f1x: Float, f1y: Float, f2x: Float, f2y: Float, px: Float, py: Float,
         color: RnoteNativeColor,
         strokeWidth: Float,
-        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT
+        fillColor: RnoteNativeColor = RnoteNativeColor.TRANSPARENT,
+        line: ShapeLine = ShapeLine()
     ): NativeShapeElement? {
         val sum = hypot(px - f1x, py - f1y) + hypot(px - f2x, py - f2y)
         val d = hypot(f1x - f2x, f1y - f2y) * 0.5f
@@ -547,7 +553,7 @@ object NativeEditing {
         val angle = atan2(f2y - f1y, f2x - f1x)
         val shape = """{"ellipse":{"radii":${pointJson(semimajor, semiminor)},""" +
             """"transform":${affineText(cos(angle), sin(angle), (f1x + f2x) / 2f, (f1y + f2y) / 2f)}}}"""
-        return shapeElement(shape, color, strokeWidth, fillColor)
+        return shapeElement(shape, color, strokeWidth, fillColor, line)
     }
 
     private fun num(v: Float) = String.format(Locale.ROOT, "%.3f", v)
@@ -558,20 +564,21 @@ object NativeEditing {
         """{"affine":[${num(c)},${num(s)},0.0,${num(0f - s)},${num(c)},0.0,${num(tx)},${num(ty)},1.0]}"""
 
     /**
-     * [shape] as a shape stroke with the style Rnote's shaper gives one, built as the JSON
-     * desktop Rnote writes and read back through the normal parser, so a shape drawn here
-     * is exactly what the file will hold.
+     * [shape] as a shape stroke with the style Rnote's shaper gives one — its line style
+     * and cap [line] — built as the JSON desktop Rnote writes and read back through the
+     * normal parser, so a shape drawn here is exactly what the file will hold.
      */
     private fun shapeElement(
         shape: String,
         color: RnoteNativeColor,
         strokeWidth: Float,
-        fillColor: RnoteNativeColor
+        fillColor: RnoteNativeColor,
+        line: ShapeLine
     ): NativeShapeElement? {
         fun color(c: RnoteNativeColor) = """{"r":${num(c.r)},"g":${num(c.g)},"b":${num(c.b)},"a":${num(c.a)}}"""
         val style = """{"smooth":{"stroke_width":${num(strokeWidth)},"stroke_color":${color(color)},""" +
             """"fill_color":${color(fillColor)},"pressure_curve":"const",""" +
-            """"line_style":"solid","line_cap":"straight"}}"""
+            """"line_style":"${line.style.apiName}","line_cap":"${line.cap.apiName}"}}"""
         return RnoteNativeParser.parseElementJson("""{"shapestroke":{"shape":$shape,"style":$style}}""")
             as? NativeShapeElement
     }
@@ -615,6 +622,26 @@ object NativeEditing {
         val options = style.entrySet().firstOrNull { it.value.isJsonObject }?.value?.asJsonObject ?: return null
         options.add(key, colorJson(color))
         return RnoteNativeParser.parseElementTree(JsonObject().apply { add("shapestroke", tree) }) as? NativeShapeElement
+    }
+
+    /**
+     * [el] with every colour it has put through [InvertedBrightness]: Rnote's
+     * `set_to_inverted_brightness_color` for the selector's "Invert Color Brightness" —
+     * a shape's line and fill, a text box's text. Pictures and PDF pages keep theirs; a
+     * shape with no fill keeps none.
+     */
+    fun withInvertedColors(el: NativeCanvasElement): NativeCanvasElement = when (el) {
+        is NativeShapeElement -> {
+            val lined = withStrokeColor(el, inverted(el.color))
+            if (el.fillColor.a > 0f && lined is NativeShapeElement) withFillColor(lined, inverted(el.fillColor)) else lined
+        }
+        is NativeTextElement -> withStrokeColor(el, inverted(el.color))
+        else -> el
+    }
+
+    private fun inverted(c: RnoteNativeColor): RnoteNativeColor {
+        val rgb = InvertedBrightness.of(c.r, c.g, c.b)
+        return RnoteNativeColor(rgb[0], rgb[1], rgb[2], c.a)
     }
 
     // ── Images ────────────────────────────────────────────────────────────────

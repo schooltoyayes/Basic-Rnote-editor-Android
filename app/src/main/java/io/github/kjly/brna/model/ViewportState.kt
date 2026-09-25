@@ -1,6 +1,7 @@
 package io.github.kjly.brna.model
 
 import androidx.compose.ui.geometry.Offset
+import kotlin.math.floor
 
 data class ViewportState(
     val panOffset: Offset = Offset.Zero,
@@ -83,6 +84,23 @@ data class ViewportState(
     }
 
     /**
+     * Desktop Rnote's Zoom to Page Width (`zoom-fit-width` in rnote-ui's actions.rs): the
+     * zoom at which a page of [pageWidthPx] and Rnote's [FIT_WIDTH_OVERSHOOT] on either
+     * side fill the view's width, about its middle. Rnote's camera then keeps a page
+     * layout's column in view, which centres it; here the page under the middle of the
+     * view is centred across it, so it does the same on every layout. Unchanged when
+     * there is no page, or no view yet, to fit.
+     */
+    fun fittedToWidth(viewportWidthPx: Float, viewportHeightPx: Float, pageWidthPx: Float): ViewportState {
+        if (pageWidthPx <= 0f || viewportWidthPx <= 0f) return this
+        val middle = Offset(viewportWidthPx / 2f, viewportHeightPx / 2f)
+        val zoomed = zoomedAround(middle, viewportWidthPx / (pageWidthPx + 2f * FIT_WIDTH_OVERSHOOT) / displayScale)
+        val pageLeft = floor(zoomed.screenToCanvas(middle).x / pageWidthPx) * pageWidthPx
+        val x = middle.x - (pageLeft + pageWidthPx / 2f) * zoomed.effectiveScale
+        return zoomed.copy(panOffset = Offset(x, zoomed.panOffset.y))
+    }
+
+    /**
      * Clamps and returns a new ViewportState with updated zoom and pan.
      */
     fun update(newPan: Offset, newZoom: Float): ViewportState {
@@ -100,6 +118,9 @@ data class ViewportState(
 
         /** Rnote's `RnCanvas::ZOOM_SCROLL_STEP`: one press of a zoom key is 10 %, in or out. */
         const val ZOOM_STEP = 0.1f
+
+        /** Rnote's `Camera::OVERSHOOT_HORIZONTAL`, in document units: the room beside a page fitted to the width. */
+        const val FIT_WIDTH_OVERSHOOT = 96f
 
         /**
          * Gap left between the origin and the corner of the screen by

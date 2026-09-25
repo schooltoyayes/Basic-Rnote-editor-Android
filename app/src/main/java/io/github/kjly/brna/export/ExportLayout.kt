@@ -108,7 +108,8 @@ object ExportLayout {
         val cols: List<Int>
         val rows: List<Int>
         when (paperStyle.layoutMode) {
-            LayoutMode.FIXED_SIZE -> { cols = listOf(0); rows = listOf(0) }
+            // Its pages, however many it has and whatever lies outside them, as Rnote exports it.
+            LayoutMode.FIXED_SIZE -> { cols = listOf(0); rows = (0 until paperStyle.fixedPages).toList() }
             LayoutMode.CONTINUOUS_VERTICAL -> { cols = listOf(0); rows = (firstRow..lastRow).toList() }
             // Semi Infinite keeps the origin-inclusive span too: ink drawn left of or above
             // the origin is still in the file, so its pages are still exported.

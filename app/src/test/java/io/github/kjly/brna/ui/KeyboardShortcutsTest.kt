@@ -107,4 +107,18 @@ class KeyboardShortcutsTest {
         assertFalse(Shortcut.SAVE.repeats)
         assertFalse(Shortcut.PRINT.repeats)
     }
+
+    @Test
+    fun `Ctrl+Shift+A and Ctrl+Shift+R add and remove a page, as in Rnote`() {
+        assertEquals(Shortcut.ADD_PAGE, ctrl('a', shift = true))
+        assertEquals(Shortcut.REMOVE_PAGE, ctrl('r', shift = true))
+        // Without Shift they stay what they were.
+        assertEquals(Shortcut.SELECT_ALL, ctrl('a'))
+        assertNull(ctrl('r'))
+    }
+
+    @Test
+    fun `F11 switches fullscreen, with no Ctrl`() {
+        assertEquals(Shortcut.FULLSCREEN, KeyboardShortcuts.of(null, KeyEvent.KEYCODE_F11, ctrl = false, shift = false))
+    }
 }

@@ -5,6 +5,7 @@ import android.view.KeyEvent
 /** What a keyboard shortcut does; see [KeyboardShortcuts]. */
 enum class Shortcut {
     OPEN, SAVE, SAVE_AS, NEW, PRINT, IMPORT, CLEAR, PAGE_OVERVIEW, SNAP_POSITIONS,
+    ADD_PAGE, REMOVE_PAGE, FULLSCREEN,
     CLOSE_TAB, NEXT_TAB, PREVIOUS_TAB,
     UNDO, REDO,
     COPY, CUT, PASTE, SELECT_ALL, DUPLICATE, DELETE_SELECTION, DESELECT,
@@ -17,11 +18,11 @@ enum class Shortcut {
 
 /**
  * Desktop Rnote's keyboard shortcuts, for a keyboard on the tablet: the accelerators in
- * rnote-ui's `appwindow/actions.rs`, the selector's own keys (Delete, Escape, Ctrl+A,
- * Ctrl+D) and its tab bar's Ctrl+Tab. Ctrl+Y redoes as well, as it does in most Windows
- * programs, and Ctrl+N opens a new tab as Ctrl+T does — a new window, which is Ctrl+N
- * in Rnote, is a new tab here. A text box being typed into takes its own keys first —
- * Ctrl+C there copies text, not the selection.
+ * rnote-ui's `appwindow/actions.rs` (F11 among them, for Fullscreen), the selector's own
+ * keys (Delete, Escape, Ctrl+A, Ctrl+D) and its tab bar's Ctrl+Tab. Ctrl+Y redoes as
+ * well, as it does in most Windows programs, and Ctrl+N opens a new tab as Ctrl+T does —
+ * a new window, which is Ctrl+N in Rnote, is a new tab here. A text box being typed into
+ * takes its own keys first — Ctrl+C there copies text, not the selection.
  */
 object KeyboardShortcuts {
 
@@ -38,6 +39,7 @@ object KeyboardShortcuts {
             return when (keyCode) {
                 KeyEvent.KEYCODE_DEL, KeyEvent.KEYCODE_FORWARD_DEL -> Shortcut.DELETE_SELECTION
                 KeyEvent.KEYCODE_ESCAPE -> Shortcut.DESELECT
+                KeyEvent.KEYCODE_F11 -> Shortcut.FULLSCREEN
                 else -> null
             }
         }
@@ -62,6 +64,8 @@ object KeyboardShortcuts {
             'z' -> Shortcut.REDO
             'i' -> Shortcut.IMPORT
             'p' -> Shortcut.SNAP_POSITIONS
+            'a' -> Shortcut.ADD_PAGE
+            'r' -> Shortcut.REMOVE_PAGE
             else -> null
         }
         return when (c) {

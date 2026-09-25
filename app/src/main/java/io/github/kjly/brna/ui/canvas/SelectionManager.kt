@@ -3,6 +3,7 @@ package io.github.kjly.brna.ui.canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import io.github.kjly.brna.model.Affine
+import io.github.kjly.brna.model.InvertedBrightness
 import io.github.kjly.brna.model.NativeBitmapElement
 import io.github.kjly.brna.model.NativeCanvasElement
 import io.github.kjly.brna.model.NativeVectorImageElement
@@ -113,6 +114,12 @@ object SelectionManager {
     /** [strokes] in [color]; a Marker's stroke keeps its translucency, which is what makes it a marker. */
     fun recolored(strokes: List<Stroke>, color: androidx.compose.ui.graphics.Color): List<Stroke> =
         strokes.map { s -> s.copy(color = if (s.isHighlighter) color.copy(alpha = s.color.alpha) else color) }
+
+    /** [strokes] in the colours Rnote's "Invert Color Brightness" gives them; see [InvertedBrightness]. */
+    fun inverted(strokes: List<Stroke>): List<Stroke> = strokes.map { s ->
+        val rgb = InvertedBrightness.of(s.color.red, s.color.green, s.color.blue)
+        s.copy(color = androidx.compose.ui.graphics.Color(rgb[0], rgb[1], rgb[2], s.color.alpha))
+    }
 
     private fun distanceToSegment(p: Offset, x1: Float, y1: Float, x2: Float, y2: Float): Float {
         val dx = x2 - x1; val dy = y2 - y1

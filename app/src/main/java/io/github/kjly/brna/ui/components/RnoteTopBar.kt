@@ -2,6 +2,7 @@ package io.github.kjly.brna.ui.components
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Article
@@ -120,6 +121,10 @@ fun RnoteTopBar(
     onToggleRespectBorders: () -> Unit = {},
     penSounds: Boolean = false,
     onTogglePenSounds: () -> Unit = {},
+    /** "Tablet Layout", offered on a screen narrower than 600 dp, where the pen strip is otherwise left out. */
+    showTabletLayout: Boolean = false,
+    tabletLayout: Boolean = false,
+    onToggleTabletLayout: () -> Unit = {},
     blockPinchZoom: Boolean = false,
     onToggleBlockPinchZoom: () -> Unit = {},
     /** Rnote's canvas menu zoom row: out, in, to the page's width and to its real size. */
@@ -244,7 +249,8 @@ fun RnoteTopBar(
 
                 DropdownMenu(
                     expanded = showShareMenu,
-                    onDismissRequest = { showShareMenu = false }
+                    onDismissRequest = { showShareMenu = false },
+                    modifier = Modifier.heightIn(max = menuMaxHeight())
                 ) {
                     val here = if (hasPages) "This page" else "What's on screen"
                     DropdownMenuItem(
@@ -277,7 +283,8 @@ fun RnoteTopBar(
 
                 DropdownMenu(
                     expanded = showCanvasMenu,
-                    onDismissRequest = { showCanvasMenu = false }
+                    onDismissRequest = { showCanvasMenu = false },
+                    modifier = Modifier.heightIn(max = menuMaxHeight())
                 ) {
                     // Buttons that stay open, as Rnote's do: zoom until it is right.
                     Row(
@@ -347,6 +354,13 @@ fun RnoteTopBar(
                         text = { Text("Block Pinch to Zoom") },
                         onClick = onToggleBlockPinchZoom
                     )
+                    if (showTabletLayout) {
+                        DropdownMenuItem(
+                            leadingIcon = { CheckMark(tabletLayout) },
+                            text = { Text("Tablet Layout") },
+                            onClick = onToggleTabletLayout
+                        )
+                    }
                 }
             }
 
@@ -356,7 +370,8 @@ fun RnoteTopBar(
 
                 DropdownMenu(
                     expanded = showOverflowMenu,
-                    onDismissRequest = { showOverflowMenu = false }
+                    onDismissRequest = { showOverflowMenu = false },
+                    modifier = Modifier.heightIn(max = menuMaxHeight())
                 ) {
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.NoteAdd, null) },

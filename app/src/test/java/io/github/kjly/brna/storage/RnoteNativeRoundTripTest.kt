@@ -256,6 +256,28 @@ class RnoteNativeRoundTripTest {
     }
 
     @Test
+    fun `the file names every pattern the way Rnote's PatternStyle does`() {
+        // The round trip above passes for any spelling the parser knows; desktop Rnote
+        // refused a file with "ruled" or "blank" ("Opening file failed").
+        val rnoteNames = mapOf(
+            NativePatternType.GRID to "grid",
+            NativePatternType.RULED to "lines",
+            NativePatternType.DOTS to "dots",
+            NativePatternType.ISO_GRID to "isometric_grid",
+            NativePatternType.ISO_DOTS to "isometric_dots",
+            NativePatternType.BLANK to "none"
+        )
+        assertEquals(NativePatternType.entries.toSet(), rnoteNames.keys)
+        for ((pattern, name) in rnoteNames) {
+            val bytes = ByteArrayOutputStream().also {
+                RnoteNativeSerializer.serialize(it, RnoteNativeDocument(background = NativeBackgroundConfig(pattern = pattern)))
+            }
+            val json = java.util.zip.GZIPInputStream(ByteArrayInputStream(bytes.toByteArray())).readBytes().toString(Charsets.UTF_8)
+            assertTrue("$pattern is written as \"$name\"", json.contains("\"pattern\":\"$name\""))
+        }
+    }
+
+    @Test
     fun `the layout mode survives a round trip`() {
         // Read on open since day one, never written on save -- so an infinite document
         // came back as a single fixed page the next time it was opened.

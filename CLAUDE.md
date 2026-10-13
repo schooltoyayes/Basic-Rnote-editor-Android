@@ -61,11 +61,10 @@ Stand: 13.10.2026
 
 ## Erledigt (zuletzt)
 
-- "Öffnen mit" nutzt die laufende Instanz (`singleTask` + `onNewIntent`, Branch
-  `task1-onnewintent`, noch nicht gepusht/gebaut). Folge: "Zurück" führt nicht mehr in
-  die aufrufende App.
+- #32 "Öffnen mit" nutzt die laufende Instanz (`singleTask` + `onNewIntent`). Folge:
+  "Zurück" führt nicht mehr in die aufrufende App. Am Tablet noch nicht ausprobiert.
 - #28 Top-Bar-Menüs auf sichtbare Höhe begrenzt und scrollbar.
-- Menüs im Stiftstreifen, Dateibrowser und in den Seiteneinstellungen ebenso begrenzt
+- #32 Menüs im Stiftstreifen, Dateibrowser und in den Seiteneinstellungen ebenso begrenzt
   (`menuMaxHeight()`, wie #28).
 - #29 Tablet Layout für kleine Bildschirme (< 600 dp breit oder < 480 dp hoch).
 - #30 Papiermuster blendet beim Herauszoomen zwischen 10 und 6 px aus (vorher Moiré);

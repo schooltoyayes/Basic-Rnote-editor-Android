@@ -392,7 +392,7 @@ fun DrawingCanvas(
                     // Cancel any in-progress single-finger stroke
                     if (isDrawing) {
                         // The laser keeps what it drew so far and fades it with the rest.
-                        if (activeTool == ToolType.TOOLS && toolConfig.toolsMode == ToolsMode.LASER && lassoPoints.isNotEmpty()) {
+                        if ((gestureTool ?: toolConfig.activeTool) == ToolType.TOOLS && toolConfig.toolsMode == ToolsMode.LASER && lassoPoints.isNotEmpty()) {
                             laserTrails.add(lassoPoints.toList())
                         }
                         isDrawing = false

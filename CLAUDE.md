@@ -58,12 +58,14 @@ Stand: 13.10.2026
 
 - Menü-Höhe begrenzen auch im Stiftstreifen, Dateibrowser und in den Seiteneinstellungen
   (Top-Bar-Menüs sind seit #28 erledigt).
-- Kein `singleTask`/`onNewIntent` für "Öffnen mit".
 - Alte URIs bleiben nach Umbenennen oder Löschen eines Ordners stehen.
 - `CustomFonts.restore` läuft auf dem Hauptthread.
 
 ## Erledigt (zuletzt)
 
+- "Öffnen mit" nutzt die laufende Instanz (`singleTask` + `onNewIntent`, Branch
+  `task1-onnewintent`, noch nicht gepusht/gebaut). Folge: "Zurück" führt nicht mehr in
+  die aufrufende App.
 - #28 Top-Bar-Menüs auf sichtbare Höhe begrenzt und scrollbar.
 - #29 Tablet Layout für kleine Bildschirme (< 600 dp breit oder < 480 dp hoch).
 - #30 Papiermuster blendet beim Herauszoomen zwischen 10 und 6 px aus (vorher Moiré);

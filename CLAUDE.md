@@ -50,8 +50,9 @@ Stand: 15.10.2026
   gesetzt. Für KJ-Lys Repo immer `--repo KJ-Ly/Basic-Rnote-editor-Android` angeben.
 - Git hat keine globale Identität. Commits von Claude mit
   `git -c user.name=Claude -c user.email=noreply@anthropic.com commit …`.
-- Remote-Branches löschen per Git schlägt fehl (403, Organisationsrichtlinie) – das machen
-  Toni & Yannick auf GitHub. Darum keine unnötigen Hilfs-Branches anlegen.
+- Remote-Branches löschen: in der Cloud-Umgebung (Claude Code im Browser) schlägt es fehl
+  (403 vom Git-Proxy), dann machen es Toni & Yannick auf GitHub. Lokal geht
+  `git push origin --delete <branch>` nach Bestätigung. Trotzdem keine unnötigen Hilfs-Branches.
 
 ## Offen
 

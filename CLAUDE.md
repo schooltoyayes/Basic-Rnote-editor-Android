@@ -73,7 +73,7 @@ Stand: 15.10.2026
   "Zurück" führt nicht mehr in die aufrufende App. Am Tablet ausprobiert, geht.
 - #28 Top-Bar-Menüs auf sichtbare Höhe begrenzt und scrollbar.
 - #32 Menüs im Stiftstreifen, Dateibrowser und in den Seiteneinstellungen ebenso begrenzt
-  (`menuMaxHeight()`, wie #28).
+  (`menuMaxHeight()`, wie #28); alle Menüs gehen über `ScreenDropdownMenu` in `MenuHeight.kt`.
 - #29 Tablet Layout für kleine Bildschirme (< 600 dp breit oder < 480 dp hoch).
 - #30 Papiermuster blendet beim Herauszoomen zwischen 10 und 6 px aus (vorher Moiré);
   Laser-Spur blendet auch nach abgebrochenem Strich aus.

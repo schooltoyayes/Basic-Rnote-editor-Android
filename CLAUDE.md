@@ -5,7 +5,7 @@ unter `schooltoyayes/Basic-Rnote-editor-Android` (origin). Kotlin + Jetpack Comp
 liest und schreibt `.rnote`-Dateien der Desktop-App Rnote (0.14-Format, 0.15 wird gelesen).
 Was die App kann, steht im README.
 
-Stand: 13.10.2026
+Stand: 15.10.2026
 
 ## Code
 
@@ -33,13 +33,16 @@ Stand: 13.10.2026
 - `upstream-pr`: Quelle von PR #3 bei KJ-Ly (Draft, offen). Lineare Commits auf
   KJ-Lys `main` (`c9a1780`); neue Fixes aus `main` werden per Cherry-Pick übernommen,
   Fix-ups dabei zu einem Commit zusammengefasst. Hat bewusst keinen Workflow.
-- Nicht nach upstream gehen: der CI-Workflow, die Release-Signatur und `lint`-Einstellung in
-  `app/build.gradle.kts`, die PNG-Launcher-Icons. Ansonsten sollen `main` und `upstream-pr`
+- Nicht nach upstream gehen (außer über PR #4, s. u.): der CI-Workflow, die Release-Signatur
+  und `lint`-Einstellung in `app/build.gradle.kts`, die PNG-Launcher-Icons. Ansonsten sollen `main` und `upstream-pr`
   denselben Code haben.
 - KJ-Lys `c9a1780` ("Save lined and blank backgrounds under Rnote's names") ist in
   `upstream-pr`, aber noch nicht in `main` – daher weichen `RnoteNativeSerializer.kt` und
   `RnoteNativeRoundTripTest.kt` zwischen beiden ab.
 - Sobald KJ-Ly PR #3 mergt: `upstream-pr` auf seinen neuen `main` zurücksetzen.
+- `upstream-ci`: Quelle von PR #4 bei KJ-Ly (auf Wunsch von KJ-Ly): der Workflow auf Englisch
+  (Push auf `main`, `pull_request`, von Hand) plus Signatur und `lint` in `app/build.gradle.kts`.
+  Wird #4 gemergt, gilt die Ausnahme oben nur noch für die PNG-Launcher-Icons.
 
 ## Werkzeug-Eigenheiten
 
@@ -52,7 +55,8 @@ Stand: 13.10.2026
 
 ## Offen
 
-- Antwort von KJ-Ly auf PR #3.
+- KJ-Ly hat am 15.10. per E-Mail nach dem CI-Workflow gefragt (der Kommentar ist auf GitHub
+  nicht mehr zu sehen); beantwortet in PR #3, Workflow als PR #4. Warten auf Merge.
 
 ## Zurückgestellt (nur auf Wunsch)
 
@@ -60,6 +64,9 @@ Stand: 13.10.2026
 - `CustomFonts.restore` läuft auf dem Hauptthread.
 
 ## Erledigt (zuletzt)
+
+- Workflow auf `ubuntu-26.04` und `upload-artifact@v7` (vorher Warnungen zu Node.js 20 und
+  `ubuntu-latest`); der Release-Schritt läuft darauf erst nach dem Merge in `main`.
 
 - #32 "Öffnen mit" nutzt die laufende Instanz (`singleTask` + `onNewIntent`). Folge:
   "Zurück" führt nicht mehr in die aufrufende App. Am Tablet noch nicht ausprobiert.

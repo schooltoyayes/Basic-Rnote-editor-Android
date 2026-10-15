@@ -69,7 +69,7 @@ Stand: 15.10.2026
   `ubuntu-latest`); der Release-Schritt läuft darauf erst nach dem Merge in `main`.
 
 - #32 "Öffnen mit" nutzt die laufende Instanz (`singleTask` + `onNewIntent`). Folge:
-  "Zurück" führt nicht mehr in die aufrufende App. Am Tablet noch nicht ausprobiert.
+  "Zurück" führt nicht mehr in die aufrufende App. Am Tablet ausprobiert, geht.
 - #28 Top-Bar-Menüs auf sichtbare Höhe begrenzt und scrollbar.
 - #32 Menüs im Stiftstreifen, Dateibrowser und in den Seiteneinstellungen ebenso begrenzt
   (`menuMaxHeight()`, wie #28).

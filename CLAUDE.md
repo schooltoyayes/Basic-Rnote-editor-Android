@@ -50,8 +50,9 @@ Stand: 15.10.2026
   gesetzt. Für KJ-Lys Repo immer `--repo KJ-Ly/Basic-Rnote-editor-Android` angeben.
 - Git hat keine globale Identität. Commits von Claude mit
   `git -c user.name=Claude -c user.email=noreply@anthropic.com commit …`.
-- Remote-Branches löschen per Git schlägt fehl (403, Organisationsrichtlinie) – das machen
-  Toni & Yannick auf GitHub. Darum keine unnötigen Hilfs-Branches anlegen.
+- Remote-Branches löschen: in der Cloud-Umgebung (Claude Code im Browser) schlägt es fehl
+  (403 vom Git-Proxy), dann machen es Toni & Yannick auf GitHub. Lokal geht
+  `git push origin --delete <branch>` nach Bestätigung. Trotzdem keine unnötigen Hilfs-Branches.
 
 ## Offen
 
@@ -69,10 +70,10 @@ Stand: 15.10.2026
   `ubuntu-latest`); der Release-Schritt läuft darauf erst nach dem Merge in `main`.
 
 - #32 "Öffnen mit" nutzt die laufende Instanz (`singleTask` + `onNewIntent`). Folge:
-  "Zurück" führt nicht mehr in die aufrufende App. Am Tablet noch nicht ausprobiert.
+  "Zurück" führt nicht mehr in die aufrufende App. Am Tablet ausprobiert, geht.
 - #28 Top-Bar-Menüs auf sichtbare Höhe begrenzt und scrollbar.
 - #32 Menüs im Stiftstreifen, Dateibrowser und in den Seiteneinstellungen ebenso begrenzt
-  (`menuMaxHeight()`, wie #28).
+  (`menuMaxHeight()`, wie #28); alle Menüs gehen über `ScreenDropdownMenu` in `MenuHeight.kt`.
 - #29 Tablet Layout für kleine Bildschirme (< 600 dp breit oder < 480 dp hoch).
 - #30 Papiermuster blendet beim Herauszoomen zwischen 10 und 6 px aus (vorher Moiré);
   Laser-Spur blendet auch nach abgebrochenem Strich aus.

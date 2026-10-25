@@ -5,7 +5,7 @@ unter `schooltoyayes/Basic-Rnote-editor-Android` (origin). Kotlin + Jetpack Comp
 liest und schreibt `.rnote`-Dateien der Desktop-App Rnote (0.14-Format, 0.15 wird gelesen).
 Was die App kann, steht im README.
 
-Stand: 15.10.2026
+Stand: 25.10.2026
 
 ## Code
 
@@ -31,18 +31,19 @@ Stand: 15.10.2026
 - `main`: Stand des Forks. Änderungen kommen per PR aus `claude/new-session-zdx2bt`
   (Arbeits-Branch). Mergen machen Toni & Yannick selbst auf GitHub.
 - `upstream-pr`: Quelle von PR #3 bei KJ-Ly (Draft, offen). Lineare Commits auf
-  KJ-Lys `main` (`c9a1780`); neue Fixes aus `main` werden per Cherry-Pick übernommen,
-  Fix-ups dabei zu einem Commit zusammengefasst. Hat bewusst keinen Workflow.
-- Nicht nach upstream gehen (außer über PR #4, s. u.): der CI-Workflow, die Release-Signatur
-  und `lint`-Einstellung in `app/build.gradle.kts`, die PNG-Launcher-Icons. Ansonsten sollen `main` und `upstream-pr`
-  denselben Code haben.
+  `c9a1780` (KJ-Lys `main` ist inzwischen `2fce4e1`, der Merge von PR #4; #3 ist trotzdem
+  mergebar). Neue Fixes aus `main` werden per Cherry-Pick übernommen, Fix-ups dabei zu
+  einem Commit zusammengefasst. Hat bewusst keinen Workflow.
+- Nicht nach upstream gehen: die PNG-Launcher-Icons. Der CI-Workflow, die Release-Signatur
+  und die `lint`-Einstellung in `app/build.gradle.kts` sind seit PR #4 auch bei KJ-Ly (dort
+  der Workflow auf Englisch). Ansonsten sollen `main` und `upstream-pr` denselben Code haben.
 - KJ-Lys `c9a1780` ("Save lined and blank backgrounds under Rnote's names") ist in
   `upstream-pr`, aber noch nicht in `main` – daher weichen `RnoteNativeSerializer.kt` und
   `RnoteNativeRoundTripTest.kt` zwischen beiden ab.
 - Sobald KJ-Ly PR #3 mergt: `upstream-pr` auf seinen neuen `main` zurücksetzen.
 - `upstream-ci`: Quelle von PR #4 bei KJ-Ly (auf Wunsch von KJ-Ly): der Workflow auf Englisch
   (Push auf `main`, `pull_request`, von Hand) plus Signatur und `lint` in `app/build.gradle.kts`.
-  Wird #4 gemergt, gilt die Ausnahme oben nur noch für die PNG-Launcher-Icons.
+  Am 20.10. gemergt; der Branch wird nicht mehr gebraucht (Löschen nur nach Bestätigung).
 
 ## Werkzeug-Eigenheiten
 
@@ -56,8 +57,8 @@ Stand: 15.10.2026
 
 ## Offen
 
-- KJ-Ly hat am 15.10. per E-Mail nach dem CI-Workflow gefragt (der Kommentar ist auf GitHub
-  nicht mehr zu sehen); beantwortet in PR #3, Workflow als PR #4. Warten auf Merge.
+- PR #3 bei KJ-Ly ist noch Draft. Ohne Merge bleiben `RnoteNativeSerializer.kt` und
+  `RnoteNativeRoundTripTest.kt` zwischen `main` und `upstream-pr` verschieden (s. o.).
 
 ## Zurückgestellt (nur auf Wunsch)
 
@@ -65,6 +66,9 @@ Stand: 15.10.2026
 - `CustomFonts.restore` läuft auf dem Hauptthread.
 
 ## Erledigt (zuletzt)
+
+- PR #4 bei KJ-Ly (CI-Workflow) am 20.10. gemergt. KJ-Ly hatte am 15.10. per E-Mail danach
+  gefragt (der Kommentar ist auf GitHub nicht mehr zu sehen), beantwortet in PR #3.
 
 - Workflow auf `ubuntu-26.04` und `upload-artifact@v7` (vorher Warnungen zu Node.js 20 und
   `ubuntu-latest`); der Release-Schritt läuft darauf erst nach dem Merge in `main`.

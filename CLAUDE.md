@@ -1,83 +1,85 @@
-# Basic Rnote Editor for Android – Projektnotizen für Claude
+# Basic Rnote Editor for Android – project notes for Claude
 
-Fork von `KJ-Ly/Basic-Rnote-editor-Android` (upstream), gepflegt von Toni & Yannick
-unter `schooltoyayes/Basic-Rnote-editor-Android` (origin). Kotlin + Jetpack Compose,
-liest und schreibt `.rnote`-Dateien der Desktop-App Rnote (0.14-Format, 0.15 wird gelesen).
-Was die App kann, steht im README.
+Fork of `KJ-Ly/Basic-Rnote-editor-Android` (upstream), maintained by Toni & Yannick
+as `schooltoyayes/Basic-Rnote-editor-Android` (origin). Kotlin + Jetpack Compose,
+reads and writes `.rnote` files from the Rnote desktop app (0.14 format, 0.15 is read).
+The README lists what the app can do.
 
-Stand: 25.10.2026
+Toni & Yannick prefer replies in German.
+
+As of: 25.10.2026
 
 ## Code
 
-- Paket `io.github.kjly.brna` unter `app/src/main/java/`: `model`, `render`, `storage`,
-  `export`, `audio`, `ui` (`ui/canvas/DrawingCanvas.kt` ist die Zeichenfläche,
-  `ui/canvas/PaperBackgroundRenderer.kt` das Papiermuster).
-- Verhalten folgt dem Code von `flxzt/rnote` (0.14.2, 0.15 wo vermerkt); Kommentare nennen
-  die Rnote-Stelle. Neue Logik möglichst als reine Funktion mit Unit-Test unter `app/src/test/`.
-- Kommentare und Commit-Messages auf Englisch, im Stil der vorhandenen.
-- `tests/*.rnote` sind Beispieldateien mit echten Stiftstrichen.
+- Package `io.github.kjly.brna` under `app/src/main/java/`: `model`, `render`, `storage`,
+  `export`, `audio`, `ui` (`ui/canvas/DrawingCanvas.kt` is the drawing surface,
+  `ui/canvas/PaperBackgroundRenderer.kt` the paper pattern).
+- Behaviour follows the code of `flxzt/rnote` (0.14.2, 0.15 where noted); comments name
+  the Rnote source location. New logic preferably as a pure function with a unit test under `app/src/test/`.
+- Comments and commit messages in English, in the style of the existing ones.
+- `tests/*.rnote` are sample files with real pen strokes.
 
-## Bauen und Testen
+## Building and testing
 
-- Lokal (Termux auf dem Tablet) gibt es kein Gradle/JDK. Gebaut und getestet wird nur in
-  GitHub Actions: `.github/workflows/build-apk.yml` ("APK bauen") läuft bei Push auf `main`
-  und `claude/**`, macht `assembleRelease` und `./gradlew test`.
-- Nur `main` aktualisiert das Release `latest` (die APK für das Tablet).
-- Nach jedem Push den Lauf mit `gh run watch <id> --exit-status` abwarten; Compile-Fehler
-  zeigen sich erst dort (`gh run view <id> --log-failed`).
+- Locally (Termux on the tablet) there is no Gradle/JDK. Building and testing happen only in
+  GitHub Actions: `.github/workflows/build-apk.yml` ("APK bauen") runs on pushes to `main`
+  and `claude/**`, does `assembleRelease` and `./gradlew test`.
+- Only `main` updates the `latest` release (the APK for the tablet).
+- After every push, wait for the run with `gh run watch <id> --exit-status`; compile errors
+  only show up there (`gh run view <id> --log-failed`).
 
-## Branches und Ablauf
+## Branches and workflow
 
-- `main`: Stand des Forks. Änderungen kommen per PR aus `claude/new-session-zdx2bt`
-  (Arbeits-Branch). Mergen machen Toni & Yannick selbst auf GitHub.
-- `upstream-pr`: Quelle von PR #3 bei KJ-Ly (Draft, offen). Lineare Commits auf
-  `c9a1780` (KJ-Lys `main` ist inzwischen `2fce4e1`, der Merge von PR #4; #3 ist trotzdem
-  mergebar). Neue Fixes aus `main` werden per Cherry-Pick übernommen, Fix-ups dabei zu
-  einem Commit zusammengefasst. Hat bewusst keinen Workflow.
-- Nicht nach upstream gehen: die PNG-Launcher-Icons. Der CI-Workflow, die Release-Signatur
-  und die `lint`-Einstellung in `app/build.gradle.kts` sind seit PR #4 auch bei KJ-Ly (dort
-  der Workflow auf Englisch). Ansonsten sollen `main` und `upstream-pr` denselben Code haben.
-- KJ-Lys `c9a1780` ("Save lined and blank backgrounds under Rnote's names") ist in
-  `upstream-pr`, aber noch nicht in `main` – daher weichen `RnoteNativeSerializer.kt` und
-  `RnoteNativeRoundTripTest.kt` zwischen beiden ab.
-- Sobald KJ-Ly PR #3 mergt: `upstream-pr` auf seinen neuen `main` zurücksetzen.
-- `upstream-ci` (gelöscht am 25.10.): Quelle von PR #4 bei KJ-Ly (auf Wunsch von KJ-Ly), der
-  Workflow auf Englisch plus Signatur und `lint` in `app/build.gradle.kts`. Am 20.10. gemergt.
+- `main`: the fork's current state. Changes come in by PR from `claude/new-session-zdx2bt`
+  (the working branch). Toni & Yannick merge on GitHub themselves.
+- `upstream-pr`: source of PR #3 at KJ-Ly (draft, open). Linear commits on
+  `c9a1780` (KJ-Ly's `main` is now `2fce4e1`, the merge of PR #4; #3 is still
+  mergeable). New fixes from `main` are cherry-picked, with fix-ups squashed into
+  one commit. Deliberately has no workflow.
+- Not going upstream: the PNG launcher icons. The CI workflow, the release signing
+  and the `lint` setting in `app/build.gradle.kts` are at KJ-Ly too since PR #4 (there
+  with the workflow in English). Otherwise `main` and `upstream-pr` should have the same code.
+- KJ-Ly's `c9a1780` ("Save lined and blank backgrounds under Rnote's names") is in
+  `upstream-pr` but not yet in `main` – so `RnoteNativeSerializer.kt` and
+  `RnoteNativeRoundTripTest.kt` differ between the two.
+- As soon as KJ-Ly merges PR #3: reset `upstream-pr` to KJ-Ly's new `main`.
+- `upstream-ci` (deleted on 25.10.): source of PR #4 at KJ-Ly (at KJ-Ly's request), the
+  workflow in English plus signing and `lint` in `app/build.gradle.kts`. Merged on 20.10.
 
-## Werkzeug-Eigenheiten
+## Tooling quirks
 
-- `gh` ist in diesem Ordner auf `schooltoyayes/Basic-Rnote-editor-Android` als Standard
-  gesetzt. Für KJ-Lys Repo immer `--repo KJ-Ly/Basic-Rnote-editor-Android` angeben.
-- Git hat keine globale Identität. Commits von Claude mit
+- `gh` has `schooltoyayes/Basic-Rnote-editor-Android` set as default in this folder.
+  For KJ-Ly's repo always pass `--repo KJ-Ly/Basic-Rnote-editor-Android`.
+- Git has no global identity. Commits by Claude with
   `git -c user.name=Claude -c user.email=noreply@anthropic.com commit …`.
-- Remote-Branches löschen: in der Cloud-Umgebung (Claude Code im Browser) schlägt es fehl
-  (403 vom Git-Proxy), dann machen es Toni & Yannick auf GitHub. Lokal geht
-  `git push origin --delete <branch>` nach Bestätigung. Trotzdem keine unnötigen Hilfs-Branches.
+- Deleting remote branches: fails in the cloud environment (Claude Code in the browser)
+  (403 from the Git proxy); then Toni & Yannick do it on GitHub. Locally,
+  `git push origin --delete <branch>` works after confirmation. Still, no unnecessary helper branches.
 
-## Offen
+## Open
 
-- PR #3 bei KJ-Ly ist noch Draft. Ohne Merge bleiben `RnoteNativeSerializer.kt` und
-  `RnoteNativeRoundTripTest.kt` zwischen `main` und `upstream-pr` verschieden (s. o.).
+- PR #3 at KJ-Ly is still a draft. Until it is merged, `RnoteNativeSerializer.kt` and
+  `RnoteNativeRoundTripTest.kt` stay different between `main` and `upstream-pr` (see above).
 
-## Zurückgestellt (nur auf Wunsch)
+## Deferred (only on request)
 
-- Alte URIs bleiben nach Umbenennen oder Löschen eines Ordners stehen.
-- `CustomFonts.restore` läuft auf dem Hauptthread.
+- Old URIs stay listed after a folder is renamed or deleted.
+- `CustomFonts.restore` runs on the main thread.
 
-## Erledigt (zuletzt)
+## Done (recently)
 
-- PR #4 bei KJ-Ly (CI-Workflow) am 20.10. gemergt. KJ-Ly hatte am 15.10. per E-Mail danach
-  gefragt (der Kommentar ist auf GitHub nicht mehr zu sehen), beantwortet in PR #3.
+- PR #4 at KJ-Ly (CI workflow) merged on 20.10. KJ-Ly had asked for it by email on 15.10.
+  (the comment no longer shows on GitHub), answered in PR #3.
 
-- Workflow auf `ubuntu-26.04` und `upload-artifact@v7` (vorher Warnungen zu Node.js 20 und
-  `ubuntu-latest`); der Release-Schritt läuft darauf erst nach dem Merge in `main`.
+- Workflow on `ubuntu-26.04` and `upload-artifact@v7` (previously warnings about Node.js 20 and
+  `ubuntu-latest`); the release step only runs on it after the merge into `main`.
 
-- #32 "Öffnen mit" nutzt die laufende Instanz (`singleTask` + `onNewIntent`). Folge:
-  "Zurück" führt nicht mehr in die aufrufende App. Am Tablet ausprobiert, geht.
-- #28 Top-Bar-Menüs auf sichtbare Höhe begrenzt und scrollbar.
-- #32 Menüs im Stiftstreifen, Dateibrowser und in den Seiteneinstellungen ebenso begrenzt
-  (`menuMaxHeight()`, wie #28); alle Menüs gehen über `ScreenDropdownMenu` in `MenuHeight.kt`.
-- #29 Tablet Layout für kleine Bildschirme (< 600 dp breit oder < 480 dp hoch).
-- #30 Papiermuster blendet beim Herauszoomen zwischen 10 und 6 px aus (vorher Moiré);
-  Laser-Spur blendet auch nach abgebrochenem Strich aus.
-- Seitenränder: kein Code nötig, Page Settings → Display → "Show format borders".
+- #32 "Open with" reuses the running instance (`singleTask` + `onNewIntent`). Consequence:
+  "Back" no longer returns to the calling app. Tried on the tablet, works.
+- #28 Top bar menus limited to the visible height and scrollable.
+- #32 Menus in the pen strip, file browser and page settings limited the same way
+  (`menuMaxHeight()`, like #28); all menus go through `ScreenDropdownMenu` in `MenuHeight.kt`.
+- #29 Tablet Layout for small screens (< 600 dp wide or < 480 dp high).
+- #30 Paper pattern fades out between 10 and 6 px when zooming out (previously moiré);
+  the laser trail also fades after a cancelled stroke.
+- Page borders: no code needed, Page Settings → Display → "Show format borders".

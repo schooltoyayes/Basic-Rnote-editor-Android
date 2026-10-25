@@ -41,9 +41,8 @@ Stand: 25.10.2026
   `upstream-pr`, aber noch nicht in `main` – daher weichen `RnoteNativeSerializer.kt` und
   `RnoteNativeRoundTripTest.kt` zwischen beiden ab.
 - Sobald KJ-Ly PR #3 mergt: `upstream-pr` auf seinen neuen `main` zurücksetzen.
-- `upstream-ci`: Quelle von PR #4 bei KJ-Ly (auf Wunsch von KJ-Ly): der Workflow auf Englisch
-  (Push auf `main`, `pull_request`, von Hand) plus Signatur und `lint` in `app/build.gradle.kts`.
-  Am 20.10. gemergt; der Branch wird nicht mehr gebraucht (Löschen nur nach Bestätigung).
+- `upstream-ci` (gelöscht am 25.10.): Quelle von PR #4 bei KJ-Ly (auf Wunsch von KJ-Ly), der
+  Workflow auf Englisch plus Signatur und `lint` in `app/build.gradle.kts`. Am 20.10. gemergt.
 
 ## Werkzeug-Eigenheiten
 

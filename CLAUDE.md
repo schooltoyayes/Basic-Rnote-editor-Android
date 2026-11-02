@@ -7,7 +7,7 @@ The README lists what the app can do.
 
 Toni & Yannick prefer replies in German.
 
-As of: 25.10.2026
+As of: 02.11.2026
 
 ## Code
 
@@ -67,6 +67,13 @@ As of: 25.10.2026
 - `CustomFonts.restore` runs on the main thread.
 
 ## Done (recently)
+
+- Word import (`.docx`), on the work branch, not yet tried on the tablet: `DocxReader` reads
+  the document into a small model (unit-tested), `DocxImporter` sets it as PDF pages with
+  `StaticLayout` (20 layout units per point), which then go through the PDF import dialog
+  from `cache/docx/import.pdf`. Menu "Import Word document…", Ctrl+Shift+I, drop/paste,
+  `FolderListing.Kind.WORD` in the workspace browser. Left out on purpose: headers/footers,
+  footnotes, text boxes, columns, floating shapes; old binary `.doc`.
 
 - PR #4 at KJ-Ly (CI workflow) merged on 20.10. KJ-Ly had asked for it by email on 15.10.
   (the comment no longer shows on GitHub), answered in PR #3.

@@ -3,18 +3,22 @@ package io.github.kjly.brna.storage
 /**
  * What the workspace browser lists and in what order, after desktop Rnote's
  * (rnote-ui/src/workspacebrowser): folders first, then notes and the Xournal++ files
- * Rnote opens as notes, then the files a note can take in — PDFs and pictures — each
+ * Rnote opens as notes, then the files a note can take in — PDFs, Word documents and
+ * pictures — each
  * sorted the way people count, "Page 2" before "Page 10". Hidden files (a leading dot)
  * and everything else are left out.
  */
 object FolderListing {
 
-    enum class Kind { FOLDER, NOTE, XOPP, PDF, IMAGE }
+    enum class Kind { FOLDER, NOTE, XOPP, PDF, WORD, IMAGE }
 
     /** One thing in a folder. [id] is the storage provider's document id. */
     data class Entry(val id: String, val name: String, val kind: Kind, val lastModified: Long?)
 
     const val FOLDER_MIME = "vnd.android.document/directory"
+
+    /** A Word document's type: `.docx`, not the old binary `.doc`. */
+    const val WORD_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
     /** What [name] is, going by its type and then its extension; null for what isn't listed. */
     fun kindOf(name: String, mime: String?): Kind? {
@@ -25,19 +29,20 @@ object FolderListing {
             lower.endsWith(".rnote") || mime == "application/rnote" -> Kind.NOTE
             lower.endsWith(".xopp") || mime == "application/x-xopp" -> Kind.XOPP
             lower.endsWith(".pdf") || mime == "application/pdf" -> Kind.PDF
+            lower.endsWith(".docx") || mime == WORD_MIME -> Kind.WORD
             lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
                 mime == "image/png" || mime == "image/jpeg" -> Kind.IMAGE
             else -> null
         }
     }
 
-    /** Folders, then notes, then PDFs and pictures together, each in [naturalCompare] order. */
+    /** Folders, then notes, then PDFs, Word documents and pictures together, each in [naturalCompare] order. */
     fun sorted(entries: List<Entry>): List<Entry> = entries.sortedWith(
         compareBy<Entry> {
             when (it.kind) {
                 Kind.FOLDER -> 0
                 Kind.NOTE, Kind.XOPP -> 1
-                Kind.PDF, Kind.IMAGE -> 2
+                Kind.PDF, Kind.WORD, Kind.IMAGE -> 2
             }
         }.thenComparator { a, b -> naturalCompare(a.name, b.name) }
     )

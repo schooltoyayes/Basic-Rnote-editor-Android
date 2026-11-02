@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.TextSnippet
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -444,6 +445,7 @@ private fun EntryRow(
         FolderListing.Kind.NOTE -> Icons.Default.Description
         FolderListing.Kind.XOPP -> Icons.Default.Article
         FolderListing.Kind.PDF -> Icons.Default.PictureAsPdf
+        FolderListing.Kind.WORD -> Icons.Default.TextSnippet
         FolderListing.Kind.IMAGE -> Icons.Default.Image
     }
     Box {

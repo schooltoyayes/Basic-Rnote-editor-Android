@@ -25,6 +25,10 @@ class FolderListingTest {
         // Xournal++'s, which Rnote opens as a note.
         assertEquals(Kind.XOPP, FolderListing.kindOf("Tafelbild.xopp", null))
         assertEquals(Kind.XOPP, FolderListing.kindOf("Tafelbild", "application/x-xopp"))
+        // Word's .docx, imported as a PDF of its pages; the old binary .doc is not read.
+        assertEquals(Kind.WORD, FolderListing.kindOf("Referat.docx", null))
+        assertEquals(Kind.WORD, FolderListing.kindOf("Referat", FolderListing.WORD_MIME))
+        assertEquals(null, FolderListing.kindOf("Alt.doc", "application/msword"))
     }
 
     @Test
@@ -32,7 +36,7 @@ class FolderListingTest {
         assertNull(FolderListing.kindOf(".Mathe.rnote", null))
         assertNull(FolderListing.kindOf(".trash", FolderListing.FOLDER_MIME))
         assertNull(FolderListing.kindOf("Notizen.txt", "text/plain"))
-        assertNull(FolderListing.kindOf("Referat.docx", null))
+        assertNull(FolderListing.kindOf("Referat.doc", "application/msword"))
     }
 
     @Test

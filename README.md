@@ -143,7 +143,7 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   Ctrl+W, Ctrl+Tab / Ctrl+Shift+Tab.
 - **Workspaces**: Rnote's workspace browser as a side panel — folders on the
   device or in Google Drive, each with a name and a color, listed as Rnote lists
-  them. Open notes and Xournal++ files, drop PDFs and pictures into the open note, make new notes
+  them. Open notes and Xournal++ files, drop PDFs, Word documents and pictures into the open note, make new notes
   and folders, rename, duplicate and delete. When the open note was saved on
   another device meanwhile, returning to the app or opening the panel loads the
   newer version — or, with changes on both sides, asks what to keep. While the
@@ -157,6 +157,18 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   note, as Rnote opens one — its strokes with their pressure, highlighters, text and
   pictures, the pages one below the other — and is saved as an `.rnote` beside it,
   never over it.
+- **Word documents** (`.docx`, not the old `.doc`): "Import Word document…" in
+  the ⋮ menu, Ctrl+Shift+I, dropping or pasting one, or tapping one in the
+  workspace browser. Desktop Rnote has no such import. The app sets the document's
+  pages itself — page size and margins, paragraph styles, bold, italic, underline,
+  colors, alignment, line spacing, numbered and bulleted lists, tables and
+  pictures — and they go through the PDF import dialog as a PDF of those pages
+  would, so they land as pages to write on. The pages come close to Word's, but
+  they aren't the same: a font the tablet doesn't have is drawn in its serif,
+  sans or monospace face (or one loaded through "Fonts…"), so lines can break
+  elsewhere. Headers and footers, footnotes, text boxes, columns and floating
+  shapes are left out, and a floating picture sits in the text where it is
+  anchored. For a page exactly as Word shows it, export it as a PDF from Word.
 - **Export, share and print**: PDF, SVG, PNG, and JPEG, with page-range and
   split options and one page per imported PDF page, and Xournal++ (`.xopp`) for the
   whole note as Rnote writes it: strokes stay strokes, shapes, text and pictures go in

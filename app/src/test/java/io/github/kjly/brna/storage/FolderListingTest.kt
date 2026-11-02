@@ -36,7 +36,7 @@ class FolderListingTest {
         assertNull(FolderListing.kindOf(".Mathe.rnote", null))
         assertNull(FolderListing.kindOf(".trash", FolderListing.FOLDER_MIME))
         assertNull(FolderListing.kindOf("Notizen.txt", "text/plain"))
-        assertNull(FolderListing.kindOf("Referat.docx", null))
+        assertNull(FolderListing.kindOf("Referat.doc", "application/msword"))
     }
 
     @Test

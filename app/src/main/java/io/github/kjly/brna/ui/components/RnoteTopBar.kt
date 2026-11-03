@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.TextSnippet
 import androidx.compose.material.icons.filled.FilterCenterFocus
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FontDownload
@@ -85,6 +86,8 @@ fun RnoteTopBar(
     onOpenPageSettings: () -> Unit,
     /** Desktop Rnote's "Import PDF": the pages go into the open note. */
     onImportPdf: () -> Unit = {},
+    /** A Word document's pages into the open note, as a PDF's are. */
+    onImportWord: () -> Unit = {},
     /** A picture from the gallery into the open note. */
     onInsertImage: () -> Unit = {},
     /** False on a device without a camera, which hides "Take photo". */
@@ -409,6 +412,11 @@ fun RnoteTopBar(
                         leadingIcon = { Icon(Icons.Default.PictureAsPdf, null) },
                         text = { Text("Import PDF…") },
                         onClick = { showOverflowMenu = false; onImportPdf() }
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Default.TextSnippet, null) },
+                        text = { Text("Import Word document…") },
+                        onClick = { showOverflowMenu = false; onImportWord() }
                     )
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.Image, null) },

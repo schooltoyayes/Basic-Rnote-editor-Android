@@ -137,6 +137,7 @@ import io.github.kjly.brna.storage.Backups
 import io.github.kjly.brna.storage.ContentHash
 import io.github.kjly.brna.storage.CustomFonts
 import io.github.kjly.brna.storage.DocumentUri
+import io.github.kjly.brna.storage.DocxImporter
 import io.github.kjly.brna.storage.FileManager
 import io.github.kjly.brna.storage.FolderBrowser
 import io.github.kjly.brna.storage.FolderListing
@@ -250,7 +251,9 @@ private object SelectionClipboard {
 private const val OWN_CLIP_LABEL = "Basic Rnote selection"
 
 /** What can be pasted or dropped from another app: what [MainActivity.takeInFile] and a text box take. */
-private val TAKEABLE_TYPES = arrayOf("image/*", "application/pdf", "application/x-xopp", "application/octet-stream", "text/*")
+private val TAKEABLE_TYPES = arrayOf(
+    "image/*", "application/pdf", FolderListing.WORD_MIME, "application/x-xopp", "application/octet-stream", "text/*"
+)
 
 /** Width of a page picture in the page overview, in px. */
 private const val THUMBNAIL_WIDTH_PX = 320
@@ -484,6 +487,11 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.OpenDocument()
     ) { uri -> uri?.let { importPdf(it) } }
 
+    /** A Word document, set as pages and imported as a PDF of them. */
+    private val importDocxLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { importDocx(it) } }
+
     /** Rnote's "Import" (Ctrl+Shift+I): a PDF or a picture, each into the open note its own way. */
     private val importFileLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -496,7 +504,8 @@ class MainActivity : ComponentActivity() {
     /**
      * A file from outside — picked, pasted or dropped — taken in the way Rnote takes one in
      * (its `open_file_w_dialogs`): a PDF through the import dialog, a picture into the note,
-     * a Xournal++ file as a new note. [at] is where it was dropped, in document units.
+     * a Xournal++ file as a new note. A Word document goes in as a PDF of its pages, which
+     * desktop Rnote doesn't take. [at] is where it was dropped, in document units.
      * False for a file of any other kind.
      */
     private fun takeInFile(uri: Uri, mime: String? = null, at: Offset? = null): Boolean {
@@ -508,6 +517,7 @@ class MainActivity : ComponentActivity() {
         }
         when {
             type == "application/pdf" || name.endsWith(".pdf") -> importPdf(uri, at)
+            type == DOCX_TYPE || name.endsWith(".docx") -> importDocx(uri, at)
             type == "application/x-xopp" || name.endsWith(".xopp") -> openDocument(uri)
             // Every picture Android can read, but not a drawing in SVG, which it can't.
             (type?.startsWith("image/") == true && type != "image/svg+xml") ||
@@ -627,6 +637,38 @@ class MainActivity : ComponentActivity() {
             }
             val name = DocumentUri.displayName(this@MainActivity, uri) ?: "PDF"
             pendingPdfImport = PendingPdfImport(uri, name, sizes, at)
+        }
+    }
+
+    /**
+     * A Word document's pages, laid out as a PDF (see [DocxImporter]), then into Rnote's
+     * import dialog as that PDF: they land in the note as an imported PDF's pages do.
+     */
+    private fun importDocx(uri: Uri, at: Offset? = null) {
+        if (busyMessage != null) return
+        busyMessage = "Reading Word document…"
+        val name = DocumentUri.displayName(this, uri) ?: "Word document"
+        lifecycleScope.launch {
+            val converted = withContext(Dispatchers.IO) {
+                try {
+                    // Imports go one at a time (the busy message, then the import dialog),
+                    // so one file in the cache serves them all.
+                    val pdf = java.io.File(java.io.File(cacheDir, "docx").apply { mkdirs() }, "import.pdf")
+                    DocxImporter.convert(this@MainActivity, uri, pdf)
+                    val pdfUri = Uri.fromFile(pdf)
+                    pdfUri to PdfImporter.pageSizes(this@MainActivity, pdfUri)
+                } catch (e: Throwable) {
+                    // Not a .docx (an old binary .doc, say), or one too broken to read.
+                    e.printStackTrace()
+                    null
+                }
+            }
+            busyMessage = null
+            if (converted == null || converted.second.isEmpty()) {
+                Toast.makeText(this@MainActivity, "Could not import the Word document", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            pendingPdfImport = PendingPdfImport(converted.first, name, converted.second, at)
         }
     }
 
@@ -2839,6 +2881,7 @@ class MainActivity : ComponentActivity() {
                                     openDocumentLauncher.launch(arrayOf("*/*", "application/json"))
                                 },
                                 onImportPdf = { importPdfLauncher.launch(arrayOf("application/pdf")) },
+                                onImportWord = { importDocxLauncher.launch(arrayOf(DOCX_TYPE)) },
                                 onInsertImage = {
                                     pickImageLauncher.launch(
                                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -3497,6 +3540,10 @@ class MainActivity : ComponentActivity() {
                                             showFiles = false
                                             importPdf(uri)
                                         }
+                                        FolderListing.Kind.WORD -> {
+                                            showFiles = false
+                                            importDocx(uri)
+                                        }
                                         FolderListing.Kind.IMAGE -> {
                                             showFiles = false
                                             insertImage(uri)
@@ -3987,7 +4034,9 @@ class MainActivity : ComponentActivity() {
         const val NEWER_VERSION_POLL_MS = 30_000L
 
         /** What Rnote's "Import" takes that this app can: PDFs and pictures. */
-        val IMPORTABLE_TYPES = arrayOf("application/pdf", "image/png", "image/jpeg")
+        const val DOCX_TYPE = FolderListing.WORD_MIME
+
+        val IMPORTABLE_TYPES = arrayOf("application/pdf", "image/png", "image/jpeg", DOCX_TYPE)
     }
 
     /**

@@ -735,6 +735,24 @@ internal object DocxReader {
         }
     }
 
+    /**
+     * The font bundled with the app (`assets/fonts`) whose every letter is as wide as
+     * [font]'s, so text in it breaks into lines and pages where Word breaks it; null for
+     * a font without one. Calibri Light has no match of its own and gets Calibri's.
+     */
+    internal fun metricCompatible(font: String): String? = METRIC_COMPATIBLE[font.trim().lowercase()]
+
+    private val METRIC_COMPATIBLE = mapOf(
+        "arial" to "LiberationSans", "helvetica" to "LiberationSans",
+        "liberation sans" to "LiberationSans", "arimo" to "LiberationSans",
+        "times new roman" to "LiberationSerif", "times" to "LiberationSerif",
+        "liberation serif" to "LiberationSerif", "tinos" to "LiberationSerif",
+        "courier new" to "LiberationMono", "courier" to "LiberationMono",
+        "liberation mono" to "LiberationMono", "cousine" to "LiberationMono",
+        "calibri" to "Carlito", "calibri light" to "Carlito", "carlito" to "Carlito",
+        "cambria" to "Caladea", "caladea" to "Caladea"
+    )
+
     private val MONO_HINTS = listOf("mono", "courier", "consolas", "menlo", "code", "typewriter")
     private val SERIF_HINTS = listOf(
         "serif", "times", "cambria", "georgia", "garamond", "book", "palatino", "century",

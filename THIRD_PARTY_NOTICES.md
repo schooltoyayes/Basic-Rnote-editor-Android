@@ -109,6 +109,29 @@ that grant. It is informal rather than a named license, so it does not spell out
 redistribution or sublicensing terms the way MIT or GPL-3.0 would. Intranox is
 welcome to get in touch if any of this misrepresents their intent.
 
+## Fonts (`app/src/main/assets/fonts/`)
+
+Fonts whose letters are as wide as those of Word's usual fonts, so that an
+imported Word document breaks into lines and pages where Word breaks it (see
+`storage/DocxImporter.kt`). They are only used to lay out imported Word
+documents. The files are unchanged; each family's license is next to it.
+
+- **Liberation Sans, Serif and Mono** 2.1.5 (for Arial, Times New Roman and
+  Courier New): https://github.com/liberationfonts/liberation-fonts.
+  Copyright (c) 2010 Google Corporation, with Reserved Font Arimo, Tinos and
+  Cousine; copyright (c) 2012 Red Hat, Inc., with Reserved Font Name Liberation.
+  License: SIL Open Font License 1.1 (`LICENSE-Liberation.txt`).
+- **Carlito** (for Calibri): https://github.com/googlefonts/carlito, from
+  https://github.com/google/fonts (`ofl/carlito`). Copyright 2013 The Carlito
+  Project Authors, with Reserved Font Name "Carlito". License: SIL Open Font
+  License 1.1 (`LICENSE-Carlito.txt`).
+- **Caladea** (for Cambria): https://github.com/huertatipografica/Caladea, from
+  https://github.com/google/fonts (`ofl/caladea`). Copyright 2012 The Caladea
+  Project Authors. License: SIL Open Font License 1.1 (`LICENSE-Caladea.txt`).
+
+The Open Font License lets the fonts be bundled with software under any license;
+they stay under their own license, not this project's GPL-3.0.
+
 ## Scope
 
 Beyond the icon path data and the launcher artwork described above, no assets
@@ -116,5 +139,5 @@ from the Rnote project are included in this repository, and no code from it is
 copied or linked. The parser's ancestry is rnoteviewer-android, described above,
 not Rnote itself.
 
-This repository is licensed GPL-3.0 in its entirety (see `LICENSE`) so that
+Apart from the fonts above, which keep their own license, this repository is licensed GPL-3.0 (see `LICENSE`) so that
 incorporating this GPL-3.0 material is fully compliant.

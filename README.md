@@ -164,9 +164,11 @@ slots are disabled, grayed-out placeholders for parity with desktop Rnote's layo
   colors, alignment, line spacing, numbered and bulleted lists, tables and
   pictures — and they go through the PDF import dialog as a PDF of those pages
   would, so they land as pages to write on. The pages come close to Word's, but
-  they aren't the same: a font the tablet doesn't have is drawn in its serif,
-  sans or monospace face (or one loaded through "Fonts…"), so lines can break
-  elsewhere. Headers and footers, footnotes, text boxes, columns and floating
+  they aren't the same. Arial, Times New Roman, Courier New, Calibri and Cambria
+  are drawn in bundled fonts with the same letter widths (Liberation, Carlito,
+  Caladea), so lines and pages break where Word breaks them; any other font the
+  tablet doesn't have is drawn in its serif, sans or monospace face (or one
+  loaded through "Fonts…"), and lines can break elsewhere. Headers and footers, footnotes, text boxes, columns and floating
   shapes are left out, and a floating picture sits in the text where it is
   anchored. For a page exactly as Word shows it, export it as a PDF from Word.
 - **Export, share and print**: PDF, SVG, PNG, and JPEG, with page-range and

@@ -300,6 +300,16 @@ class DocxReaderTest {
     }
 
     @Test
+    fun `Word's usual fonts are drawn in the bundled ones as wide as them`() {
+        assertEquals("LiberationSans", DocxReader.metricCompatible("Arial"))
+        assertEquals("LiberationSerif", DocxReader.metricCompatible("Times New Roman"))
+        assertEquals("LiberationMono", DocxReader.metricCompatible(" courier new "))
+        assertEquals("Carlito", DocxReader.metricCompatible("Calibri"))
+        assertEquals("Caladea", DocxReader.metricCompatible("Cambria"))
+        assertNull(DocxReader.metricCompatible("Comic Sans MS"))
+    }
+
+    @Test
     fun `relationship targets resolve within the package`() {
         assertEquals("word/media/a.png", DocxReader.resolvePath("word/", "media/a.png"))
         assertEquals("media/a.png", DocxReader.resolvePath("word/", "../media/a.png"))

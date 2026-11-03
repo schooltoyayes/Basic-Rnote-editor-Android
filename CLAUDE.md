@@ -74,6 +74,9 @@ As of: 02.11.2026
   from `cache/docx/import.pdf`. Menu "Import Word document…", Ctrl+Shift+I, drop/paste,
   `FolderListing.Kind.WORD` in the workspace browser. Left out on purpose: headers/footers,
   footnotes, text boxes, columns, floating shapes; old binary `.doc`.
+  Fonts with Word's letter widths in `assets/fonts` (Liberation, Carlito, Caladea, ~7 MB,
+  OFL; `DocxReader.metricCompatible`). Checked against the English worksheets from Yannick's
+  Drive ("Part I/II - Post reading"): answer lines are 280 Arial underscores, double-spaced.
 
 - PR #4 at KJ-Ly (CI workflow) merged on 20.10. KJ-Ly had asked for it by email on 15.10.
   (the comment no longer shows on GitHub), answered in PR #3.

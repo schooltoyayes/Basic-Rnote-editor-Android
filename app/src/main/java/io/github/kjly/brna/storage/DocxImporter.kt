@@ -1,6 +1,7 @@
 package io.github.kjly.brna.storage
 
 import android.content.Context
+import android.content.res.AssetManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -38,8 +39,10 @@ import kotlin.math.roundToInt
  * on, just as an imported PDF page does.
  *
  * The pages are laid out here from what [DocxReader] reads: close to Word's, not the same.
- * A font the tablet doesn't have is drawn in its serif, sans or monospace face (or in one
- * loaded through "Fonts…" under the same name), so lines can break in other places.
+ * Word's usual fonts are drawn in the ones bundled under `assets/fonts`, whose letters are
+ * as wide as theirs, so lines and pages break where they break in Word. Any other font the
+ * tablet doesn't have is drawn in its serif, sans or monospace face (or in one loaded
+ * through "Fonts…" under the same name), and lines can break in other places.
  */
 internal object DocxImporter {
 
@@ -63,7 +66,7 @@ internal object DocxImporter {
         val document = DocxReader.read(bytes)
         val pdf = PdfDocument()
         try {
-            Pages(pdf, document).write()
+            Pages(pdf, document, context.assets).write()
             out.outputStream().use { pdf.writeTo(it) }
         } finally {
             pdf.close()
@@ -189,7 +192,11 @@ internal object DocxImporter {
     private fun opaque(rgb: Int) = rgb or 0xFF000000.toInt()
 
     /** The pages of [doc], written into [pdf] one after the other. */
-    private class Pages(private val pdf: PdfDocument, private val doc: DocxDocument) {
+    private class Pages(
+        private val pdf: PdfDocument,
+        private val doc: DocxDocument,
+        private val assets: AssetManager
+    ) {
         private val page = doc.page
         private val columnX = page.marginLeft
         private val columnWidth = (page.width - page.marginLeft - page.marginRight).coerceAtLeast(36f)
@@ -203,7 +210,7 @@ internal object DocxImporter {
         /** Nothing is on the current page yet: what doesn't fit goes on it all the same. */
         private var empty = true
 
-        private val faces = HashMap<String, Typeface>()
+        private val faces = HashMap<String, Face>()
 
         fun write() {
             for (block in doc.blocks) when (block) {
@@ -328,7 +335,18 @@ internal object DocxImporter {
                     stop += doc.tabStop.coerceAtLeast(1f)
                 }
             }
-            text.setSpan(LineSpacingSpan(p.lineSpacing), 0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+            // Single spacing is the height of the paragraph's largest font, its mark's among them.
+            var ascent = 0
+            var descent = 0
+            for (style in p.inlines.filterIsInstance<DocxText>().map { it.style } + p.markStyle) {
+                val metrics = paint(style).fontMetricsInt
+                ascent = min(ascent, metrics.ascent)
+                descent = max(descent, metrics.descent)
+            }
+            text.setSpan(
+                LineSpacingSpan(p.lineSpacing, descent - ascent, descent),
+                0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE
+            )
 
             val builder = StaticLayout.Builder
                 .obtain(text, 0, text.length, paint(p.markStyle), (layoutWidth * S).roundToInt())
@@ -385,18 +403,36 @@ internal object DocxImporter {
         }
 
         /**
-         * A font by its name: one loaded through "Fonts…" under it, or else the tablet's
-         * face of the same kind — serif, sans or monospace.
+         * A font by its name: one loaded through "Fonts…" under it, the bundled one as wide
+         * as it (see [DocxReader.metricCompatible]), or else the tablet's face of the same
+         * kind — serif, sans or monospace.
          */
-        private fun typeface(style: DocxRunStyle): Typeface =
+        private fun typeface(style: DocxRunStyle): Face =
             faces.getOrPut("${style.font}|${style.bold}|${style.italic}") {
-                val family = CustomFonts.get(style.font)
-                    ?: Typeface.create(DocxReader.genericFamily(style.font), Typeface.NORMAL)
-                Typeface.create(
-                    family,
-                    (if (style.bold) Typeface.BOLD else 0) or (if (style.italic) Typeface.ITALIC else 0)
-                )
+                val styleBits = (if (style.bold) Typeface.BOLD else 0) or (if (style.italic) Typeface.ITALIC else 0)
+                CustomFonts.get(style.font)?.let { return@getOrPut Face(Typeface.create(it, styleBits), true) }
+                DocxReader.metricCompatible(style.font)?.let { name ->
+                    bundled(name, style)?.let { return@getOrPut Face(it, false) }
+                }
+                val family = Typeface.create(DocxReader.genericFamily(style.font), Typeface.NORMAL)
+                Face(Typeface.create(family, styleBits), true)
             }
+
+        /** The bundled face [name] in the run's weight and slant, a file of its own for each. */
+        private fun bundled(name: String, style: DocxRunStyle): Typeface? {
+            val variant = when {
+                style.bold && style.italic -> "BoldItalic"
+                style.bold -> "Bold"
+                style.italic -> "Italic"
+                else -> "Regular"
+            }
+            return try {
+                Typeface.createFromAsset(assets, "fonts/$name-$variant.ttf")
+            } catch (e: RuntimeException) {
+                e.printStackTrace()
+                null
+            }
+        }
 
         /**
          * A picture at its size in the document, shrunk to fit [maxWidth] and the page. It is
@@ -462,13 +498,20 @@ internal object DocxImporter {
         }
     }
 
+    /**
+     * A typeface for a run. [synthesize]: bold or italic the face lacks is made up; not for
+     * a bundled face, whose file is the weight and slant already.
+     */
+    private class Face(val typeface: Typeface, val synthesize: Boolean)
+
     /** A run's font, size, weight, slant and raise, in layout units. */
-    private class RunSpan(private val style: DocxRunStyle, private val typeface: Typeface) : MetricAffectingSpan() {
+    private class RunSpan(private val style: DocxRunStyle, private val face: Face) : MetricAffectingSpan() {
         override fun updateMeasureState(paint: TextPaint) = applyTo(paint)
 
         override fun updateDrawState(paint: TextPaint) = applyTo(paint)
 
         fun applyTo(paint: TextPaint) {
+            val typeface = face.typeface
             paint.typeface = typeface
             val size = style.size * S
             when (style.vertAlign) {
@@ -483,27 +526,44 @@ internal object DocxImporter {
                 }
             }
             // A face without a bold or italic of its own gets one made up, as StyleSpan does.
-            val missing = ((if (style.bold) Typeface.BOLD else 0) or (if (style.italic) Typeface.ITALIC else 0)) and
-                typeface.style.inv()
+            val missing = if (!face.synthesize) 0 else
+                ((if (style.bold) Typeface.BOLD else 0) or (if (style.italic) Typeface.ITALIC else 0)) and
+                    typeface.style.inv()
             paint.isFakeBoldText = missing and Typeface.BOLD != 0
             paint.textSkewX = if (missing and Typeface.ITALIC != 0) -0.25f else 0f
         }
     }
 
-    /** Word's line spacing on each line, the extra room going above the text as in Word. */
-    private class LineSpacingSpan(private val spacing: DocxLineSpacing) : LineHeightSpan {
+    /**
+     * Word's line spacing on each line, the extra room going above the text as in Word.
+     * [single] and [descent] are the paragraph's single-spaced line height and its descent.
+     *
+     * The line's height is set outright rather than added to what [Paint.FontMetricsInt]
+     * holds: StaticLayout hands the next line of a paragraph the metrics this one left
+     * behind, so an addition would double a double-spaced line's height with every line.
+     */
+    private class LineSpacingSpan(
+        private val spacing: DocxLineSpacing,
+        private val single: Int,
+        private val descent: Int
+    ) : LineHeightSpan {
         override fun chooseHeight(
             text: CharSequence?, start: Int, end: Int, spanstartv: Int, lineHeight: Int,
             fm: Paint.FontMetricsInt
         ) {
-            val natural = fm.descent - fm.ascent
+            // A picture on the line makes it as tall as the picture, as in Word.
+            val picture = (text as? Spanned)?.getSpans(start, end, PictureSpan::class.java)
+                ?.maxOfOrNull { it.height.roundToInt() } ?: 0
+            val natural = max(single, picture + descent)
             val wanted = when (spacing) {
                 is DocxLineSpacing.Multiple -> (natural * spacing.factor).roundToInt()
                 is DocxLineSpacing.Exact -> (spacing.points * S).roundToInt()
                 is DocxLineSpacing.AtLeast -> max(natural, (spacing.points * S).roundToInt())
             }
-            fm.ascent -= wanted - natural
-            fm.top = min(fm.top, fm.ascent)
+            fm.descent = descent
+            fm.ascent = descent - wanted
+            fm.top = fm.ascent
+            fm.bottom = fm.descent
         }
     }
 
@@ -511,7 +571,7 @@ internal object DocxImporter {
     private class PictureSpan(
         private val bitmap: Bitmap?,
         private val width: Float,
-        private val height: Float
+        val height: Float
     ) : ReplacementSpan() {
         override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int {
             fm?.let {

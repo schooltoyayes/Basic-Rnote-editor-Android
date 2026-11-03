@@ -7,7 +7,7 @@ The README lists what the app can do.
 
 Toni & Yannick prefer replies in German.
 
-As of: 02.11.2026
+As of: 03.11.2026
 
 ## Code
 
@@ -33,15 +33,19 @@ As of: 02.11.2026
 - `main`: the fork's current state. Changes come in by PR from `claude/new-session-zdx2bt`
   (the working branch). Toni & Yannick merge on GitHub themselves.
 - `upstream-pr`: source of PR #3 at KJ-Ly (draft, open). Linear commits on
-  `c9a1780` (KJ-Ly's `main` is now `2fce4e1`, the merge of PR #4; #3 is still
-  mergeable). New fixes from `main` are cherry-picked, with fix-ups squashed into
-  one commit. Deliberately has no workflow.
+  `a00e629`, the last commit of PR #2 (merged at KJ-Ly as `8541b1e`). KJ-Ly's own
+  `05c9c65` and `c9a1780` and the merge of PR #4 (`2fce4e1`, his `main`) came after it and
+  are not in `upstream-pr`; GitHub still reports #3 as mergeable. New fixes from `main`
+  are cherry-picked, with fix-ups squashed into one commit. Deliberately has no workflow.
 - Not going upstream: the PNG launcher icons. The CI workflow, the release signing
   and the `lint` setting in `app/build.gradle.kts` are at KJ-Ly too since PR #4 (there
   with the workflow in English). Otherwise `main` and `upstream-pr` should have the same code.
-- KJ-Ly's `c9a1780` ("Save lined and blank backgrounds under Rnote's names") is in
-  `upstream-pr` but not yet in `main` – so `RnoteNativeSerializer.kt` and
-  `RnoteNativeRoundTripTest.kt` differ between the two.
+- KJ-Ly's `c9a1780` ("Save lined and blank backgrounds under Rnote's names") is the same
+  fix as `main`'s own `f7eb629` (which also adds a test), but neither is in `upstream-pr`:
+  on its own, `upstream-pr` still writes "ruled"/"blank", which desktop Rnote refuses.
+  That is why `RnoteNativeSerializer.kt` and `RnoteNativeRoundTripTest.kt` differ between
+  `main` and `upstream-pr`. Harmless for PR #3: `upstream-pr` never touches those lines, so
+  merging it keeps KJ-Ly's fix.
 - As soon as KJ-Ly merges PR #3: reset `upstream-pr` to KJ-Ly's new `main`.
 - `upstream-ci` (deleted on 25.10.): source of PR #4 at KJ-Ly (at KJ-Ly's request), the
   workflow in English plus signing and `lint` in `app/build.gradle.kts`. Merged on 20.10.
@@ -58,8 +62,9 @@ As of: 02.11.2026
 
 ## Open
 
-- PR #3 at KJ-Ly is still a draft. Until it is merged, `RnoteNativeSerializer.kt` and
-  `RnoteNativeRoundTripTest.kt` stay different between `main` and `upstream-pr` (see above).
+- PR #3 at KJ-Ly is still a draft (updated with the Word import on 03.11.). Until it is
+  merged, `RnoteNativeSerializer.kt` and `RnoteNativeRoundTripTest.kt` stay different
+  between `main` and `upstream-pr` (see above).
 
 ## Deferred (only on request)
 
@@ -68,7 +73,7 @@ As of: 02.11.2026
 
 ## Done (recently)
 
-- Word import (`.docx`), on the work branch, not yet tried on the tablet: `DocxReader` reads
+- #38/#39 Word import (`.docx`), tried on the tablet with two worksheets: `DocxReader` reads
   the document into a small model (unit-tested), `DocxImporter` sets it as PDF pages with
   `StaticLayout` (20 layout units per point), which then go through the PDF import dialog
   from `cache/docx/import.pdf`. Menu "Import Word document…", Ctrl+Shift+I, drop/paste,

@@ -7,7 +7,7 @@ The README lists what the app can do.
 
 Toni & Yannick prefer replies in German.
 
-As of: 02.11.2026
+As of: 03.11.2026
 
 ## Code
 
@@ -68,7 +68,7 @@ As of: 02.11.2026
 
 ## Done (recently)
 
-- Word import (`.docx`), on the work branch, not yet tried on the tablet: `DocxReader` reads
+- #38/#39 Word import (`.docx`), tried on the tablet with two worksheets: `DocxReader` reads
   the document into a small model (unit-tested), `DocxImporter` sets it as PDF pages with
   `StaticLayout` (20 layout units per point), which then go through the PDF import dialog
   from `cache/docx/import.pdf`. Menu "Import Word document…", Ctrl+Shift+I, drop/paste,

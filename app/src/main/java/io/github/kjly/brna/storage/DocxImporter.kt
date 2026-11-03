@@ -328,7 +328,18 @@ internal object DocxImporter {
                     stop += doc.tabStop.coerceAtLeast(1f)
                 }
             }
-            text.setSpan(LineSpacingSpan(p.lineSpacing), 0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+            // Single spacing is the height of the paragraph's largest font, its mark's among them.
+            var ascent = 0
+            var descent = 0
+            for (style in p.inlines.filterIsInstance<DocxText>().map { it.style } + p.markStyle) {
+                val metrics = paint(style).fontMetricsInt
+                ascent = min(ascent, metrics.ascent)
+                descent = max(descent, metrics.descent)
+            }
+            text.setSpan(
+                LineSpacingSpan(p.lineSpacing, descent - ascent, descent),
+                0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE
+            )
 
             val builder = StaticLayout.Builder
                 .obtain(text, 0, text.length, paint(p.markStyle), (layoutWidth * S).roundToInt())
@@ -490,20 +501,36 @@ internal object DocxImporter {
         }
     }
 
-    /** Word's line spacing on each line, the extra room going above the text as in Word. */
-    private class LineSpacingSpan(private val spacing: DocxLineSpacing) : LineHeightSpan {
+    /**
+     * Word's line spacing on each line, the extra room going above the text as in Word.
+     * [single] and [descent] are the paragraph's single-spaced line height and its descent.
+     *
+     * The line's height is set outright rather than added to what [Paint.FontMetricsInt]
+     * holds: StaticLayout hands the next line of a paragraph the metrics this one left
+     * behind, so an addition would double a double-spaced line's height with every line.
+     */
+    private class LineSpacingSpan(
+        private val spacing: DocxLineSpacing,
+        private val single: Int,
+        private val descent: Int
+    ) : LineHeightSpan {
         override fun chooseHeight(
             text: CharSequence?, start: Int, end: Int, spanstartv: Int, lineHeight: Int,
             fm: Paint.FontMetricsInt
         ) {
-            val natural = fm.descent - fm.ascent
+            // A picture on the line makes it as tall as the picture, as in Word.
+            val picture = (text as? Spanned)?.getSpans(start, end, PictureSpan::class.java)
+                ?.maxOfOrNull { it.height.roundToInt() } ?: 0
+            val natural = max(single, picture + descent)
             val wanted = when (spacing) {
                 is DocxLineSpacing.Multiple -> (natural * spacing.factor).roundToInt()
                 is DocxLineSpacing.Exact -> (spacing.points * S).roundToInt()
                 is DocxLineSpacing.AtLeast -> max(natural, (spacing.points * S).roundToInt())
             }
-            fm.ascent -= wanted - natural
-            fm.top = min(fm.top, fm.ascent)
+            fm.descent = descent
+            fm.ascent = descent - wanted
+            fm.top = fm.ascent
+            fm.bottom = fm.descent
         }
     }
 
@@ -511,7 +538,7 @@ internal object DocxImporter {
     private class PictureSpan(
         private val bitmap: Bitmap?,
         private val width: Float,
-        private val height: Float
+        val height: Float
     ) : ReplacementSpan() {
         override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int {
             fm?.let {

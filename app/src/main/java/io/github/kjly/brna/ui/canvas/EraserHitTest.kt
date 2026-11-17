@@ -33,6 +33,16 @@ object EraserHitTest {
         return Rect(center.x - half, center.y - half, center.x + half, center.y + half)
     }
 
+    /**
+     * The strokes the eraser square could be touching, in draw order: those whose box from
+     * [extentOf] it overlaps. A box there must hold at least `strokeBounds(stroke,
+     * strokeWidth * 0.5f)`, so nothing [collidingStrokes] or [splitStroke] would hit is
+     * left out. With boxes the caller keeps, a drag no longer walks every point of every
+     * stroke in the note at each pen sample, which froze the canvas on a long one.
+     */
+    fun nearby(eraserBounds: Rect, strokes: List<Stroke>, extentOf: (Stroke) -> Rect): List<Stroke> =
+        strokes.filter { eraserBounds.overlaps(extentOf(it)) }
+
     /** Strokes the eraser square currently overlaps, in the order they were drawn. */
     fun collidingStrokes(eraserBounds: Rect, strokes: List<Stroke>): List<Stroke> =
         strokes.filter { stroke -> collides(eraserBounds, stroke) }

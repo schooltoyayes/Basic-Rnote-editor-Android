@@ -303,6 +303,11 @@ fun DrawingCanvas(
     var pathBuilder by remember { mutableStateOf<PenPathBuilding?>(null) }
     /** Memoised stroke bounds and outlines, keyed by Stroke identity. See the draw block below. */
     val outlineCache = remember { IdentityHashMap<Stroke, CachedOutline>() }
+    // The eraser asks for every stroke's box at each pen sample; these are the boxes drawing
+    // keeps, made once per stroke rather than once per sample (see EraserHitTest.nearby).
+    val strokeExtent: (Stroke) -> Rect = remember(outlineCache) {
+        { stroke -> outlineCache.getOrPut(stroke) { CachedOutline(strokeBounds(stroke)) }.bounds }
+    }
     val lassoPoints = remember { mutableStateListOf<Offset>() }
     // selectedStrokes is owned by the caller (MainActivity) so it can be read for delete
 
@@ -745,7 +750,7 @@ fun DrawingCanvas(
                         if (activeTool == ToolType.ERASER) {
                             eraserCursor = Offset(x, y)
                             eraserCursorDown = true
-                            eraseAt(Offset(x, y), eraserWidth, splitEraser, strokes, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
+                            eraseAt(Offset(x, y), eraserWidth, splitEraser, strokes, strokeExtent, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
                                 if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
                             }
                         }
@@ -888,7 +893,7 @@ fun DrawingCanvas(
                                 }
                                 lassoPoints.add(Offset(point.x, point.y))
                                 if (activeTool == ToolType.ERASER) {
-                                    eraseAt(Offset(point.x, point.y), eraserWidth, splitEraser, strokes, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
+                                    eraseAt(Offset(point.x, point.y), eraserWidth, splitEraser, strokes, strokeExtent, onEraseStrokes, onSplitStrokes, overlays, onEraseNatives) {
                                         if (!eraseSnapshotTaken) { onEraseStart(); eraseSnapshotTaken = true }
                                     }
                                 }
@@ -1720,6 +1725,7 @@ private fun eraseAt(
     eraserWidth: Float,
     split: Boolean,
     strokes: List<Stroke>,
+    extentOf: (Stroke) -> Rect,
     onEraseStrokes: (List<Stroke>) -> Unit,
     onSplitStrokes: (Map<String, List<Stroke>>) -> Unit,
     overlays: List<NativeCanvasElement>,
@@ -1727,10 +1733,11 @@ private fun eraseAt(
     onFirstHit: () -> Unit
 ) {
     val bounds = EraserHitTest.eraserBounds(center, eraserWidth)
-    val hit = if (split) emptyList() else EraserHitTest.collidingStrokes(bounds, strokes)
+    val near = EraserHitTest.nearby(bounds, strokes, extentOf)
+    val hit = if (split) emptyList() else EraserHitTest.collidingStrokes(bounds, near)
     val pieces = LinkedHashMap<String, List<Stroke>>()
     if (split) {
-        for (stroke in strokes) EraserHitTest.splitStroke(bounds, stroke)?.let { pieces[stroke.id] = it }
+        for (stroke in near) EraserHitTest.splitStroke(bounds, stroke)?.let { pieces[stroke.id] = it }
     }
     val hitShapes = overlays.filter {
         it is NativeShapeElement &&

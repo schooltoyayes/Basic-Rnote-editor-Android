@@ -7,6 +7,7 @@ import io.github.kjly.brna.model.Stroke
 import io.github.kjly.brna.model.StrokePoint
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -111,6 +112,29 @@ class EraserHitTestTest {
         val s = stroke(0f to 0f, 200f to 200f, width = 2f)
         assertFalse(hits(Offset(100f, 100f), 4f, s).isEmpty())
         assertTrue(hits(Offset(190f, 10f), 4f, s).isEmpty())
+    }
+
+    @Test
+    fun `narrowing to the canvas's boxes first leaves out nothing the eraser hits`() {
+        // DrawingCanvas narrows with the boxes it draws by, loosened by the whole width.
+        val canvasBox = { s: Stroke -> EraserHitTest.strokeBounds(s, s.strokeWidth) }
+        val strokes = listOf(
+            stroke(0f to 0f, 50f to 0f, id = "line"),
+            stroke(0f to 0f, 200f to 200f, width = 2f, id = "diagonal"),
+            stroke(30f to 3f, id = "dot", width = 0.5f, pressure = 1f),
+            stroke(9f to 9f, 9f to 30f, width = 0.02f, id = "corner"),
+            stroke(0f to 900f, 50f to 900f, id = "far")
+        )
+        for (x in -20..220 step 7) for (y in -20..220 step 7) {
+            val bounds = EraserHitTest.eraserBounds(Offset(x.toFloat(), y.toFloat()), 10f)
+            val near = EraserHitTest.nearby(bounds, strokes, canvasBox)
+            assertEquals(
+                EraserHitTest.collidingStrokes(bounds, strokes),
+                EraserHitTest.collidingStrokes(bounds, near)
+            )
+            // The split eraser cuts nothing that was narrowed away.
+            for (s in strokes - near.toSet()) assertNull(EraserHitTest.splitStroke(bounds, s))
+        }
     }
 
     // ── Split eraser ──────────────────────────────────────────────────────────

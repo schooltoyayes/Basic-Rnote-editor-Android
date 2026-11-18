@@ -7,7 +7,7 @@ The README lists what the app can do.
 
 Toni & Yannick prefer replies in German.
 
-As of: 03.11.2026
+As of: 18.11.2026
 
 ## Code
 
@@ -62,7 +62,7 @@ As of: 03.11.2026
 
 ## Open
 
-- PR #3 at KJ-Ly is still a draft (updated with the Word import on 03.11.). Until it is
+- PR #3 at KJ-Ly is still a draft (updated with the Word import on 03.11., #41/#42 on 18.11.). Until it is
   merged, `RnoteNativeSerializer.kt` and `RnoteNativeRoundTripTest.kt` stay different
   between `main` and `upstream-pr` (see above).
 
@@ -72,6 +72,15 @@ As of: 03.11.2026
 - `CustomFonts.restore` runs on the main thread.
 
 ## Done (recently)
+
+- #41 Eraser froze on long notes: every pen sample walked every point of every stroke
+  for its box. `EraserHitTest.nearby` narrows first with the boxes drawing caches
+  (`outlineCache`, loosened by the full width, so nothing is lost); tried on the tablet.
+- #42 `android:largeHeap="true"`: Toni's `BVT.rnote` (desktop Rnote 0.15.0, 22 MB gzipped,
+  66 MB JSON, of which 40 MB page SVGs and a 10 MB raw bitmap) failed with "Could not open
+  file" under the default 256 MB heap of the Tab S10 FE; opens with 512 MB. If notes grow
+  further: the parser keeps every stroke's original JSON (`RnoteStrokeSource`) and the SVG
+  text in memory, the place to save.
 
 - #38/#39 Word import (`.docx`), tried on the tablet with two worksheets: `DocxReader` reads
   the document into a small model (unit-tested), `DocxImporter` sets it as PDF pages with
